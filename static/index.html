@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OSINT Toolkit</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">◉ OSINT Toolkit <span class="ver">v0.1</span></div>
+  <div class="integrations" id="integrations"></div>
+</header>
+
+<main class="layout">
+  <aside class="panel">
+    <nav class="tabs" id="tabs">
+      <button data-module="domain" class="active">Domain</button>
+      <button data-module="ip">IP</button>
+      <button data-module="email">Email</button>
+      <button data-module="brand">Brand</button>
+      <button data-module="username">Username</button>
+    </nav>
+    <p class="hint" id="moduleHint"></p>
+
+    <form id="scanForm" autocomplete="off">
+      <label>เป้าหมาย (Target)
+        <input id="target" required placeholder="example.com">
+      </label>
+      <label id="keywordRow" hidden>Brand keyword (ไม่บังคับ)
+        <input id="keyword" placeholder="เช่น mybrand">
+      </label>
+      <label>ผู้ตรวจสอบ (Analyst)
+        <input id="analyst" required minlength="2" placeholder="ชื่อผู้ใช้งาน">
+      </label>
+      <label>เลขอ้างอิงเคส (Case ref)
+        <input id="caseRef" placeholder="เช่น IDA-2026-001">
+      </label>
+      <label>วัตถุประสงค์ (Purpose)
+        <textarea id="purpose" required minlength="5" rows="2" placeholder="เช่น ประเมิน attack surface ของลูกค้าตามสัญญา"></textarea>
+      </label>
+      <label id="legalRow">ฐานทางกฎหมาย PDPA (Legal basis)
+        <select id="legalBasis"><option value="">— ไม่ระบุ —</option></select>
+      </label>
+      <label id="apiKeyRow" hidden>API key
+        <input id="apiKey" type="password">
+      </label>
+      <button type="submit" id="runBtn">เริ่มสแกน</button>
+    </form>
+
+    <section class="history">
+      <h3>ประวัติการสแกน <button id="refreshHist" class="link">รีเฟรช</button></h3>
+      <ul id="history"></ul>
+    </section>
+  </aside>
+
+  <section class="results">
+    <div class="results-head">
+      <div id="summary" class="muted">เลือกโมดูล ใส่เป้าหมาย แล้วกด “เริ่มสแกน”</div>
+      <div class="actions" id="actions" hidden>
+        <button id="exportJson" class="ghost">Export JSON</button>
+        <button id="toggleRaw" class="ghost">Raw JSON</button>
+      </div>
+    </div>
+    <div id="cards"></div>
+    <pre id="raw" hidden></pre>
+  </section>
+</main>
+
+<footer class="foot">
+  ใช้เฉพาะเป้าหมายที่ได้รับอนุญาต / ข้อมูลสาธารณะ · ทุกการสแกนถูกบันทึกใน audit log ·
+  ผลลัพธ์เป็นข้อมูลประกอบการวิเคราะห์ ต้องตรวจสอบยืนยันก่อนสรุป
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

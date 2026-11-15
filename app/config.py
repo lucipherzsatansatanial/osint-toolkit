@@ -1,0 +1,26 @@
+"""Runtime configuration, read from environment variables."""
+import os
+from dataclasses import dataclass, field
+
+
+def _list(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    # If set, every /api call must send header X-API-Key with this value.
+    api_key: str = os.getenv("OSINT_API_KEY", "")
+    # Optional third-party keys (modules degrade gracefully when absent).
+    hibp_api_key: str = os.getenv("HIBP_API_KEY", "")
+    ipinfo_token: str = os.getenv("IPINFO_TOKEN", "")
+    # DNS resolvers; empty = system resolver.
+    nameservers: list[str] = field(default_factory=lambda: _list("OSINT_NAMESERVERS"))
+    http_timeout: float = float(os.getenv("OSINT_HTTP_TIMEOUT", "10"))
+    db_path: str = os.getenv("OSINT_DB_PATH", "data/osint.db")
+    rate_limit_per_min: int = int(os.getenv("OSINT_RATE_LIMIT", "30"))
+    user_agent: str = os.getenv("OSINT_USER_AGENT", "OSINT-Toolkit/0.1 (+security research)")
+
+
+settings = Settings()
