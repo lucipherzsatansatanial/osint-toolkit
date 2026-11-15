@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: osint-toolkit
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /api/meta
+    envVars:
+      - key: OSINT_API_KEY
+        sync: false   # Render asks you to type a password during deploy
+      - key: OSINT_NAMESERVERS
+        value: 1.1.1.1,8.8.8.8
+      - key: OSINT_DB_PATH
+        value: /tmp/osint.db
+      - key: HIBP_API_KEY
+        sync: false
+      - key: IPINFO_TOKEN
+        sync: false
