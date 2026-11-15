@@ -1,5 +1,7 @@
 # OSINT Toolkit (MVP)
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/lucipherzsatansatanial/osint-toolkit)
+
 Web application สำหรับรวบรวมข้อมูลจากแหล่งเปิด (OSINT) — FastAPI + หน้าเว็บ static (ไม่ต้อง build)
 
 ## โมดูล
