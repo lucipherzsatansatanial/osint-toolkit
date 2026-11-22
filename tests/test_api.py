@@ -51,3 +51,15 @@ def test_invalid_target_and_private_ip(client):
 def test_meta_and_index(client):
     assert client.get("/api/meta").json()["auth_required"] is True
     assert "OSINT Toolkit" in client.get("/").text
+
+
+def test_soc_endpoints(client, monkeypatch):
+    import app.main
+    async def fake_cti(force=False):
+        return {"kev": {"ok": True, "data": {"items": []}}}
+    monkeypatch.setattr(app.main.threatintel, "get_all", fake_cti)
+    assert client.get("/api/soc/snapshot").status_code == 401
+    snap = client.get("/api/soc/snapshot", headers=H).json()
+    assert snap["simulated"] is True and len(snap["endpoints"]) == 12
+    assert client.get("/api/soc/cti", headers=H).json()["kev"]["ok"]
+    assert client.get("/soc").status_code == 200

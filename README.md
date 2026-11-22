@@ -16,6 +16,26 @@ Web application สำหรับรวบรวมข้อมูลจาก�
 
 \* โมดูลข้อมูลส่วนบุคคล — ระบบบังคับให้เลือก **ฐานทางกฎหมายตาม PDPA** ก่อนสแกน
 
+## SOC Dashboard — EDR / XDR / CTI (`/soc`)
+
+หน้า dashboard แบบ real-time (Server-Sent Events, อัปเดตทุก 1 วินาที) สำหรับ SOC wallboard
+
+| ส่วน | แสดงอะไร | ข้อมูล |
+|---|---|---|
+| KPI | Events/นาที, open incidents, coordinated attacks, CTI matches, สถานะ endpoint, critical/high | จำลอง |
+| Throughput | กราฟเส้นจำนวน event แยกตาม domain (endpoint/identity/email/network/cloud) ย้อนหลัง 5 นาที | จำลอง |
+| EDR | รายการ endpoint: healthy / at risk / compromised, Real-time protection, จำนวน alert | จำลอง |
+| XDR | Incident ที่ correlate ข้าม domain (entity เดียวกัน user/host ภายใน 30 นาที) + กราฟเชื่อมโยง + timeline | จำลอง + logic จริง |
+| MITRE ATT&CK | จำนวน alert ตาม tactic | จำลอง |
+| CTI | CISA KEV (CVE ที่ถูกใช้โจมตีจริง), abuse.ch Feodo Tracker (botnet C2), abuse.ch ThreatFox (IOC) | **ข้อมูลจริง** (cache 15 นาที) |
+
+- **Telemetry เป็นข้อมูลจำลอง** (ทุก event มี `"simulated": true` และหน้าเว็บแสดงป้าย SIMULATED) — ใช้สาธิต correlation จนกว่าจะต่อ connector ของ EDR/XDR จริง (เช่น Microsoft Defender XDR, CrowdStrike Falcon, SentinelOne) เข้ากับ `app/telemetry.py`
+- Simulator สร้าง noise + kill chain หลายขั้น (phishing → sign-in ผิดปกติ → MFA fatigue → PowerShell → C2 → LSASS dump → lateral movement → exfil/ransomware) เมื่อดึง CTI ได้ event C2/exploit จะอ้างอิง IP ของ Feodo และ CVE ของ KEV จริง และติดธง **CTI match**
+- Incident ที่มี ≥2 domain และมี alert ระดับ high ขึ้นไป = **Coordinated attack** และถูกยกระดับความรุนแรง 1 ขั้น
+- ThreatFox export อาจต้องใช้ Auth-Key ในอนาคต — ถ้าดึงไม่ได้ dashboard ยังทำงานต่อและแสดง error เฉพาะ feed นั้น
+
+API: `GET /api/soc/snapshot`, `GET /api/soc/cti?refresh=true`, `GET /api/soc/stream` (SSE; ส่ง `X-API-Key` ผ่าน header — หน้าเว็บใช้ `fetch` แทน `EventSource` เพื่อไม่ให้ key ไปอยู่ใน URL)
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -37,7 +57,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (44 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (49 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

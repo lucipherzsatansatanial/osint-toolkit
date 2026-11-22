@@ -1,5 +1,7 @@
 """OSINT Toolkit — FastAPI entry point."""
+import asyncio
 import hmac
+import json
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -7,13 +9,14 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit
+from app.telemetry import hub
 from app.config import settings
-from app.modules import brand, domain, email, ip, username
+from app.modules import brand, domain, email, ip, threatintel, username
 from app.validators import (ValidationError, normalize_domain, normalize_email, normalize_ip,
                             normalize_keyword, normalize_username)
 
@@ -117,9 +120,49 @@ def meta():
     }
 
 
+# ---------- SOC dashboard: EDR / XDR / CTI ----------
+@app.get("/api/soc/snapshot")
+def soc_snapshot(_: str = Depends(guard)):
+    return hub.engine.snapshot()
+
+
+@app.get("/api/soc/cti")
+async def soc_cti(refresh: bool = False, _: str = Depends(guard)):
+    return await threatintel.get_all(force=refresh)
+
+
+def sse(event: str, data) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+async def soc_events(request: Request, q: asyncio.Queue):
+    try:
+        yield sse("snapshot", hub.engine.snapshot())
+        while not await request.is_disconnected():
+            try:
+                msg = await asyncio.wait_for(q.get(), timeout=15)
+                yield sse("tick", msg)
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+    finally:
+        hub.unsubscribe(q)
+
+
+@app.get("/api/soc/stream")
+async def soc_stream(request: Request, _: str = Depends(guard)):
+    """Server-Sent Events. Read with fetch() so the X-API-Key header can be sent."""
+    return StreamingResponse(soc_events(request, hub.subscribe()), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/soc")
+def soc_page():
+    return FileResponse(STATIC / "soc.html")
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
