@@ -162,3 +162,20 @@ def test_rbac_roles_and_audit_identity(client):
     assert client.post("/api/users", headers=H, json={"username": "lead.one", "role": "viewer"}).status_code == 422
     # shared bootstrap key still needs a typed analyst name for audited actions
     assert client.patch(f"/api/soc/incidents/{inc_id}", headers=H, json={"note": "x"}).status_code == 422
+
+
+def test_ai_endpoints_rbac_and_cache(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client.post("/api/soc/ingest", headers=H, json=[{"kind": "net", "host": "SRV-AI-X", "dest": "api.deepseek.com"}])
+    inc_id = client.get("/api/soc/incidents", headers=H).json()[0]["id"]
+    tv = client.post("/api/users", headers=H, json={"username": "v.only", "role": "viewer"}).json()["token"]
+    assert client.post(f"/api/soc/incidents/{inc_id}/ai/summary", headers={"X-API-Key": tv}, json={}).status_code == 403
+    assert client.get("/api/soc/ai/status", headers=H).json()["enabled"] is False
+    s1 = client.post(f"/api/soc/incidents/{inc_id}/ai/summary", headers=H, json={}).json()
+    assert s1["source"] == "rule-based" and s1["recommended_actions"]
+    s2 = client.post(f"/api/soc/incidents/{inc_id}/ai/summary", headers=H, json={}).json()
+    assert s2["generated_at"] == s1["generated_at"]  # cached on the incident
+    assert client.get(f"/api/soc/incidents/{inc_id}", headers=H).json()["ai"]["source"] == "rule-based"
+    a = client.post(f"/api/soc/incidents/{inc_id}/ai/ask", headers=H, json={"question": "ทำอะไรต่อ"}).json()
+    assert a["source"] == "none"
+    assert client.get("/api/history", headers=H).json()[0]["module"] == "soc.ai_ask"

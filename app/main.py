@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ingest, soc_report, soc_store
+from app import ai, ingest, soc_report, soc_store
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -348,6 +348,53 @@ async def soc_notify_test(req: NotifyTest, who: rbac.Principal = Depends(require
                  purpose="test alert channels", legal_basis="own_asset", case_ref=None,
                  result={n: ok for n, ok, _ in results})
     return {"results": {n: {"ok": ok, "detail": str(d)} for n, ok, d in results}}
+
+
+# ---------- AI SOC Copilot ----------
+@app.get("/api/soc/ai/status")
+async def soc_ai_status(_: rbac.Principal = Depends(require("soc.read"))):
+    return ai.status()
+
+
+class AiSummaryRequest(BaseModel):
+    refresh: bool = False
+
+
+@app.post("/api/soc/incidents/{inc_id}/ai/summary")
+async def soc_ai_summary(inc_id: int, req: AiSummaryRequest, who: rbac.Principal = Depends(require("ai.use"))):
+    """AI alert summary + AI incident timeline + response actions. Cached on the incident until refresh=true."""
+    inc = _find_incident(inc_id)
+    if inc.get("ai") and not req.refresh:
+        return inc["ai"]
+    out = await ai.summarize(inc)
+    out["generated_at"] = time.time()
+    out["generated_by"] = who.name
+    inc["ai"] = out
+    hub.engine.incidents.setdefault(inc_id, inc)
+    if inc.get("real"):
+        hub.engine._dirty.add(inc_id)
+        hub.engine.flush()
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.ai_summary", target=f"incident:{inc_id}",
+                 purpose="AI incident summary", legal_basis="own_asset", case_ref=f"INC-{inc_id}",
+                 result={"source": out.get("source"), "model": out.get("model"), "redacted": out.get("redacted"),
+                         "usage": out.get("usage")})
+    return out
+
+
+class AiAskRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=4000)
+    history: list[dict] = Field(default_factory=list, max_length=20)
+
+
+@app.post("/api/soc/incidents/{inc_id}/ai/ask")
+async def soc_ai_ask(inc_id: int, req: AiAskRequest, who: rbac.Principal = Depends(require("ai.use"))):
+    inc = _find_incident(inc_id)
+    out = await ai.ask(inc, req.question, req.history)
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.ai_ask", target=f"incident:{inc_id}",
+                 purpose=req.question[:300], legal_basis="own_asset", case_ref=f"INC-{inc_id}",
+                 result={"source": out.get("source"), "model": out.get("model"), "redacted": out.get("redacted"),
+                         "usage": out.get("usage")})
+    return out
 
 
 class IncidentUpdate(BaseModel):

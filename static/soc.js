@@ -26,7 +26,7 @@ async function connect() {
     $("#keyBar").hidden = true;
     setLive(true);
     loadMe();
-    loadCti(); loadQueries(); loadNotify();
+    loadCti(); loadQueries(); loadNotify(); loadAiStatus();
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
     for (;;) {
@@ -218,6 +218,7 @@ $("#d-close").onclick = () => { state.selected = null; $("#detailCard").hidden =
 function renderDetail(inc) {
   $("#detailCard").hidden = false;
   renderWorkflow(inc);
+  renderCopilot(inc);
   $("#d-title").innerHTML = `#${inc.id} · ${esc(inc.title)} · <span class="sev" style="--sevc:var(--${esc(inc.severity)})">${esc(inc.severity)}</span>
     <small class="muted">users: ${esc(inc.users.join(", "))} · tactics: ${esc(inc.tactics.join(" → "))}</small>`;
   // graph: domain nodes (left) → incident hub (center) → affected hosts (right)
@@ -314,6 +315,79 @@ $("#usersTbl").addEventListener("change", async (ev) => {
   } catch (e) { alert("ไม่สำเร็จ: " + e.message); }
   loadUsers();
 });
+
+// ---------- AI SOC Copilot ----------
+const ASSESS_TH = { likely_malicious: "น่าจะเป็นการโจมตีจริง", suspicious: "น่าสงสัย", likely_benign: "น่าจะไม่เป็นอันตราย", insufficient_data: "ข้อมูลไม่พอ" };
+const PRIO_TH = { now: "ทันที", today: "วันนี้", follow_up: "ติดตาม" };
+state.chats = {};
+async function loadAiStatus() {
+  try {
+    const s = await api("/api/soc/ai/status");
+    $("#aiStatus").textContent = s.enabled ? `Claude · ${s.model} · ${s.redact ? "ปิดบังชื่อผู้ใช้/IP ภายในก่อนส่ง" : "ไม่ปิดบังข้อมูล"}`
+      : "ยังไม่ตั้งค่า ANTHROPIC_API_KEY — สรุปแบบกฎ (ไม่ใช้ AI)";
+  } catch { $("#aiStatus").textContent = ""; }
+}
+function renderCopilot(inc) {
+  if (state.cpFor !== inc.id) {
+    state.cpFor = inc.id;
+    $("#chatQ").value = "";
+    renderChat();
+    if (inc.ai) renderAi(inc.ai);
+    else $("#aiOut").innerHTML = '<p class="muted">กด "สรุปด้วย AI" เพื่อสรุปเหตุการณ์ ไทม์ไลน์ และขั้นตอนรับมือ</p>';
+    $("#aiRefresh").hidden = !inc.ai || !can("ai.use");
+  }
+}
+function renderAi(a) {
+  const t = (x) => esc(x || "");
+  $("#aiOut").innerHTML = `
+    <div class="ai-head">${t(a.headline)}</div>
+    <div class="ai-badges"><span class="${t(a.assessment)}">${t(ASSESS_TH[a.assessment] || a.assessment)}</span>
+      <span>ความมั่นใจ: ${t(a.confidence)}</span>${(a.attack_stages || []).map((x) => `<span>${t(x)}</span>`).join("")}</div>
+    <p>${t(a.summary)}</p>
+    <div class="ai-grid">
+      <div><h4>AI Incident Timeline</h4><ol class="timeline">${(a.timeline || []).map((e) => `<li style="--c:var(--accent)">
+        <span class="mono muted">${t(e.time)}</span> ${t(e.event)}<div class="muted">${t(e.significance)}</div></li>`).join("") || '<li class="muted">-</li>'}</ol></div>
+      <div><h4>ขั้นตอนรับมือที่แนะนำ</h4><ul class="ai-actions">${(a.recommended_actions || []).map((x) => `<li>
+        <span class="p ${t(x.priority)}">${t(PRIO_TH[x.priority] || x.priority)}</span><span>${t(x.action)}<small>${t(x.owner)}</small></span></li>`).join("")}</ul>
+        ${(a.open_questions || []).length ? `<h4>คำถามที่ควรหาคำตอบต่อ</h4><ul>${a.open_questions.map((q) => `<li>${t(q)}</li>`).join("")}</ul>` : ""}</div>
+    </div>
+    <div class="ai-foot">${a.source === "claude"
+      ? `สร้างโดย ${t(a.model)}${a.redacted ? ` · ปิดบังข้อมูลบุคคล ${a.pseudonyms || 0} รายการก่อนส่ง` : ""}`
+      : `สรุปแบบกฎ (ไม่ใช้ AI) — ${t(a.note)}`}${a.generated_by ? ` · ขอโดย ${t(a.generated_by)}` : ""}${a.generated_at ? ` · ${new Date(a.generated_at * 1000).toLocaleString("th-TH", { hour12: false })}` : ""}
+      · ผลจาก AI ต้องตรวจสอบก่อนนำไปตัดสินใจ</div>`;
+}
+async function runSummary(refresh) {
+  const id = state.selected; if (!id) return;
+  $("#aiOut").innerHTML = '<p class="muted"><span class="spin"></span> กำลังวิเคราะห์ incident…</p>';
+  try {
+    const a = await api(`/api/soc/incidents/${id}/ai/summary`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh }) });
+    const inc = state.incidents.find((i) => i.id === id); if (inc) inc.ai = a;
+    if (state.selected === id) { renderAi(a); $("#aiRefresh").hidden = false; }
+  } catch (e) { $("#aiOut").innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
+}
+$("#aiSummBtn").onclick = () => runSummary(false);
+$("#aiRefresh").onclick = () => runSummary(true);
+function renderChat() {
+  const log = state.chats[state.cpFor] || [];
+  $("#chatLog").innerHTML = log.map((m) => `<li class="${m.role}">${esc(m.content)}${m.meta ? `<small>${esc(m.meta)}</small>` : ""}</li>`).join("");
+  $("#chatLog").scrollTop = 1e9;
+}
+async function askCopilot(q) {
+  const id = state.selected; if (!id || !q.trim()) return;
+  const log = (state.chats[id] ||= []);
+  const history = log.map(({ role, content }) => ({ role, content }));
+  log.push({ role: "user", content: q }); log.push({ role: "assistant", content: "…" }); renderChat();
+  try {
+    const r = await api(`/api/soc/incidents/${id}/ai/ask`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q, history }) });
+    log[log.length - 1] = { role: "assistant", content: r.answer, meta: r.source === "claude" ? r.model : r.source };
+  } catch (e) { log[log.length - 1] = { role: "assistant", content: "ไม่สำเร็จ: " + e.message }; }
+  if (state.cpFor === id) renderChat();
+}
+$("#chatForm").addEventListener("submit", (ev) => { ev.preventDefault(); const q = $("#chatQ").value; $("#chatQ").value = ""; askCopilot(q); });
+const CHAT_PRESETS = ["ควร isolate เครื่องไหนก่อน เพราะอะไร", "มีหลักฐานการส่งข้อมูลออก (exfiltration) ไหม", "เขียนสรุปสำหรับผู้บริหาร 3 บรรทัด", "ต้องแจ้ง สคส. ตาม PDPA หรือไม่"];
+$("#chatPresets").innerHTML = CHAT_PRESETS.map((q) => `<button type="button">${esc(q)}</button>`).join("");
+$("#chatPresets").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) askCopilot(b.textContent); });
 
 // ---------- alert channels + deep links ----------
 async function loadNotify() {

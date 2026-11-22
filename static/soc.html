@@ -116,6 +116,20 @@
       <span id="wfMsg" class="muted"></span>
     </div>
     <ul id="wfNotes" class="wfnotes"></ul>
+    <div class="copilot" id="copilot">
+      <div class="cp-head">
+        <h3>✦ AI SOC Copilot <small class="muted" id="aiStatus"></small></h3>
+        <span><button id="aiSummBtn" type="button" data-perm="ai.use">สรุปด้วย AI</button>
+          <button id="aiRefresh" type="button" class="ghost sm" data-perm="ai.use" hidden>สร้างใหม่</button></span>
+      </div>
+      <div id="aiOut" class="ai-out"><p class="muted">กด "สรุปด้วย AI" เพื่อสรุปเหตุการณ์ ไทม์ไลน์ และขั้นตอนรับมือ</p></div>
+      <div class="chat" data-perm="ai.use">
+        <ul id="chatLog" class="chat-log"></ul>
+        <form id="chatForm" class="hunt"><input id="chatQ" maxlength="4000" autocomplete="off"
+          placeholder="ถาม Copilot เช่น เครื่องไหนควร isolate ก่อน? มีหลักฐาน exfiltration ไหม?"><button>ถาม</button></form>
+        <div class="presets" id="chatPresets"></div>
+      </div>
+    </div>
   </section>
 
   <section class="card span3" id="agentCard">

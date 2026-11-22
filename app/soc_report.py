@@ -67,6 +67,7 @@ ul{{padding-left:18px}} .foot{{margin-top:28px;color:#5d6673;font-size:11px}}
 <tr><td>MITRE ATT&amp;CK / ATLAS</td><td>{_e(', '.join(t for t, _ in techniques if t))}</td></tr>
 <tr><td>Tactics</td><td>{_e(' → '.join(inc.get('tactics', [])))}</td></tr>
 </table>
+{_ai_section(inc.get("ai"))}
 <h2>Timeline ของ alert</h2>
 <table><tr><th>เวลา</th><th>ระดับ</th><th>โดเมน</th><th>เหตุการณ์ / หลักฐาน</th><th>Host / ผู้ใช้</th><th>Technique</th><th>CTI</th></tr>{rows}</table>
 <h2>บันทึกของ analyst</h2><ul>{notes}</ul>
@@ -74,6 +75,20 @@ ul{{padding-left:18px}} .foot{{margin-top:28px;color:#5d6673;font-size:11px}}
 <p class=foot>ผลจาก detection rule เป็นสัญญาณให้ตรวจสอบ ไม่ใช่ข้อสรุป ต้องยืนยันด้วยหลักฐานจากระบบต้นทางก่อนสรุปผลหรือดำเนินการทางกฎหมาย ·
 Mapping ATT&amp;CK/ATLAS เป็นแนวทาง · เวลาแสดงเป็น UTC</p>
 </body></html>"""
+
+
+def _ai_section(a: dict | None) -> str:
+    if not a:
+        return ""
+    src = (f"สร้างโดย AI ({_e(a.get('model'))}) — ต้องตรวจสอบก่อนใช้ตัดสินใจ" if a.get("source") == "claude"
+           else f"สรุปแบบกฎ (ไม่ใช้ AI) — {_e(a.get('note'))}")
+    acts = "".join(f"<li><b>[{_e(x.get('priority'))}]</b> {_e(x.get('action'))} <span class=s>— {_e(x.get('owner'))}</span></li>"
+                   for x in a.get("recommended_actions", []))
+    qs = "".join(f"<li>{_e(q)}</li>" for q in a.get("open_questions", []))
+    return (f"<h2>สรุปเหตุการณ์ (AI SOC Copilot)</h2><p><b>{_e(a.get('headline'))}</b></p><p>{_e(a.get('summary'))}</p>"
+            f"<p class=s>การประเมิน: {_e(a.get('assessment'))} · ความมั่นใจ: {_e(a.get('confidence'))} · {src}</p>"
+            f"<h2>ขั้นตอนรับมือที่แนะนำ</h2><ul>{acts or '<li class=s>-</li>'}</ul>"
+            + (f"<h2>คำถามที่ต้องหาคำตอบต่อ</h2><ul>{qs}</ul>" if qs else ""))
 
 
 CSV_FIELDS = ["id", "title", "severity", "status", "assignee", "real", "coordinated", "first_seen_utc", "last_seen_utc",

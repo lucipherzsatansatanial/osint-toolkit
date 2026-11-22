@@ -159,3 +159,34 @@ button.pill:hover { filter: none; background: var(--hover); }
 .token-box code { display: inline-block; font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; margin: 6px 6px 0 0; word-break: break-all; }
 .roles { margin-top: 10px; font-size: 13px; color: var(--muted); } .roles summary { cursor: pointer; }
 .roles li b { color: var(--text); }
+
+/* AI copilot */
+.copilot { margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--panel)), var(--panel)); }
+.cp-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.cp-head h3 { margin: 0; color: var(--accent); }
+.ai-out { font-size: 14px; }
+.ai-out h4 { margin: 12px 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.ai-head { font-size: 16px; font-weight: 700; margin: 4px 0; }
+.ai-badges { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.ai-badges span { font-size: 11px; border-radius: 99px; padding: 1px 9px; background: var(--chip); color: var(--muted); }
+.ai-badges .likely_malicious { background: var(--bad-bg); color: var(--bad-ink); }
+.ai-badges .suspicious { background: var(--warn-bg); color: var(--warn-ink); }
+.ai-badges .likely_benign { background: var(--ok-bg); color: var(--ok-ink); }
+.ai-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 1000px) { .ai-grid { grid-template-columns: minmax(0, 1fr); } }
+.ai-actions { list-style: none; margin: 0; padding: 0; }
+.ai-actions li { display: grid; grid-template-columns: 74px 1fr; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line2); font-size: 13px; }
+.ai-actions .p { font-size: 10px; font-weight: 700; text-transform: uppercase; border-radius: 6px; padding: 2px 6px; height: fit-content; text-align: center; }
+.ai-actions .p.now { background: var(--critical); color: #fff; } .ai-actions .p.today { background: var(--warn-bg); color: var(--warn-ink); }
+.ai-actions .p.follow_up { background: var(--chip); color: var(--muted); }
+.ai-actions small { color: var(--muted); display: block; }
+.ai-foot { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.chat { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.chat-log { list-style: none; margin: 0 0 8px; padding: 0; max-height: 320px; overflow: auto; font-size: 14px; }
+.chat-log li { padding: 8px 10px; border-radius: 10px; margin-bottom: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-log li.user { background: var(--accent-soft); margin-left: 15%; }
+.chat-log li.assistant { background: var(--chip); margin-right: 10%; }
+.chat-log li small { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
