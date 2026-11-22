@@ -1,30 +1,57 @@
 <!doctype html>
-<html lang="th">
+<html lang="th" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SOC Threat Dashboard</title>
+  <title>SOC Threat Monitor</title>
+  <script>try { if (localStorage.getItem("theme") === "dark") document.documentElement.dataset.theme = "dark"; } catch (e) {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/soc.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand">
-    <span class="logo">◈</span> SOC Threat Dashboard
-    <span class="sub"><b class="c-edr">EDR</b> · <b class="c-xdr">XDR</b> · <b class="c-cti">CTI</b> · <b class="c-agent">AI Agent</b></span>
+<div class="app">
+<aside class="side">
+  <div class="side-brand">
+    <div class="logo-box"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M12 8v5M12 16h.01"/></svg></div>
+    <div><b>SOC Threat Monitor</b><small>EDR · XDR · CTI · AI AGENT</small></div>
   </div>
+  <nav class="nav" id="nav">
+    <div class="nav-h">ศูนย์ปฏิบัติการ</div>
+    <a href="#top" class="on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>ภาพรวม</span></a>
+    <a href="#sec-edr"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>EDR · Endpoints</span><em id="nb-ep">0</em></a>
+    <a href="#sec-xdr"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5l2.8 8M16 7.5l-2.8 8M8.5 6h7"/></svg><span>XDR · Incidents</span><em id="nb-inc">0</em></a>
+    <a href="#sec-stream"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Alert stream</span></a>
+    <a href="#agentCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16.5h5"/></svg><span>Agentic AI</span><em id="nb-agent">0</em></a>
+    <a href="#offaiCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M12 8v5M12 16h.01"/></svg><span>Offensive AI</span><em id="nb-off">0</em></a>
+    <a href="#sec-cti"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg><span>Threat Intelligence</span></a>
+    <div class="nav-h">Workspace</div>
+    <a href="#hunting"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span>Threat hunting</span></a>
+    <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l6-6M14 4h6v6M20 4l-9 9"/></svg><span>OSINT Toolkit</span></a>
+  </nav>
+  <button id="themeBtn" class="theme-btn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z"/></svg><span>Dark Mode</span></button>
+</aside>
+
+<div class="main" id="top">
+<header class="topbar">
   <div class="status">
     <span id="live" class="pill off"><i></i><span>offline</span></span>
     <span id="modePill" class="pill warn" title="SIMULATED = demo generator · LIVE = only real logs sent to /api/soc/ingest">Telemetry: SIMULATED</span>
     <span id="ctiStatus" class="pill">CTI: …</span>
-    <span id="clock" class="mono muted"></span>
-    <a href="/" class="link">← OSINT Toolkit</a>
   </div>
+  <span id="clock" class="clock"></span>
 </header>
 
 <div id="keyBar" class="keybar" hidden>
   <label>API key <input id="apiKey" type="password" autocomplete="off"></label>
   <button id="connectBtn">เชื่อมต่อ</button>
   <span id="keyMsg" class="muted"></span>
+</div>
+
+<div class="page-head">
+  <h1>ศูนย์เฝ้าระวังภัยคุกคามไซเบอร์ <span class="tag">Live</span></h1>
+  <p>ภาพรวม EDR · XDR · Cyber Threat Intelligence และ AI Agent แบบเรียลไทม์ พร้อม correlation ข้ามโดเมน</p>
 </div>
 
 <main class="grid">
@@ -37,7 +64,7 @@
     <div class="kpi"><span>Critical / High</span><b id="k-crit">–</b><small id="k-crit-s"></small></div>
   </section>
 
-  <section class="card span2">
+  <section class="card span2 chart-card">
     <h2>Live telemetry throughput <small class="muted">events / 5 วินาที ย้อนหลัง 5 นาที</small></h2>
     <div class="legend" id="legend"></div>
     <canvas id="flow" height="170"></canvas>
@@ -48,19 +75,19 @@
     <div id="tactics" class="tactics"></div>
   </section>
 
-  <section class="card">
-    <h2><span class="c-edr">EDR</span> — Endpoints</h2>
+  <section class="card" id="sec-edr">
+    <h2><span class="c-edr">EDR</span> · Endpoints</h2>
     <div class="tbl-wrap"><table class="tbl" id="endpoints">
-      <thead><tr><th>Host</th><th>OS</th><th>สถานะ</th><th>RTP</th><th>Alerts</th></tr></thead><tbody></tbody>
+      <thead><tr><th>Host / OS</th><th>สถานะ</th><th>RTP</th><th>Alerts</th></tr></thead><tbody></tbody>
     </table></div>
   </section>
 
-  <section class="card">
-    <h2><span class="c-xdr">XDR</span> — Correlated incidents <button id="incCsv" class="ghost sm" title="incident จาก log จริงที่บันทึกไว้">Export CSV</button></h2>
+  <section class="card" id="sec-xdr">
+    <h2><span class="c-xdr">XDR</span> · Correlated incidents <button id="incCsv" class="ghost sm" title="incident จาก log จริงที่บันทึกไว้">Export CSV</button></h2>
     <div id="incidents" class="incidents"></div>
   </section>
 
-  <section class="card">
+  <section class="card" id="sec-stream">
     <h2>Live alert stream <button id="pause" class="ghost sm">หยุดชั่วคราว</button></h2>
     <div class="filters" id="filters"></div>
     <ul id="stream" class="stream"></ul>
@@ -87,7 +114,7 @@
   </section>
 
   <section class="card span3" id="agentCard">
-    <h2><span class="c-agent">Agentic AI</span> — Threat Detection &amp; Hunting
+    <h2><span class="c-agent">Agentic AI</span> · Threat Detection &amp; Hunting
       <small class="muted">AI Agent Audit Logs · Tool Invocation · Process Tree · Network · Permissions</small></h2>
     <div class="agent-grid">
       <div>
@@ -106,7 +133,7 @@
         <h3>Agent audit log (live) <small class="muted">คลิกแถวเพื่อเปิด session</small></h3>
         <ul id="agentLog" class="alog"></ul>
       </div>
-      <div>
+      <div id="hunting">
         <h3>Threat hunting</h3>
         <form id="huntForm" class="hunt"><input id="huntQ" placeholder="เช่น agent:support kind:tool_call decision:denied" autocomplete="off"><button>ค้นหา</button></form>
         <div class="presets" id="presets"></div>
@@ -124,7 +151,7 @@
   </section>
 
   <section class="card span3" id="offaiCard">
-    <h2><span class="c-off">Offensive AI Agents</span> — Detection Rules, Hunting Queries &amp; Indicators
+    <h2><span class="c-off">Offensive AI Agents</span> · Detection Rules, Hunting Queries &amp; Indicators
       <small class="muted" id="offaiFeed"></small></h2>
     <div id="frameworks" class="fw-grid"></div>
     <div class="agent-grid">
@@ -146,8 +173,8 @@
     </div>
   </section>
 
-  <section class="card span3">
-    <h2><span class="c-cti">Cyber Threat Intelligence</span> — แหล่งข้อมูลจริง
+  <section class="card span3" id="sec-cti">
+    <h2><span class="c-cti">Cyber Threat Intelligence</span> · แหล่งข้อมูลจริง
       <button id="ctiRefresh" class="ghost sm">รีเฟรช</button></h2>
     <div class="cti">
       <div><h3>CISA KEV <small id="kev-meta" class="muted"></small></h3><ul id="kev" class="list"></ul></div>
@@ -161,6 +188,8 @@
   Telemetry ที่ไม่มีป้าย <b>REAL</b> เป็น<b>ข้อมูลจำลอง</b> เพื่อสาธิต (ปิดได้ด้วย SOC_SIMULATION=off) · log จริงส่งเข้าที่ /api/soc/ingest · CTI ดึงจริงจาก CISA KEV, abuse.ch และ ThreatDefence agentic-attack-detections (MIT) (cache 15 นาที) ·
   เหตุการณ์ C2/exploit จำลองจะอ้างอิง IP/CVE จริงจาก CTI เมื่อดึงได้
 </footer>
+</div>
+</div>
 <script src="/static/soc.js"></script>
 </body>
 </html>

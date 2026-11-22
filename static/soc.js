@@ -89,6 +89,8 @@ function setKpi(id, v) {
 function renderStats(s) {
   state.lastStats = s;
   setKpi("#k-epm", s.events_per_min);
+  $("#nb-inc").textContent = s.open_incidents;
+  $("#nb-ep").textContent = s.endpoints.healthy + s.endpoints.at_risk + s.endpoints.compromised;
   setKpi("#k-open", s.open_incidents);
   setKpi("#k-coord", s.coordinated);
   setKpi("#k-cti", s.cti_hits);
@@ -116,7 +118,7 @@ function drawSpark() {
   ctx.clearRect(0, 0, w, h);
   ctx.beginPath();
   sparkHist.forEach((v, i) => { const x = (i / 59) * w, y = h - (v / max) * (h - 3) - 1; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-  ctx.strokeStyle = css("--edr"); ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.5; ctx.stroke();
 }
 
 function fit(c) {
@@ -141,7 +143,7 @@ function drawFlow() {
   const c = $("#flow"), ctx = fit(c), w = c.clientWidth, h = c.clientHeight, pad = 22;
   ctx.clearRect(0, 0, w, h);
   const data = state.buckets, max = Math.max(4, ...data.map((b) => Math.max(...DOMAINS.map((d) => b[d]))));
-  ctx.strokeStyle = "#1a2440"; ctx.fillStyle = css("--muted"); ctx.font = "10px system-ui"; ctx.lineWidth = 1;
+  ctx.strokeStyle = css("--grid"); ctx.fillStyle = css("--muted"); ctx.font = "10px system-ui"; ctx.lineWidth = 1;
   for (let g = 0; g <= 2; g++) {
     const y = pad / 2 + (h - pad) * (g / 2);
     ctx.beginPath(); ctx.moveTo(28, y); ctx.lineTo(w, y); ctx.stroke();
@@ -185,7 +187,7 @@ function addEvent(e, animate) {
 function renderEndpoints(eps) {
   const order = { compromised: 0, at_risk: 1, healthy: 2 };
   eps = [...eps].sort((a, b) => order[a.status] - order[b.status] || b.alerts - a.alerts);
-  $("#endpoints tbody").innerHTML = eps.map((p) => `<tr><td>${esc(p.host)}</td><td class="muted">${esc(p.os)}</td>
+  $("#endpoints tbody").innerHTML = eps.map((p) => `<tr><td>${esc(p.host)}<div class="sub">${esc(p.os)}</div></td>
     <td><span class="st ${esc(p.status)}">${esc(p.status.replace("_", " "))}</span></td>
     <td style="color:var(${p.realtime_protection ? "--cti" : "--critical"})">${p.realtime_protection ? "On" : "OFF"}</td>
     <td>${p.alerts}</td></tr>`).join("");
@@ -223,18 +225,18 @@ function renderDetail(inc) {
   doms.forEach((d, i) => {
     const yy = y(i, doms.length), col = css("--" + d), n = inc.alerts.filter((a) => a.domain === d).length;
     svg += `<path class="flow" d="M170 ${yy} C 260 ${yy}, 280 ${H / 2}, 330 ${H / 2}" stroke="${col}" fill="none" stroke-width="2"/>
-      <rect x="20" y="${yy - 20}" width="150" height="40" rx="8" fill="#0d1424" stroke="${col}"/>
+      <rect x="20" y="${yy - 20}" width="150" height="40" rx="8" fill="${css("--node-bg")}" stroke="${col}"/>
       <text x="34" y="${yy - 3}" style="fill:${col};font-weight:700;text-transform:uppercase">${esc(d)}</text>
       <text x="34" y="${yy + 13}" style="fill:${css("--muted")};font-size:11px">${n} alert(s)</text>`;
   });
   hosts.forEach((h, i) => {
     const yy = y(i, hosts.length);
-    svg += `<path d="M450 ${H / 2} C 500 ${H / 2}, 510 ${yy}, 560 ${yy}" stroke="#3b4a72" fill="none" stroke-width="1.5"/>
-      <rect x="560" y="${yy - 14}" width="145" height="28" rx="6" fill="#0d1424" stroke="#3b4a72"/>
+    svg += `<path d="M450 ${H / 2} C 500 ${H / 2}, 510 ${yy}, 560 ${yy}" stroke="${css("--node-line")}" fill="none" stroke-width="1.5"/>
+      <rect x="560" y="${yy - 14}" width="145" height="28" rx="6" fill="${css("--node-bg")}" stroke="${css("--node-line")}"/>
       <text x="572" y="${yy + 4}" style="font-family:var(--mono);font-size:11px">${esc(h)}</text>`;
   });
   const sc = css("--" + inc.severity);
-  svg += `<rect x="330" y="${H / 2 - 32}" width="120" height="64" rx="10" fill="#1a0d22" stroke="${sc}" stroke-width="2"/>
+  svg += `<rect x="330" y="${H / 2 - 32}" width="120" height="64" rx="10" fill="${css("--hub-bg")}" stroke="${sc}" stroke-width="2"/>
     <text x="390" y="${H / 2 - 8}" text-anchor="middle" style="fill:${sc};font-weight:700;font-size:11px">${inc.coordinated ? "COORDINATED" : "INCIDENT"}</text>
     <text x="390" y="${H / 2 + 10}" text-anchor="middle" style="font-weight:700">#${inc.id}</text>
     <text x="390" y="${H / 2 + 24}" text-anchor="middle" style="fill:${css("--muted")};font-size:10px">${inc.alerts.length} correlated</text>`;
@@ -288,6 +290,7 @@ $("#incCsv").onclick = () => download("/api/soc/incidents.csv", "soc-incidents.c
 const RULE_SEV = {};
 function renderAgents(list) {
   state.agents = list;
+  $("#nb-agent").textContent = list.length;
   $("#agents tbody").innerHTML = list.map((a) => `<tr><td class="mono">${esc(a.id)}<div class="muted" style="font-family:inherit">owner ${esc(a.owner)}</div></td>
     <td class="mono">${esc(a.host)}</td><td title="${esc((a.scopes || []).join(", "))}">${a.scopes ? a.scopes.length : "?"}${a.shell ? ' <span class="muted">+shell</span>' : ""}</td>
     <td>${a.calls}</td><td style="color:var(${a.denied ? "--high" : "--muted"})">${a.denied}</td>
@@ -384,6 +387,7 @@ function renderOffai(o) {
     <div class="n"><span>${esc(f.name)}</span><b title="detections">${f.hits}</b></div><div class="d">${esc(f.desc)}</div>
     <div class="t">${f.indicators ? `${f.indicators} indicators · ${Object.entries(f.by_type).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}` : "indicator feed ยังไม่โหลด"}</div></div>`).join("");
   o.rules.forEach((r) => { OFF_SEV[r.id] = r.severity; });
+  $("#nb-off").textContent = o.rules.reduce((n, r) => n + r.hits, 0);
   $("#offaiRules").innerHTML = o.rules.map((r) => `<li class="${r.hits ? "hit" : ""}"><span class="mono">${esc(r.id)}</span>
     <span>${esc(r.title)} <span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span>
     <span class="muted">· ${esc(r.technique)} · ${esc(r.tactic)}</span></span><b>${r.hits}</b></li>`).join("");
@@ -474,5 +478,35 @@ $("#connectBtn").onclick = () => { store.set("apiKey", $("#apiKey").value); conn
 setInterval(() => { $("#clock").textContent = new Date().toLocaleString("th-TH", { hour12: false }); }, 1000);
 setInterval(() => loadCti(false), 5 * 60 * 1000);
 window.addEventListener("resize", () => { drawFlow(); drawSpark(); });
+// ---------- theme + navigation ----------
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $("#themeBtn span").textContent = t === "dark" ? "Light Mode" : "Dark Mode";
+  drawFlow(); drawSpark();
+  if (state.selected) { const cur = state.incidents.find((i) => i.id === state.selected); if (cur) renderDetail(cur); }
+}
+$("#themeBtn").onclick = () => {
+  const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  try { localStorage.setItem("theme", t); } catch {}
+  applyTheme(t);
+};
+$("#themeBtn span").textContent = document.documentElement.dataset.theme === "dark" ? "Light Mode" : "Dark Mode";
+(() => {  // highlight the sidebar item of the section in view
+  const links = [...document.querySelectorAll("#nav a[href^='#']")];
+  const targets = links.map((a) => document.querySelector(a.getAttribute("href"))).filter(Boolean);
+  if (!("IntersectionObserver" in window)) return;
+  const seen = new Map();
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => seen.set(e.target, e.isIntersecting ? e.intersectionRatio : 0));
+    let best = null, ratio = 0;
+    for (const t of targets) if ((seen.get(t) || 0) > ratio && t.id !== "top") { best = t; ratio = seen.get(t); }
+    if (window.scrollY < 120) best = document.getElementById("top");
+    if (!best) return;
+    links.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + best.id));
+  }, { threshold: [0, .15, .4, .7] });
+  targets.forEach((t) => io.observe(t));
+  window.addEventListener("scroll", () => { if (window.scrollY < 120) links.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#top")); }, { passive: true });
+})();
+
 renderTactics({});
 connect();
