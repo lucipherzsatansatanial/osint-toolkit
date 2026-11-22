@@ -36,6 +36,12 @@
 
 ข้อมูลประกอบ (จากการค้นหา ยังไม่ยืนยัน): persistent disk ~$0.25/GB-เดือน, Render Postgres storage ~$0.30/GB-เดือน, Postgres compute แยกจาก storage (ราคาแต่ละระดับแหล่งข้อมูลไม่ตรงกัน)
 
+## ตัวเลือก A ที่ตั้งค่าไว้แล้วใน `render.yaml`
+- `plan: starter` + disk `soc-data` 1 GB ที่ `/var/data`
+- `OSINT_DB_PATH=/var/data/osint.db`, backup ทุก 6 ชม. เก็บ 14 ชุดที่ `/var/data/backups`
+- container เริ่มเป็น root เฉพาะเพื่อมอบสิทธิ์ disk ให้ user `osint` แล้วลดสิทธิ์ถาวรก่อนรันแอป (`docker/entrypoint.py`)
+- backup บน disk เดียวกันช่วยเรื่องไฟล์เสีย/ลบผิด แต่**ไม่ช่วยถ้า disk หาย** → ดาวน์โหลด backup ออกนอกระบบอย่างน้อยสัปดาห์ละครั้ง
+
 ## ข้อแนะนำ
 1. **ตอนนี้ (นำร่อง)**: ตัวเลือก A — เปลี่ยนจาก free เป็นแผนเสียเงิน, เพิ่ม disk เล็ก (เช่น 1–5 GB), ตั้ง `OSINT_DB_PATH=/var/data/osint.db`, `SOC_BACKUP_DIR=/var/data/backups`, และดาวน์โหลด backup ออกนอกระบบสัปดาห์ละครั้ง
 2. **ก่อนรับลูกค้ารายที่ 4+ หรือมี SLA**: วางแผนตัวเลือก B เป็นโครงการแยก

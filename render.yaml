@@ -2,16 +2,30 @@ services:
   - type: web
     name: osint-toolkit
     runtime: docker
-    plan: free
+    plan: starter          # paid instance: required for a persistent disk; does not sleep
     region: singapore
     healthCheckPath: /healthz
+    disk:                  # incidents, users, rules and the audit log survive deploys and restarts
+      name: soc-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: OSINT_API_KEY
         sync: false   # Render asks you to type a password during deploy
       - key: OSINT_NAMESERVERS
         value: 1.1.1.1,8.8.8.8
       - key: OSINT_DB_PATH
-        value: /tmp/osint.db
+        value: /var/data/osint.db
+      - key: SOC_BACKUP_DIR
+        value: /var/data/backups
+      - key: SOC_BACKUP_HOURS
+        value: "6"
+      - key: SOC_BACKUP_KEEP
+        value: "14"
+      - key: SOC_PUBLIC_URL
+        value: https://osint-toolkit-fepe.onrender.com
+      - key: ANTHROPIC_API_KEY
+        sync: false
       - key: HIBP_API_KEY
         sync: false
       - key: IPINFO_TOKEN
