@@ -62,7 +62,8 @@ def test_soc_endpoints(client, monkeypatch):
     monkeypatch.setattr(app.main.threatintel, "get_all", fake_cti)
     assert client.get("/api/soc/snapshot").status_code == 401
     snap = client.get("/api/soc/snapshot", headers=H).json()
-    assert snap["simulated"] is True and len(snap["endpoints"]) == 14 and len(snap["agents"]) == 5
+    k = app.main.settings.soc_scale
+    assert snap["simulated"] is True and len(snap["endpoints"]) == 14 * k and len(snap["agents"]) == 5 * k
     assert client.get("/api/soc/cti", headers=H).json()["kev"]["ok"]
     assert client.get("/soc").status_code == 200
 

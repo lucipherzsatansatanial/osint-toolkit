@@ -142,9 +142,10 @@ class AgentSim:
                            ("shell.exec", "pytest -q", 0), ("pkg.install", "pip install httpx", 0)],
     }
 
-    def __init__(self, rng, agents: dict[str, dict]):
+    def __init__(self, rng, agents: dict[str, dict], scale: int = 1):
         self.rng = rng
         self.agents = agents
+        self.scale = scale
         self.ids = itertools.count(1)
         self.sess_ids = itertools.count(1)
         self.pids = itertools.count(4100)
@@ -164,10 +165,10 @@ class AgentSim:
 
     def step(self, now: float) -> list[dict]:
         out = []
-        for _ in range(self.rng.choices([0, 1, 2], [3, 5, 2])[0]):
+        for _ in range(sum(self.rng.choices([0, 1, 2], [3, 5, 2])[0] for _ in range(self.scale))):
             aid = self.rng.choice(list(self.agents))
             sid = self._session(aid)
-            tool, args, nbytes = self.rng.choice(self.BENIGN[aid])
+            tool, args, nbytes = self.rng.choice(self.BENIGN[base_agent(aid)])
             out.append(self._rec(now, aid, sid, "tool_call", f"{tool}({args})", tool=tool, args=args, bytes=nbytes,
                                  dest=args.split("dest=")[1] if "dest=" in args else None))
             if tool == "shell.exec":
@@ -177,7 +178,7 @@ class AgentSim:
                                      ppid=self.runtime_pid[aid], image="bash", cmdline=f"bash -c '{cmd}'"))
             if self.rng.random() < 0.25:
                 dest = self.rng.choice(self.agents[aid]["egress"])
-                if aid == "devops-agent" and self.rng.random() < 0.15:
+                if base_agent(aid) == "devops-agent" and self.rng.random() < 0.15:
                     dest = "raw.githubusercontent.com"  # noisy, unapproved but benign
                 out.append(self._rec(now, aid, sid, "network", f"TLS → {dest}:443", dest=dest,
                                      ip=f"10.20.{self.rng.randint(0, 9)}.{self.rng.randint(2, 250)}",
@@ -187,9 +188,9 @@ class AgentSim:
 
     def _attack_step(self, now: float) -> list[dict]:
         if self.attack is None:
-            if now < self.next_attack_at or self.rng.random() > 0.08:
+            if now < self.next_attack_at or self.rng.random() > min(0.5, 0.08 * self.scale):
                 return []
-            aid = self.rng.choice(["support-copilot", "finance-rpa"])
+            aid = self.rng.choice([a for a in self.agents if base_agent(a) in ("support-copilot", "finance-rpa")])
             self.attack = {"agent": aid, "session": f"S-{next(self.sess_ids):05d}", "stage": 0,
                            "user": self.rng.choice(["finance.ops", "ap.clerk", "hr.admin", "exec.assistant"])}
         a = self.attack
@@ -247,13 +248,28 @@ def _agent_state(a: dict) -> dict:
             "recent": deque(maxlen=50)}
 
 
+def demo_agents(scale: int = 1) -> list[dict]:
+    """The demo inventory, plus (scale - 1) copies of every agent on other hosts / accounts (e.g. support-copilot-2)."""
+    out = [dict(a) for a in AGENTS]
+    for k in range(2, scale + 1):
+        for a in AGENTS:
+            host = re.sub(r"(\d+)$", lambda m: f"{int(m.group(1)) + 10 * (k - 1):0{len(m.group(1))}d}", a["host"])
+            out.append({**a, "id": f"{a['id']}-{k}", "host": host, "account": f"{a['account']}{k}",
+                        "owner": a.get("owner", "")})
+    return out
+
+
+def base_agent(aid: str) -> str:
+    return re.sub(r"-\d+$", "", aid) if re.search(r"-\d+$", aid) and re.sub(r"-\d+$", "", aid) in {a["id"] for a in AGENTS} else aid
+
+
 class AgentMonitor:
-    def __init__(self, rng, demo_inventory: bool = True):
+    def __init__(self, rng, demo_inventory: bool = True, scale: int = 1):
         self.agents = {a["id"]: _agent_state({**a, "registered": True, "demo": True})
-                       for a in (AGENTS if demo_inventory else [])}
+                       for a in (demo_agents(scale) if demo_inventory else [])}
         self.detector = Detector(self.agents)
-        self.sim = AgentSim(rng, self.agents)
-        self.records: deque[dict] = deque(maxlen=2000)
+        self.sim = AgentSim(rng, self.agents, scale)
+        self.records: deque[dict] = deque(maxlen=2000 * scale)
         self.rule_hits: Counter = Counter()
 
     def contain(self, agent_id: str, on: bool = True) -> dict:

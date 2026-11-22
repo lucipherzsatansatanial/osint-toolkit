@@ -197,6 +197,10 @@ class Detector:
         self.procs: dict[tuple, dict] = {}  # (host, pid) -> process
         self.fanout: dict[str, deque] = defaultdict(deque)  # source -> (ts, tool)
         self.inbound: dict[str, deque] = defaultdict(deque)  # target -> (ts, src_ip, status)
+        # running per-target counts over the same window, so OAI-004 is O(1) per request instead of O(window)
+        self.inbound_n: dict[str, Counter] = defaultdict(Counter)    # target -> requests per source IP
+        self.inbound_err: dict[str, Counter] = defaultdict(Counter)  # target -> 4xx/5xx per source IP
+        self.probers: dict[str, set] = defaultdict(set)              # target -> source IPs that look like probes
         self.stages: dict[str, dict] = defaultdict(dict)  # entity -> stage -> ts
         self.fired: dict[tuple, float] = {}
         self.index = IndicatorIndex()
@@ -397,20 +401,35 @@ class Detector:
                     and self._once(("OAI-008", entity, rec.get("src_ip")), now):
                 out.append(("OAI-008", {"src_ip": rec.get("src_ip"), "requests": len(b), "distinct_paths": paths,
                                         "error_ratio": round(errors / len(b), 2)}))
-            q = self.inbound[entity]
-            q.append((now, rec.get("src_ip"), rec.get("status")))
-            while q and now - q[0][0] > PROXY_WINDOW:
-                q.popleft()
             # count "probe-like" sources: few requests each, mostly errors. Normal visitors (mostly 2xx)
             # and single heavy scanners (many requests from one IP) are excluded.
-            per_ip, err_ip = Counter(), Counter()
-            for _, ip, status in q:
-                per_ip[ip] += 1
-                err_ip[ip] += 1 if status and status >= 400 else 0
-            probers = [ip for ip, n in per_ip.items() if n <= 5 and err_ip[ip] / n >= 0.6]
+            q, n_ip, e_ip, pset = self.inbound[entity], self.inbound_n[entity], self.inbound_err[entity], self.probers[entity]
+
+            def touch(ip):
+                n = n_ip.get(ip, 0)
+                if n and n <= 5 and e_ip.get(ip, 0) / n >= 0.6:
+                    pset.add(ip)
+                else:
+                    pset.discard(ip)
+            ip, st = rec.get("src_ip"), rec.get("status")
+            q.append((now, ip, st))
+            n_ip[ip] += 1
+            if st and st >= 400:
+                e_ip[ip] += 1
+            touch(ip)
+            while q and now - q[0][0] > PROXY_WINDOW:
+                _, old_ip, old_st = q.popleft()
+                n_ip[old_ip] -= 1
+                if old_st and old_st >= 400:
+                    e_ip[old_ip] -= 1
+                if n_ip[old_ip] <= 0:
+                    n_ip.pop(old_ip, None)
+                    e_ip.pop(old_ip, None)
+                touch(old_ip)
+            probers = pset
             if len(probers) >= PROXY_IPS and self._once(("OAI-004", entity), now):
                 out.append(("OAI-004", {"distinct_ips": len(probers),
-                                        "requests": sum(per_ip[ip] for ip in probers)}))
+                                        "requests": sum(n_ip[ip] for ip in probers)}))
         for ind in self.index.match(rec):
             fw = ind.get("framework", "")
             if "antifox" in (ind["_v"] + " " + (ind.get("context") or "")).lower() and "antifox" not in fw:
@@ -624,8 +643,11 @@ class OffensiveAIMonitor:
                                          **extra}})
         return alerts
 
-    def step(self, now: float) -> list[dict]:
-        return self.ingest(self.sim.step(now), now)
+    def step(self, now: float, scale: int = 1) -> list[dict]:
+        recs = []
+        for _ in range(scale):
+            recs.extend(self.sim.step(now))
+        return self.ingest(recs, now)
 
     def summary(self) -> dict:
         idx = threatintel.agentic_index() or []

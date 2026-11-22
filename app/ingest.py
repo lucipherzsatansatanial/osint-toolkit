@@ -29,8 +29,10 @@ import time
 from datetime import datetime
 from urllib.parse import urlsplit
 
-MAX_BYTES = 5_000_000
-MAX_RECORDS = 5000
+from app.config import settings
+
+MAX_BYTES = 5_000_000 * settings.soc_scale     # per request (default 25 MB)
+MAX_RECORDS = 5000 * settings.soc_scale        # per request (default 25,000)
 MAX_STR = 2000
 FORMATS = ("auto", "native", "ecs", "defender", "access_log")
 TELEMETRY_KINDS = {"process", "http", "net", "logon", "db", "dlp"}

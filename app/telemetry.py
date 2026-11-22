@@ -12,6 +12,7 @@ merged into one incident. An incident spanning >= 2 domains with at least one hi
 import asyncio
 import itertools
 import random
+import re
 import time
 from collections import Counter, deque
 from typing import Any
@@ -37,7 +38,21 @@ HOSTS = [("FIN-WS-014", "Windows 11", "finance.ops"), ("FIN-WS-022", "Windows 11
          ("SRV-DC-01", "Windows Server 2022", "svc.backup"), ("SRV-FILE-02", "Windows Server 2022", "svc.files"),
          ("SRV-WEB-01", "Ubuntu 22.04", "svc.web"), ("SRV-SQL-01", "Windows Server 2019", "svc.sql"),
          ("SRV-AI-01", "Ubuntu 24.04", "svc.ai.support"), ("SRV-AI-02", "Ubuntu 24.04", "svc.ai.devops")]
-COUNTRIES = ["TH", "SG", "US", "NL", "RU", "CN", "VN", "DE", "BR", "KR"]
+BASE_HOSTS = HOSTS
+COUNTRIES = ["TH", "SG", "US", "NL", "RU", "CN", "VN", "DE", "BR", "KR", "JP", "IN", "ID", "MY", "PH", "HK", "TW", "AU",
+             "GB", "FR", "IT", "ES", "PL", "UA", "TR", "IR", "IL", "AE", "SA", "EG", "ZA", "NG", "KE", "CA", "MX", "AR",
+             "CL", "CO", "PE", "SE", "NO", "FI", "DK", "CH", "AT", "BE", "CZ", "RO", "KZ", "PK"]
+
+
+def scaled_hosts(scale: int) -> list[tuple[str, str, str]]:
+    """The 14 demo hosts plus (scale - 1) copies per department, e.g. FIN-WS-114 / finance.ops2 (simulated)."""
+    out = list(BASE_HOSTS)
+    for k in range(2, scale + 1):
+        for name, os_, user in BASE_HOSTS:
+            m = re.search(r"(\d+)$", name)
+            step = 10 if name.startswith("SRV") else 100
+            out.append((name[:m.start()] + f"{int(m.group(1)) + step * (k - 1):0{len(m.group(1))}d}", os_, f"{user}{k}"))
+    return out
 
 # (domain, title, severity, MITRE technique, tactic)
 NOISE = [
@@ -79,7 +94,7 @@ KIND_SOURCE = {"process": "EDR process", "http": "Web / proxy", "net": "Network 
                "tool_call": "AI agent audit", "llm_call": "AI agent audit", "auth": "AI agent audit"}
 
 
-MAX_ASSETS = 50000
+MAX_ASSETS = 50000 * settings.soc_scale
 PRIORITY_SEV = {"low": "low", "medium": "medium", "high": "high", "critical": "critical"}
 CASE_FIELDS = ("priority", "tags", "custom_fields", "name", "description")
 
@@ -89,7 +104,11 @@ def sev_up(s: str) -> str:
 
 
 class Engine:
-    def __init__(self, seed: int | None = None, max_events: int = 300, simulate: bool = True, tenant: str = "default"):
+    def __init__(self, seed: int | None = None, max_events: int | None = None, simulate: bool = True, tenant: str = "default",
+                 scale: int = 1):
+        self.scale = scale
+        self.hosts = scaled_hosts(scale) if simulate else []
+        max_events = max_events or 300 * scale
         self.tenant = tenant
         self.simulate = simulate
         self.persist = False  # switched on by the app after restore(); tests use in-memory engines
@@ -102,8 +121,8 @@ class Engine:
         self.ioc_lookup = None  # callable -> {indicator value: indicator}; set by the app (tenant IOCs + CTI feeds)
         self._ioc_last: dict[tuple, float] = {}  # rules switched off in the rules catalog (per tenant)
         self.suppressed: Counter = Counter()  # events received per data source, for the "events by data source" widget
-        self._outbox: deque[dict] = deque(maxlen=500)
-        self._agent_outbox: deque[dict] = deque(maxlen=500)
+        self._outbox: deque[dict] = deque(maxlen=500 * scale)
+        self._agent_outbox: deque[dict] = deque(maxlen=500 * scale)
         self.rng = random.Random(seed)
         self.ids = itertools.count(1)
         self.inc_ids = itertools.count(1001)
@@ -111,15 +130,15 @@ class Engine:
         self.incidents: dict[int, dict] = {}
         self.totals: Counter = Counter()
         self.by_tactic: Counter = Counter()
-        self.campaign: dict | None = None
+        self.campaigns: list[dict] = []
         self.next_campaign_at = 0.0
         self.endpoints = {h: {"host": h, "os": os_, "user": u, "status": "healthy",
                               "realtime_protection": True, "last_seen": 0.0, "alerts": 0}
-                          for h, os_, u in (HOSTS if simulate else [])}
-        self.agents = AgentMonitor(self.rng, demo_inventory=simulate)
+                          for h, os_, u in self.hosts}
+        self.agents = AgentMonitor(self.rng, demo_inventory=simulate, scale=scale)
         self.offai = OffensiveAIMonitor(self.rng)
         self.custom = RuleEngine()
-        self.raw: deque[dict] = deque(maxlen=5000)  # recent raw records, for back-testing custom rules
+        self.raw: deque[dict] = deque(maxlen=5000 * scale)  # recent raw records, for back-testing custom rules
         self.last_agent_records: list[dict] = []
 
     # ---------- generation ----------
@@ -151,13 +170,16 @@ class Engine:
             self.last_agent_records = agent_flushed
             return flushed
         out: list[dict] = []
-        for _ in range(self.rng.choices([0, 1, 2, 3], [2, 4, 3, 1])[0]):
+        for _ in range(sum(self.rng.choices([0, 1, 2, 3], [2, 4, 3, 1])[0] for _ in range(self.scale))):
             spec = self.rng.choice(NOISE)
-            host, _, user = self.rng.choice(HOSTS)
+            host, _, user = self.rng.choice(self.hosts)
             out.append(self._event(spec, host, user, now))
-        if self.rng.random() < 0.06:
+        for _ in range(self.scale):
+            if self.rng.random() >= 0.06:
+                continue
             kev = threatintel.kev_cves()
-            extra = {"host": "SRV-WEB-01", "user": "svc.web"}
+            web = self.rng.choice([h for h in self.hosts if h[0].startswith("SRV-WEB")] or [("SRV-WEB-01", "", "svc.web")])
+            extra = {"host": web[0], "user": web[2]}
             if kev:
                 v = self.rng.choice(kev)
                 extra["cve"] = v["cve"]
@@ -166,7 +188,7 @@ class Engine:
         out.extend(self._advance_campaign(now))
         recs, alerts = self.agents.step(now)
         self.last_agent_records = agent_flushed + recs
-        alerts += self.offai.step(now)
+        alerts += self.offai.step(now, self.scale)
         for a in alerts:
             out.append(self._event(a["spec"], a["host"], a["user"], now, **a["extra"]))
         for rec in list(self.offai.last_records) + recs:
@@ -438,24 +460,29 @@ class Engine:
                 yield a, rec
 
     def _advance_campaign(self, now: float) -> list[dict]:
-        if self.campaign is None:
-            if now < self.next_campaign_at or self.rng.random() > 0.25:
-                return []
-            host, _, user = self.rng.choice([h for h in HOSTS if not h[0].startswith("SRV")])
-            self.campaign = {"host": host, "user": user, "stage": 0,
-                             "pivot": self.rng.choice([h[0] for h in HOSTS if h[0].startswith("SRV")])}
-        c = self.campaign
-        if self.rng.random() > 0.45:  # stages unfold over several ticks
-            return []
-        spec = CAMPAIGN[c["stage"]]
-        host = c["pivot"] if spec[1].startswith(("Lateral", "Ransomware")) else c["host"]
-        extra = self._c2() if "C2" in spec[1] else {}
-        ev = self._event(spec, host, c["user"], now, **extra)
-        c["stage"] += 1
-        if c["stage"] >= len(CAMPAIGN) or (c["stage"] > 4 and self.rng.random() < 0.15):
-            self.campaign = None  # contained or completed
-            self.next_campaign_at = now + 45
-        return [ev]
+        """Multi-stage attack campaigns (simulated). Up to `scale` run at the same time on different hosts."""
+        busy = {c["host"] for c in self.campaigns}
+        if len(self.campaigns) < self.scale and now >= self.next_campaign_at and self.rng.random() <= 0.25:
+            free = [h for h in self.hosts if not h[0].startswith("SRV") and h[0] not in busy]
+            if free:
+                host, _, user = self.rng.choice(free)
+                self.campaigns.append({"host": host, "user": user, "stage": 0,
+                                       "pivot": self.rng.choice([h[0] for h in self.hosts if h[0].startswith("SRV")])})
+                if len(self.campaigns) >= self.scale:
+                    self.next_campaign_at = now + 45
+        out = []
+        for c in list(self.campaigns):
+            if self.rng.random() > 0.45:  # stages unfold over several ticks
+                continue
+            spec = CAMPAIGN[c["stage"]]
+            host = c["pivot"] if spec[1].startswith(("Lateral", "Ransomware")) else c["host"]
+            extra = self._c2() if "C2" in spec[1] else {}
+            out.append(self._event(spec, host, c["user"], now, **extra))
+            c["stage"] += 1
+            if c["stage"] >= len(CAMPAIGN) or (c["stage"] > 4 and self.rng.random() < 0.15):
+                self.campaigns.remove(c)  # contained or completed
+                self.next_campaign_at = now + 45 / self.scale
+        return out
 
     # ---------- correlation ----------
     def _ingest(self, ev: dict) -> None:
@@ -514,9 +541,10 @@ class Engine:
         inc["severity"] = sev_up(base) if inc["coordinated"] else base
         inc["title"] = inc.get("name") or ("Coordinated multi-domain attack" if inc["coordinated"]
                                            else inc["alerts"][0]["title"])
-        if len(self.incidents) > 200:  # memory bound: drop oldest inactive (real ones stay in SQLite)
+        cap = 200 * self.scale
+        if len(self.incidents) > cap:  # memory bound: drop oldest inactive (real ones stay in SQLite)
             stale = [k for k in sorted(self.incidents) if self.incidents[k]["status"] not in ACTIVE]
-            for k in stale[:len(self.incidents) - 200]:
+            for k in stale[:len(self.incidents) - cap]:
                 del self.incidents[k]
         return inc["id"]
 
@@ -579,7 +607,8 @@ class Hub:
         e = self.engines.get(tenant)
         if e is None:
             # only the default tenant runs the demo simulator; customer tenants see real data only
-            e = self.engines[tenant] = Engine(simulate=settings.soc_simulation and tenant == soc_store.DEFAULT,
+            e = self.engines[tenant] = Engine(scale=settings.soc_scale,
+                                              simulate=settings.soc_simulation and tenant == soc_store.DEFAULT,
                                               tenant=tenant)
             if self.setup:
                 self.setup(e)

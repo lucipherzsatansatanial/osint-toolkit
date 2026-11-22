@@ -608,8 +608,8 @@ async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("threat
                      "severity": req.severity, "added_by": who.name, "added_at": now,
                      "expires": now + req.expires_days * 86400 if req.expires_days else None, "revoked": False,
                      "valid_from": now, "collection_id": req.collection_id, "kill_chain_phase": req.kill_chain_phase or None})
-    if len(good) > 10000:
-        raise HTTPException(413, "max 10,000 IOCs per request")
+    if len(good) > 10000 * settings.soc_scale:
+        raise HTTPException(413, f"max {10000 * settings.soc_scale:,} IOCs per request")
     soc_store.save_iocs(good, who.tenant)
     _INTEL_CACHE.pop(who.tenant, None)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ioc", target=f"{len(good)} IOCs",
@@ -847,7 +847,7 @@ def _assistant_tools(who: rbac.Principal) -> dict:
         return {"total": r["total"], "items": [{k: a.get(k) for k in keep} for a in r["items"]]}
 
     def search_cases(q: str = "", status: str = ""):
-        merged = {i["id"]: i for i in soc_store.incidents(None, 500, who.tenant)}
+        merged = {i["id"]: i for i in soc_store.incidents(None, 500 * settings.soc_scale, who.tenant)}
         merged.update(eng.incidents)
         rows = [_case_row(i) for i in merged.values()]
         if status:
@@ -1034,8 +1034,8 @@ async def soc_graph_expand(type: str, value: str, limit: int = 25, who: rbac.Pri
 
 class GraphIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    nodes: list[dict] = Field(default_factory=list, max_length=500)
-    edges: list[dict] = Field(default_factory=list, max_length=2000)
+    nodes: list[dict] = Field(default_factory=list, max_length=500 * settings.soc_scale)
+    edges: list[dict] = Field(default_factory=list, max_length=2000 * settings.soc_scale)
 
 
 def _clean_graph(req: GraphIn) -> tuple[list, list]:
@@ -1189,7 +1189,7 @@ def _requests(tenant: str, key: str) -> list[dict]:
 
 
 def _save_requests(tenant: str, key: str, items: list[dict]) -> None:
-    soc_store.set_setting(key, items[-500:], tenant)
+    soc_store.set_setting(key, items[-500 * settings.soc_scale:], tenant)
 
 
 def _new_request(who: rbac.Principal, key: str, body: dict) -> dict:
@@ -1362,8 +1362,8 @@ async def soc_alert_action(req: AlertAction, who: rbac.Principal = Depends(requi
         st.update(status="escalated", incident_id=result["incident_id"])
     st.update(ts=now, by=who.name, reason=req.reason or st.get("reason"))
     states[key] = st
-    if len(states) > 5000:
-        for k in sorted(states, key=lambda k: states[k].get("ts", 0))[: len(states) - 5000]:
+    if len(states) > 5000 * settings.soc_scale:
+        for k in sorted(states, key=lambda k: states[k].get("ts", 0))[: len(states) - 5000 * settings.soc_scale]:
             states.pop(k)
     soc_store.set_setting("alert_state", states, who.tenant)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module=f"soc.alert_{req.action}",
@@ -1587,8 +1587,8 @@ class AgentSpec(BaseModel):
 @app.post("/api/soc/agents/register")
 async def soc_register_agents(items: list[AgentSpec], who: rbac.Principal = Depends(require("agents.edit"))):
     """Upsert real AI agents and what they are allowed to do. Unregistered agents seen in logs raise AGT-011."""
-    if len(items) > 500:
-        raise HTTPException(413, "max 500 agents per request")
+    if len(items) > 500 * settings.soc_scale:
+        raise HTTPException(413, f"max {500 * settings.soc_scale} agents per request")
     specs = [{**a.model_dump(), "account": a.account or a.id} for a in items]
     if _policies(who.tenant)["four_eyes_agents"]:
         reqs = [_new_request(who, "agent_requests", {"spec": sp, "change": "new" if sp["id"] not in E(who).agents.agents
@@ -2129,7 +2129,7 @@ def _case_row(i: dict) -> dict:
 async def soc_cases(status: str = "", priority: str = "", q: str = "", tag: str = "", assignee: str = "",
                     type: str = "", real_only: bool = False, sort: str = "updated", page: int = 1, size: int = 25,
                     who: rbac.Principal = Depends(require("cases.read"))):
-    merged = {i["id"]: i for i in soc_store.incidents(None, 2000, who.tenant)}
+    merged = {i["id"]: i for i in soc_store.incidents(None, 2000 * settings.soc_scale, who.tenant)}
     merged.update(E(who).incidents)
     rows = [_case_row(i) for i in merged.values()]
     if status:
@@ -2254,7 +2254,7 @@ async def soc_asset_set(req: Criticality, who: rbac.Principal = Depends(require(
         cur.pop(req.host, None)
     else:
         cur[req.host] = req.level
-    if len(cur) > 5000:
+    if len(cur) > 5000 * settings.soc_scale:
         raise HTTPException(413, "too many assets")
     soc_store.set_setting("asset_criticality", cur, who.tenant)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.asset", target=f"host:{req.host}",
@@ -2287,7 +2287,7 @@ async def soc_rules_catalog(who: rbac.Principal = Depends(require("rules.read"))
     now = time.time()
     events = _tenant_events(who, now - 7 * 86400, now)
     incs = dict(E(who).incidents)
-    for i in soc_store.incidents(None, 2000, who.tenant):
+    for i in soc_store.incidents(None, 2000 * settings.soc_scale, who.tenant):
         incs.setdefault(i["id"], i)
     out = catalog.catalog(soc_store.list_rules(who.tenant), E(who).disabled_rules, events, incs, now)
     out["suppressed_since_start"] = dict(E(who).suppressed)
@@ -2448,7 +2448,7 @@ async def soc_overview(who: rbac.Principal = Depends(require("soc.read"))):
     hist = _tenant_events(who, now - 2 * 86400, now)
     cur_a = sum(1 for e in hist if e["ts"] >= now - 86400 and e.get("severity") not in ("info", "low"))
     prev_a = sum(1 for e in hist if e["ts"] < now - 86400 and e.get("severity") not in ("info", "low"))
-    merged = {i["id"]: i for i in soc_store.incidents(None, 500, who.tenant)}
+    merged = {i["id"]: i for i in soc_store.incidents(None, 500 * settings.soc_scale, who.tenant)}
     merged.update(eng.incidents)
     cur_c = sum(1 for i in merged.values() if (i.get("first_ts") or 0) >= now - 86400)
     prev_c = sum(1 for i in merged.values() if now - 2 * 86400 <= (i.get("first_ts") or 0) < now - 86400)

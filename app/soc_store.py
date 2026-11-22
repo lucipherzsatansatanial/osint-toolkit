@@ -18,7 +18,7 @@ from app.config import settings
 _lock = threading.Lock()
 RETENTION_DAYS = int(os.getenv("SOC_RETENTION_DAYS", "90"))
 RAW_RETENTION_DAYS = int(os.getenv("SOC_RAW_RETENTION_DAYS", "7"))  # raw logs for the events explorer
-INBOX_KEEP = 500
+INBOX_KEEP = 500 * settings.soc_scale
 DEFAULT = "default"
 
 SCHEMA = """
@@ -124,7 +124,10 @@ def save_endpoints(endpoints: list[dict], tenant: str = DEFAULT) -> None:
                           [(tenant, e["host"], _dump(e)) for e in endpoints])
 
 
-def load(tenant: str = DEFAULT, event_limit: int = 300, incident_limit: int = 200, record_limit: int = 2000) -> dict:
+def load(tenant: str = DEFAULT, event_limit: int | None = None, incident_limit: int | None = None,
+         record_limit: int | None = None) -> dict:
+    k = settings.soc_scale
+    event_limit, incident_limit, record_limit = event_limit or 300 * k, incident_limit or 200 * k, record_limit or 2000 * k
     with _lock, _conn() as c:
         q = lambda sql, *a: [json.loads(r["doc"]) for r in c.execute(sql, (tenant, *a))]  # noqa: E731
         ev = q("SELECT doc FROM soc2_events WHERE tenant = ? ORDER BY id DESC LIMIT ?", event_limit)

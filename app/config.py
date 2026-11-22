@@ -20,7 +20,9 @@ class Settings:
     http_timeout: float = float(os.getenv("OSINT_HTTP_TIMEOUT", "10"))
     db_path: str = os.getenv("OSINT_DB_PATH", "data/osint.db")
     rate_limit_per_min: int = int(os.getenv("OSINT_RATE_LIMIT", "30"))  # scans and other writes
-    read_rate_limit_per_min: int = int(os.getenv("OSINT_READ_RATE_LIMIT", "300"))  # dashboard GETs (polling widgets)
+    read_rate_limit_per_min: int = int(os.getenv("OSINT_READ_RATE_LIMIT", "300"))
+    # one multiplier for demo-data volume and real-data capacity (in-memory windows, batch sizes, caps); 1 = original size
+    soc_scale: int = max(1, min(20, int(os.getenv("SOC_SCALE", "5") or 5)))  # dashboard GETs (polling widgets)
     # SOC dashboard: "off" = real ingested telemetry only (no simulator).
     soc_simulation: bool = os.getenv("SOC_SIMULATION", "on").strip().lower() not in ("off", "0", "false", "no")
     # Start CTI refresh + ticker at app start (off in unit tests to avoid network access).
