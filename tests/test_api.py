@@ -75,3 +75,10 @@ def test_soc_agent_hunt_and_contain(client):
     assert client.post("/api/soc/agents/support-copilot/contain", headers=H, json=body).json()["status"] == "contained"
     hist = client.get("/api/history", headers=H).json()
     assert hist[0]["module"] == "soc.contain" and hist[0]["target"] == "support-copilot"
+
+
+def test_soc_offensive_ai_pack(client):
+    r = client.get("/api/soc/offensive-ai", headers=H).json()
+    assert len(r["rules"]) == 7 and len(r["frameworks"]) == 8
+    langs = {q["lang"] for q in r["queries"]}
+    assert langs == {"KQL", "SPL", "Sigma"} and all(q["title"] and "comment(" not in q["title"] for q in r["queries"])

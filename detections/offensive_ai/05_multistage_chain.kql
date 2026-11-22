@@ -1,0 +1,31 @@
+// OAI-005 Autonomous multi-stage chain: >=3 of recon / scan / exploit / post on one entity within 15 minutes
+let recon = dynamic(["nmap","masscan","naabu","subfinder","amass","httpx","katana","whatweb","dnsx"]);
+let scan = dynamic(["nuclei","ffuf","gobuster","feroxbuster","dirsearch","sqlmap","nikto","wpscan","dalfox"]);
+let exploit = dynamic(["msfconsole","hydra","medusa","searchsploit","interactsh-client"]);
+let post = dynamic(["netexec","nxc","crackmapexec","impacket-secretsdump","secretsdump.py","psexec.py","kerbrute","responder","mimikatz","rubeus","evil-winrm","chisel"]);
+let oast = @"(?i)(\.oast\.(fun|pro|live|site|online|me)|interact\.sh|burpcollaborator\.net|oastify\.com|dnslog\.cn|webhook\.site)";
+let proc = DeviceProcessEvents
+    | where Timestamp > ago(1d)
+    | extend Tool = tolower(replace_regex(FileName, @"\.exe$", ""))
+    | extend Stage = case(Tool in (recon), "recon", Tool in (scan), "scan", Tool in (exploit), "exploit",
+        Tool in (post), "post", ProcessCommandLine has ":OSPROBE_", "post", "")
+    | where isnotempty(Stage)
+    | project Timestamp, Entity = DeviceName, Stage, Evidence = ProcessCommandLine;
+let net = DeviceNetworkEvents
+    | where Timestamp > ago(1d)
+    | extend Stage = case(RemoteUrl matches regex oast, "exploit", RemotePort between (28000 .. 29999), "post", "")
+    | where isnotempty(Stage)
+    | project Timestamp, Entity = DeviceName, Stage, Evidence = strcat(RemoteUrl, " ", RemoteIP, ":", RemotePort);
+let web = W3CIISLog
+    | where TimeGenerated > ago(1d)
+    | extend Stage = case(csUriQuery has ":OSPROBE_" or csUriQuery matches regex @"(?i)(^|&)(cmd|c|pass)=", "post",
+        csMethod == "POST" and csUriStem matches regex @"(?i)(upload|\.jsp|\.php)" and scStatus == "200", "exploit",
+        csUriStem matches regex @"(?i)(/\.env|/\.git/|/wp-config|/etc/passwd|\.\./|/actuator|/server-status)", "scan",
+        scStatus == "404", "recon", "")
+    | where isnotempty(Stage)
+    | project Timestamp = TimeGenerated, Entity = Computer, Stage, Evidence = strcat(csMethod, " ", csUriStem, "?", csUriQuery);
+union proc, net, web
+| summarize Stages = make_set(Stage), Evidence = make_set(Evidence, 20), First = min(Timestamp), Last = max(Timestamp)
+    by Entity, Window = bin(Timestamp, 15m)
+| where array_length(Stages) >= 3 and (set_has_element(Stages, "exploit") or set_has_element(Stages, "post"))
+| order by Window desc

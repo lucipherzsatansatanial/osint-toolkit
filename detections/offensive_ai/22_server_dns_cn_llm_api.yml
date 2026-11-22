@@ -1,0 +1,32 @@
+title: DNS Query To Chinese AI Model API Provider
+id: 4d2b0e73-e33d-43ff-9bee-5f8341953f0d
+status: experimental
+description: >-
+  Detects DNS resolution of model APIs of providers based in mainland China. Offensive AI agents seen in the
+  wild ran on DeepSeek, GLM and similar models. Scope to servers and exclude approved AI workloads.
+references:
+  - https://github.com/ThreatDefence/agentic-attack-detections
+author: IDA SOC
+date: 2026-11-22
+tags:
+  - attack.command-and-control
+  - attack.t1071.001
+logsource:
+  category: dns_query
+detection:
+  selection:
+    QueryName|endswith:
+      - 'api.deepseek.com'
+      - 'dashscope.aliyuncs.com'
+      - 'dashscope-intl.aliyuncs.com'
+      - 'open.bigmodel.cn'
+      - 'api.moonshot.cn'
+      - 'api.minimax.chat'
+      - 'api.minimaxi.com'
+      - 'ark.cn-beijing.volces.com'
+      - 'api.siliconflow.cn'
+      - 'qianfan.baidubce.com'
+  condition: selection
+falsepositives:
+  - Sanctioned use of these providers by approved applications
+level: medium

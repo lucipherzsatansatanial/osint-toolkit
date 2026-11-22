@@ -111,6 +111,29 @@
     </div>
   </section>
 
+  <section class="card span3" id="offaiCard">
+    <h2><span class="c-off">Offensive AI Agents</span> — Detection Rules, Hunting Queries &amp; Indicators
+      <small class="muted" id="offaiFeed"></small></h2>
+    <div id="frameworks" class="fw-grid"></div>
+    <div class="agent-grid">
+      <div>
+        <h3>Behaviour rules <small class="muted">ทนต่อการเปลี่ยน UA/banner มากกว่า IOC</small></h3>
+        <ul id="offaiRules" class="rules"></ul>
+        <h3 style="margin-top:12px">Live detections</h3>
+        <ul id="offaiLive" class="stream off-live"></ul>
+      </div>
+      <div>
+        <h3>Hunting query library <small class="muted">Defender XDR / Sentinel · Splunk · Sigma</small></h3>
+        <div class="presets" id="qTabs"></div>
+        <ul id="qList" class="qlist"></ul>
+        <div id="qBox" hidden>
+          <div class="qhead"><b id="qTitle"></b><span><button id="qCopy" class="mini">คัดลอก</button> <button id="qDl" class="mini release">ดาวน์โหลด</button></span></div>
+          <pre id="qCode" class="code"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="card span3">
     <h2><span class="c-cti">Cyber Threat Intelligence</span> — แหล่งข้อมูลจริง
       <button id="ctiRefresh" class="ghost sm">รีเฟรช</button></h2>
@@ -123,7 +146,7 @@
 </main>
 
 <footer class="foot">
-  Telemetry EDR/XDR และ AI Agent audit log บนหน้านี้เป็น <b>ข้อมูลจำลอง</b> เพื่อสาธิต correlation logic · CTI ดึงจริงจาก CISA KEV และ abuse.ch (cache 15 นาที) ·
+  Telemetry EDR/XDR และ AI Agent audit log บนหน้านี้เป็น <b>ข้อมูลจำลอง</b> เพื่อสาธิต correlation logic · CTI ดึงจริงจาก CISA KEV, abuse.ch และ ThreatDefence agentic-attack-detections (MIT) (cache 15 นาที) ·
   เหตุการณ์ C2/exploit จำลองจะอ้างอิง IP/CVE จริงจาก CTI เมื่อดึงได้
 </footer>
 <script src="/static/soc.js"></script>

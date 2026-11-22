@@ -4,11 +4,16 @@ Feeds (fixed URLs, never user-supplied, so no SSRF surface):
 - CISA Known Exploited Vulnerabilities (KEV) catalog
 - abuse.ch Feodo Tracker: botnet C2 servers (Emotet/QakBot/Dridex/...)
 - abuse.ch ThreatFox: recent IOCs (export may need an Auth-Key in future; failure is non-fatal)
+- ThreatDefence agentic-attack-detections (MIT): indicators for offensive AI-agent frameworks
+  (ARTEX/AntiFox, Cairn, PentAGI, HexStrike, CyberStrikeAI, Strix, Hermes Agent, Agent Zero)
 
 Results are cached in memory for CACHE_TTL seconds; a failed feed keeps its last good copy.
 """
 import asyncio
+import csv
+import io
 import time
+from datetime import date
 from typing import Any
 
 from app.modules.common import http_client
@@ -17,6 +22,7 @@ FEEDS = {
     "kev": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
     "feodo": "https://feodotracker.abuse.ch/downloads/ipblocklist.json",
     "threatfox": "https://threatfox.abuse.ch/export/json/recent/",
+    "agentic": "https://raw.githubusercontent.com/ThreatDefence/agentic-attack-detections/main/iocs/indicators.csv",
 }
 CACHE_TTL = 900
 TOP = 30
@@ -74,7 +80,36 @@ def parse_threatfox(raw: dict) -> dict:
     return {"total": len(flat), "by_threat_type": by_type, "items": items}
 
 
-PARSERS = {"kev": parse_kev, "feodo": parse_feodo, "threatfox": parse_threatfox}
+def parse_agentic(text: str, today: date | None = None) -> dict:
+    """CSV columns: type,value,confidence,context,actor,source,source_url,reported,review_by,framework.
+    Rows past their review_by date are dropped (addresses age out; the maintainers set 180 days)."""
+    today = today or date.today()
+    rows, expired = [], 0
+    for r in csv.DictReader(io.StringIO(text)):
+        if not r.get("type") or not r.get("value"):
+            continue
+        rb = (r.get("review_by") or "").strip()
+        try:
+            if rb and date.fromisoformat(rb) < today:
+                expired += 1
+                continue
+        except ValueError:
+            pass
+        rows.append({k: (r.get(k) or "").strip() for k in
+                     ("type", "value", "confidence", "context", "actor", "source", "source_url", "reported",
+                      "framework")})
+    by_fw: dict[str, int] = {}
+    for r in rows:
+        for fw in r["framework"].split():
+            by_fw[fw] = by_fw.get(fw, 0) + 1
+    recent = sorted(rows, key=lambda r: r["reported"], reverse=True)
+    items = [{k: r[k] for k in ("type", "value", "confidence", "framework", "source", "source_url", "reported")}
+             | {"context": r["context"][:200]} for r in recent if r["confidence"] == "high"][:TOP]
+    return {"total": len(rows), "expired": expired, "by_framework": by_fw, "items": items, "rows": rows}
+
+
+PARSERS = {"kev": parse_kev, "feodo": parse_feodo, "threatfox": parse_threatfox, "agentic": parse_agentic}
+TEXT_FEEDS = {"agentic"}
 
 
 async def _fetch(client, name: str) -> dict:
@@ -82,7 +117,7 @@ async def _fetch(client, name: str) -> dict:
     try:
         r = await client.get(FEEDS[name])
         r.raise_for_status()
-        data = PARSERS[name](r.json())
+        data = PARSERS[name](r.text if name in TEXT_FEEDS else r.json())
         return {"ok": True, "fetched_at": t0, "source": FEEDS[name], "data": data}
     except Exception as e:  # noqa: BLE001 - one feed failing must not sink the dashboard
         prev = _cache.get(name)
@@ -101,6 +136,19 @@ async def get_all(force: bool = False) -> dict[str, dict]:
                 results = await asyncio.gather(*(_fetch(client, n) for n in due))
             _cache.update(zip(due, results))
         return {n: _cache[n] for n in FEEDS}
+
+
+def public(feeds: dict[str, dict]) -> dict[str, dict]:
+    """Strip bulky internal fields (full indicator rows) before sending to the browser."""
+    out = {}
+    for n, f in feeds.items():
+        data = f.get("data")
+        out[n] = {**f, "data": {k: v for k, v in data.items() if k != "rows"}} if data else f
+    return out
+
+
+def agentic_index() -> list[dict]:
+    return ((_cache.get("agentic") or {}).get("data") or {}).get("rows") or []
 
 
 def c2_ips() -> list[str]:

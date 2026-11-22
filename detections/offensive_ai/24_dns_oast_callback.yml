@@ -1,0 +1,33 @@
+title: DNS Query To Out-Of-Band Interaction Service From Server
+id: 2d7f73b8-7c8c-40bc-8df6-d9e58a83e3e4
+status: experimental
+description: >-
+  Detects lookups of OAST / request-collector domains that AI pentest agents (and their nuclei/interactsh
+  tooling) use to confirm blind exploitation. Scope to servers; security teams may use these legitimately.
+references:
+  - https://github.com/ThreatDefence/agentic-attack-detections
+author: IDA SOC
+date: 2026-11-22
+tags:
+  - attack.command-and-control
+  - attack.t1071.004
+logsource:
+  category: dns_query
+detection:
+  selection:
+    QueryName|endswith:
+      - '.oast.fun'
+      - '.oast.pro'
+      - '.oast.live'
+      - '.oast.site'
+      - '.oast.online'
+      - '.oast.me'
+      - '.interact.sh'
+      - '.burpcollaborator.net'
+      - '.oastify.com'
+      - '.dnslog.cn'
+      - 'webhook.site'
+  condition: selection
+falsepositives:
+  - Internal security testing
+level: medium

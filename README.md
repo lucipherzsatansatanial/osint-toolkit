@@ -60,6 +60,24 @@ API: `GET /api/soc/snapshot`, `GET /api/soc/cti?refresh=true`, `GET /api/soc/str
 
 API: `GET /api/soc/agents`, `GET /api/soc/agents/sessions/{sid}`, `GET /api/soc/hunt?q=`, `POST /api/soc/agents/{id}/contain`
 
+### Offensive AI Agent Detection (ARTEX/AntiFox, Cairn, PentAGI, HexStrike, CyberStrikeAI, Strix, Hermes Agent, Agent Zero)
+
+ตรวจจับ**ผู้โจมตีที่ใช้ AI Agent** จาก telemetry ของ EDR / NDR / web log (`app/offensive_ai.py`) แบ่ง 2 ชั้น:
+
+| Rule | พฤติกรรม |
+|---|---|
+| OAI-001 | AI agent CLI ถูกเปิดแบบปิดการขออนุมัติ (`--dangerously-skip-permissions`, `--yolo`, `HERMES_YOLO_MODE` ฯลฯ) แล้วเรียกเครื่องมือโจมตี |
+| OAI-002 | เซิร์ฟเวอร์ติดต่อ API โมเดล AI ภายนอก — ผู้ให้บริการจากจีน (DeepSeek, Qwen, GLM, Kimi, MiniMax, Doubao ฯลฯ) ยกเป็น high |
+| OAI-003 | เรียกเครื่องมือโจมตีหลายชนิดอย่างรวดเร็วจากแหล่งเดียว (≥4 ชนิด / 2 นาที) |
+| OAI-004 | สแกนผ่าน proxy หมุนเวียน (≥20 IP ที่ยิงน้อยครั้งและเกือบทั้งหมด error ใส่เป้าเดียวใน 5 นาที) |
+| OAI-005 | ทำงานหลายขั้นต่อเนื่อง recon → scan → exploit → post บน entity เดียวภายใน 15 นาที |
+| OAI-006 | ตรง indicator ของ framework (UA, string, ไฟล์, docker image, IP, domain) |
+| OAI-007 | Callback ไปบริการ OAST (interactsh, Burp Collaborator, dnslog.cn ฯลฯ) |
+
+- Indicator ดึงสดจาก [ThreatDefence/agentic-attack-detections](https://github.com/ThreatDefence/agentic-attack-detections) (MIT) — ตัดรายการที่เลย `review_by` และไม่ alert รายการ confidence ต่ำ
+- Hunting query: `detections/offensive_ai/` — KQL (Defender XDR/Sentinel), SPL (Splunk), Sigma; แสดงและคัดลอก/ดาวน์โหลดได้จากหน้า dashboard — ดูสถานะการทดสอบใน `detections/offensive_ai/README.md`
+- API: `GET /api/soc/offensive-ai`
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -81,7 +99,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (56 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (65 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

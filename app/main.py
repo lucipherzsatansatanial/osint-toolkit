@@ -2,6 +2,7 @@
 import asyncio
 import hmac
 import json
+import re
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -130,7 +131,27 @@ async def soc_snapshot(_: str = Depends(guard)):
 
 @app.get("/api/soc/cti")
 async def soc_cti(refresh: bool = False, _: str = Depends(guard)):
-    return await threatintel.get_all(force=refresh)
+    return threatintel.public(await threatintel.get_all(force=refresh))
+
+
+@app.get("/api/soc/offensive-ai")
+async def soc_offensive_ai(_: str = Depends(guard)):
+    """Offensive AI-agent framework coverage, rule hit counts and the hunting query library."""
+    return {**hub.engine.offai.summary(), "queries": hunting_pack()}
+
+
+def hunting_pack() -> list[dict]:
+    root = Path(__file__).resolve().parent.parent / "detections" / "offensive_ai"
+    out = []
+    for f in sorted(root.glob("*")) if root.exists() else []:
+        if f.suffix in (".kql", ".spl", ".yml"):
+            text = f.read_text(encoding="utf-8")
+            first = next((ln for ln in text.splitlines() if ln.strip()), f.stem)
+            m = re.search(r'comment\("([^"]+)"\)', first) or re.match(r"\s*(?://|title:)\s*(.+)", first)
+            title = m.group(1).strip() if m else f.stem
+            out.append({"file": f.name, "lang": {".kql": "KQL", ".spl": "SPL", ".yml": "Sigma"}[f.suffix],
+                        "title": title, "query": text})
+    return out
 
 
 @app.get("/api/soc/agents")

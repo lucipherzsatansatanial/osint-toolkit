@@ -1,0 +1,10 @@
+// OAI-003 Many different attack tools launched quickly from one source (machine-speed fan-out)
+let tools = dynamic(["nmap","masscan","naabu","subfinder","httpx","katana","nuclei","ffuf","gobuster","feroxbuster","dirsearch","sqlmap","nikto","wpscan","hydra","msfconsole","netexec","nxc","crackmapexec","kerbrute","responder","impacket-secretsdump","secretsdump.py","psexec.py","interactsh-client","evil-winrm","chisel"]);
+DeviceProcessEvents
+| where Timestamp > ago(1d)
+| extend Tool = tolower(replace_regex(FileName, @"\.exe$", ""))
+| where Tool in (tools)
+| summarize Tools = make_set(Tool), DistinctTools = dcount(Tool), Runs = count()
+    by DeviceName, AccountName, bin(Timestamp, 2m)
+| where DistinctTools >= 4 or Runs >= 30
+| order by Timestamp desc

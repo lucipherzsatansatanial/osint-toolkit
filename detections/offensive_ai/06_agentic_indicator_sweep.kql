@@ -1,0 +1,27 @@
+// OAI-006 Sweep for offensive AI-agent framework indicators (ARTEX/AntiFox, Cairn, PentAGI, HexStrike,
+// CyberStrikeAI, Strix, Hermes Agent, Agent Zero) using the ThreatDefence community list (MIT licence).
+// Low-confidence rows are legitimate services; they are excluded here. IIS logs encode spaces in UAs as '+'.
+let iocs = externaldata(type:string, value:string, confidence:string, context:string, actor:string, source:string,
+        source_url:string, reported:string, review_by:string, framework:string)
+    [@"https://raw.githubusercontent.com/ThreatDefence/agentic-attack-detections/main/iocs/indicators.csv"]
+    with (format="csv", ignoreFirstRecord=true)
+    | where confidence in ("high", "medium")
+    | where isempty(review_by) or todatetime(review_by) > now();
+let esc = (s:string) { replace_regex(s, @"([\\.^$|?*+()\[\]{}])", @"\\\1") };
+let uaRegex = toscalar(iocs | where type == "user_agent" | extend v = esc(value)
+    | summarize strcat("(?i)(", strcat_array(make_list(v), "|"), ")"));
+let ips = iocs | where type == "ipv4" | project RemoteIP = value, framework, confidence;
+let domains = iocs | where type == "domain" | project value;
+union
+    (W3CIISLog | where TimeGenerated > ago(30d)
+        | extend UA = replace_string(csUserAgent, "+", " ")
+        | where UA matches regex uaRegex
+        | project Timestamp = TimeGenerated, Entity = Computer, Evidence = UA, Source = "web user agent"),
+    (DeviceNetworkEvents | where Timestamp > ago(30d)
+        | join kind=inner ips on RemoteIP
+        | project Timestamp, Entity = DeviceName, Evidence = strcat(RemoteIP, " (", framework, ", ", confidence, ")"),
+            Source = "network ip"),
+    (DeviceNetworkEvents | where Timestamp > ago(30d) and isnotempty(RemoteUrl)
+        | where RemoteUrl has_any (domains)
+        | project Timestamp, Entity = DeviceName, Evidence = RemoteUrl, Source = "network domain")
+| order by Timestamp desc

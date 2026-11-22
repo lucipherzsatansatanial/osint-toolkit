@@ -17,6 +17,7 @@ from collections import Counter, deque
 from typing import Any
 
 from app.agent_detect import AgentMonitor
+from app.offensive_ai import OffensiveAIMonitor
 from app.modules import threatintel
 
 DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "agent"]
@@ -84,6 +85,7 @@ class Engine:
                               "realtime_protection": True, "last_seen": 0.0, "alerts": 0}
                           for h, os_, u in HOSTS}
         self.agents = AgentMonitor(self.rng)
+        self.offai = OffensiveAIMonitor(self.rng)
         self.last_agent_records: list[dict] = []
 
     # ---------- generation ----------
@@ -119,6 +121,7 @@ class Engine:
         out.extend(self._advance_campaign(now))
         recs, alerts = self.agents.step(now)
         self.last_agent_records = recs
+        alerts += self.offai.step(now)
         for a in alerts:
             out.append(self._event(a["spec"], a["host"], a["user"], now, **a["extra"]))
         for ev in out:
@@ -181,7 +184,8 @@ class Engine:
             if val not in inc[key]:
                 inc[key].append(val)
         inc["alerts"].append({k: ev.get(k) for k in ("id", "ts", "domain", "title", "severity", "technique",
-                                                     "host", "cti_match", "agent", "session")})
+                                                     "host", "cti_match", "agent", "session", "rule",
+                                                     "framework", "detector")})
         base = max((a["severity"] for a in inc["alerts"]), key=SEV.index)
         inc["coordinated"] = len(inc["domains"]) >= 2 and SEV.index(base) >= SEV.index("high")
         inc["severity"] = sev_up(base) if inc["coordinated"] else base
@@ -220,7 +224,7 @@ class Engine:
         return {"events": list(self.events)[-80:], "incidents": self.incident_list(),
                 "endpoints": list(self.endpoints.values()), "stats": self.stats(), "simulated": True,
                 "agents": self.agents.inventory(), "agent_records": list(self.agents.records)[-60:],
-                "rules": self.agents.rules()}
+                "rules": self.agents.rules(), "offai": self.offai.summary()}
 
     def incident_list(self) -> list[dict]:
         return sorted(self.incidents.values(), key=lambda i: (i["status"] != "open", -i["last_ts"]))[:25]
@@ -263,7 +267,7 @@ class Hub:
                    or tick % 10 == 0 else None,
                    "endpoints": list(self.engine.endpoints.values()) if events else None,
                    "agent_records": self.engine.last_agent_records, "agents": self.engine.agents.inventory(),
-                   "rules": self.engine.agents.rules()}
+                   "rules": self.engine.agents.rules(), "offai": self.engine.offai.summary()}
             for q in list(self.subs):
                 if q.qsize() < 50:
                     q.put_nowait(msg)

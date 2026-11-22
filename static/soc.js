@@ -25,7 +25,7 @@ async function connect() {
     if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
     $("#keyBar").hidden = true;
     setLive(true);
-    loadCti();
+    loadCti(); loadQueries();
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
     for (;;) {
@@ -57,6 +57,8 @@ function handle(chunk) {
     renderIncidents(msg.incidents); renderEndpoints(msg.endpoints); renderStats(msg.stats);
     $("#agentLog").innerHTML = ""; msg.agent_records.forEach((r) => addAgentRecord(r, false));
     renderAgents(msg.agents); renderRules(msg.rules);
+    $("#offaiLive").innerHTML = ""; msg.events.filter((e) => e.detector === "offensive-ai").forEach((e) => addOffai(e, false));
+    renderOffai(msg.offai);
   } else if (ev === "tick") {
     msg.events.forEach((e) => addEvent(e, true));
     pushBucket(msg.events);
@@ -65,6 +67,8 @@ function handle(chunk) {
     renderStats(msg.stats);
     msg.agent_records.forEach((r) => addAgentRecord(r, true));
     renderAgents(msg.agents); renderRules(msg.rules);
+    msg.events.filter((e) => e.detector === "offensive-ai").forEach((e) => addOffai(e, true));
+    renderOffai(msg.offai);
     if (state.session && msg.agent_records.some((r) => r.session === state.session)) openSession(state.session, false);
   }
 }
@@ -322,6 +326,55 @@ async function hunt() {
   } catch (e) { $("#huntRes").innerHTML = `<li class="err">${esc(e.message)}</li>`; }
 }
 
+// ---------- Offensive AI agents ----------
+const OFF_SEV = {};
+function renderOffai(o) {
+  if (!o) return;
+  $("#frameworks").innerHTML = o.frameworks.map((f) => `<div class="fw ${f.hits ? "hot" : ""}">
+    <div class="n"><span>${esc(f.name)}</span><b title="detections">${f.hits}</b></div><div class="d">${esc(f.desc)}</div>
+    <div class="t">${f.indicators ? `${f.indicators} indicators · ${Object.entries(f.by_type).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}` : "indicator feed ยังไม่โหลด"}</div></div>`).join("");
+  o.rules.forEach((r) => { OFF_SEV[r.id] = r.severity; });
+  $("#offaiRules").innerHTML = o.rules.map((r) => `<li class="${r.hits ? "hit" : ""}"><span class="mono">${esc(r.id)}</span>
+    <span>${esc(r.title)} <span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span>
+    <span class="muted">· ${esc(r.technique)} · ${esc(r.tactic)}</span></span><b>${r.hits}</b></li>`).join("");
+}
+function addOffai(e, animate) {
+  if (state.paused) return;
+  const li = document.createElement("li");
+  li.style.setProperty("--c", css("--off"));
+  if (!animate) li.style.animation = "none";
+  const extra = [e.provider && `${e.provider} (${e.region})`, e.indicator && `IOC: ${e.indicator}`, e.tools && e.tools.join(", "),
+    e.stages && e.stages.join(" → "), e.distinct_ips && `${e.distinct_ips} IPs / ${e.requests} req`, e.agent_cmdline].filter(Boolean).map(esc).join(" · ");
+  li.innerHTML = `<span class="mono muted">${hhmmss(e.ts)}</span><i class="d"></i>
+    <div><span class="sev" style="--sevc:var(--${esc(e.severity)})">${esc(e.severity)}</span> ${esc(e.title)}
+    <div class="x">${esc(e.host)} · ${esc(e.user)} · ${esc(e.technique)}${extra ? " · " + extra : ""}
+    ${/^https:\/\//.test(e.source_url || "") ? ` · <a class="link" target="_blank" rel="noopener" href="${esc(e.source_url)}">source</a>` : ""}</div></div>`;
+  const ul = $("#offaiLive"); ul.prepend(li);
+  while (ul.children.length > 40) ul.lastChild.remove();
+}
+const Q = { all: [], lang: "ทั้งหมด", sel: null };
+async function loadQueries() {
+  try { const d = await api("/api/soc/offensive-ai"); Q.all = d.queries; renderOffai(d); renderQueries(); } catch (e) { /* retried on reconnect */ }
+}
+function renderQueries() {
+  const langs = ["ทั้งหมด", ...new Set(Q.all.map((q) => q.lang))];
+  $("#qTabs").innerHTML = langs.map((l) => `<button type="button" class="${l === Q.lang ? "on" : ""}" data-l="${esc(l)}">${esc(l)}</button>`).join("");
+  const list = Q.all.filter((q) => Q.lang === "ทั้งหมด" || q.lang === Q.lang);
+  $("#qList").innerHTML = list.map((q) => `<li data-f="${esc(q.file)}" class="${q.file === Q.sel ? "sel" : ""}"><span class="lang">${esc(q.lang)}</span><span>${esc(q.title)}</span></li>`).join("");
+}
+$("#qTabs").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) { Q.lang = b.dataset.l; renderQueries(); } });
+$("#qList").addEventListener("click", (ev) => {
+  const li = ev.target.closest("li"); if (!li) return;
+  const q = Q.all.find((x) => x.file === li.dataset.f); Q.sel = q.file; renderQueries();
+  $("#qBox").hidden = false; $("#qTitle").textContent = `${q.file}`; $("#qCode").textContent = q.query;
+});
+$("#qCopy").onclick = async () => { try { await navigator.clipboard.writeText($("#qCode").textContent); $("#qCopy").textContent = "คัดลอกแล้ว"; setTimeout(() => { $("#qCopy").textContent = "คัดลอก"; }, 1500); } catch {} };
+$("#qDl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([$("#qCode").textContent], { type: "text/plain" }));
+  a.download = Q.sel || "query.txt"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
 // ---------- CTI ----------
 async function loadCti(force) {
   $("#ctiStatus").textContent = "CTI: กำลังดึง…";
@@ -331,8 +384,12 @@ async function loadCti(force) {
     const f = await r.json();
     const ok = Object.values(f).filter((x) => x.ok).length;
     const el = $("#ctiStatus");
-    el.textContent = `CTI: ${ok}/3 feeds live`;
-    el.className = "pill " + (ok === 3 ? "ok" : ok ? "warn" : "bad");
+    const n = Object.keys(f).length;
+    el.textContent = `CTI: ${ok}/${n} feeds live`;
+    el.className = "pill " + (ok === n ? "ok" : ok ? "warn" : "bad");
+    const ag = f.agentic;
+    $("#offaiFeed").textContent = ag?.data ? `indicators: ${ag.data.total} (หมดอายุตัดออก ${ag.data.expired}) · ${ag.stale ? "STALE · " : ""}อัปเดต ${hhmmss(ag.fetched_at)}`
+      : `indicator feed ดึงไม่สำเร็จ — ใช้ seed ในตัว (${ag?.error || ""})`;
     renderFeed("kev", f.kev, (d) => `${d.total.toLocaleString()} CVE · ransomware ${d.ransomware_linked}`,
       (v) => `<span class="k">${esc(v.cve)}</span>${v.ransomware ? '<span class="tag">ransomware</span>' : ""}
         <div>${esc(v.vendor)} ${esc(v.product)} — ${esc(v.name)}</div><div class="muted">added ${esc(v.date_added)} · due ${esc(v.due)}</div>`);

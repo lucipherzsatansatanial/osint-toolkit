@@ -1,0 +1,8 @@
+`comment("OAI-002 Servers resolving external AI model APIs, Chinese providers flagged (Sysmon EventCode 22). Set your server naming and approved hosts.")`
+index=sysmon EventCode=22 host=SRV* NOT host IN ("SRV-AI-01","SRV-AI-02")
+| eval q=lower(QueryName)
+| where match(q, "(^|\.)(api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.x\.ai|api\.mistral\.ai|api\.groq\.com|openrouter\.ai|api\.together\.xyz|api\.deepseek\.com|dashscope(-intl)?\.aliyuncs\.com|open\.bigmodel\.cn|api\.moonshot\.cn|api\.minimaxi?\.(chat|com)|ark\.cn-beijing\.volces\.com|api\.siliconflow\.cn|qianfan\.baidubce\.com)$")
+| eval region=if(match(q, "deepseek|aliyuncs|bigmodel|moonshot|minimax|volces|siliconflow|baidubce"), "CN", "non-CN")
+| stats count min(_time) as first_seen max(_time) as last_seen values(Image) as process by host q region
+| convert ctime(first_seen) ctime(last_seen)
+| sort region - count

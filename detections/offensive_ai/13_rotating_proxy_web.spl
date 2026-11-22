@@ -1,0 +1,8 @@
+`comment("OAI-004 One site probed by many IPs with few requests each, mostly errors (access_combined)")`
+index=web sourcetype=access_combined
+| bin _time span=5m
+| stats count as per_ip count(eval(status>=400)) as errors by _time host clientip
+| where per_ip<=5 AND errors/per_ip>=0.6
+| stats dc(clientip) as distinct_ips sum(per_ip) as requests values(clientip) as sample_ips by _time host
+| where distinct_ips>=20
+| sort - _time

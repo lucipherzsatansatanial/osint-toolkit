@@ -1,0 +1,30 @@
+title: AI Agent CLI Started With Approval Prompts Disabled
+id: 60e6a522-b5d1-4e2e-8045-8ce8b9a886d7
+status: experimental
+description: >-
+  Detects coding/agent CLIs (Claude Code, Codex, Gemini CLI, Qwen Code, Hermes Agent and similar) started with
+  flags that skip human approval of commands. Offensive AI frameworks such as Cairn and Hermes-based consoles
+  run their workers this way. Correlate with attack-tool launches on the same host.
+references:
+  - https://github.com/ThreatDefence/agentic-attack-detections
+author: IDA SOC
+date: 2026-11-22
+tags:
+  - attack.execution
+  - attack.t1059
+logsource:
+  category: process_creation
+detection:
+  selection:
+    CommandLine|contains:
+      - '--dangerously-skip-permissions'
+      - '--dangerously-bypass-approvals-and-sandbox'
+      - '--yolo'
+      - '--approval-mode yolo'
+      - '--approval-mode=yolo'
+      - 'bypassPermissions'
+      - 'HERMES_YOLO_MODE'
+  condition: selection
+falsepositives:
+  - Developers running agents in an isolated sandbox on purpose
+level: medium

@@ -1,0 +1,18 @@
+// OAI-001 AI agent CLI with approvals disabled, then attack tooling on the same device (Defender XDR / Sentinel)
+// Agents usually spawn tools through a shell, so the direct parent is rarely the agent CLI: correlate by
+// device and a 2-hour window instead of the parent field. Experimental, tune before alerting.
+let bypass = @"(?i)(--dangerously-skip-permissions|--dangerously-bypass-approvals-and-sandbox|--full-auto|--yolo\b|--approval-mode[ =]yolo|--permission-mode[ =]bypassPermissions|--auto-approve|--yes-always|HERMES_YOLO_MODE)";
+let tools = dynamic(["nmap","masscan","naabu","subfinder","httpx","katana","nuclei","ffuf","gobuster","feroxbuster","dirsearch","sqlmap","nikto","wpscan","hydra","msfconsole","netexec","nxc","crackmapexec","kerbrute","responder","impacket-secretsdump","secretsdump.py","psexec.py","interactsh-client","evil-winrm","chisel"]);
+let agents = DeviceProcessEvents
+    | where Timestamp > ago(7d)
+    | where ProcessCommandLine matches regex bypass
+    | project AgentTime = Timestamp, DeviceId, AgentCmd = ProcessCommandLine, AgentAccount = AccountName;
+DeviceProcessEvents
+| where Timestamp > ago(7d)
+| extend Tool = tolower(replace_regex(FileName, @"\.exe$", ""))
+| where Tool in (tools)
+| join kind=inner agents on DeviceId
+| where Timestamp between (AgentTime .. (AgentTime + 2h))
+| summarize Tools = make_set(Tool), DistinctTools = dcount(Tool), FirstTool = min(Timestamp)
+    by DeviceName, AgentAccount, AgentCmd, AgentTime
+| order by DistinctTools desc, FirstTool desc
