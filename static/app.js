@@ -110,6 +110,10 @@ function selectModule(m) {
 async function loadHistory() {
   try {
     const rows = await api("/api/history?limit=50");
+    const counts = {};
+    rows.forEach((h) => { counts[h.module] = (counts[h.module] || 0) + 1; });
+    Object.keys(MODULES).forEach((m) => { $("#nb-" + m).textContent = counts[m] || 0; });
+    $("#nb-all").textContent = rows.length;
     $("#history").innerHTML = rows.map((h) => `<li data-id="${h.id}">
       <b>#${h.id}</b> ${esc(h.module)} · <span class="t">${esc(h.target)}</span><br>
       <span class="muted">${esc(h.ts)} · ${esc(h.analyst)}${h.case_ref ? " · " + esc(h.case_ref) : ""}</span></li>`).join("")
@@ -132,7 +136,14 @@ async function init() {
   loadHistory();
 }
 
-$("#tabs").addEventListener("click", (e) => { if (e.target.dataset.module) selectModule(e.target.dataset.module); });
+$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-module]"); if (b) selectModule(b.dataset.module); });
+$("#themeBtn").addEventListener("click", () => {
+  const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = t;
+  store.set("theme", t);
+  $("#themeBtn span").textContent = t === "dark" ? "Light Mode" : "Dark Mode";
+});
+$("#themeBtn span").textContent = document.documentElement.dataset.theme === "dark" ? "Light Mode" : "Dark Mode";
 $("#refreshHist").addEventListener("click", loadHistory);
 $("#history").addEventListener("click", async (e) => {
   const li = e.target.closest("li[data-id]");
