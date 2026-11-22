@@ -79,6 +79,7 @@ KIND_SOURCE = {"process": "EDR process", "http": "Web / proxy", "net": "Network 
                "tool_call": "AI agent audit", "llm_call": "AI agent audit", "auth": "AI agent audit"}
 
 
+MAX_ASSETS = 50000
 PRIORITY_SEV = {"low": "low", "medium": "medium", "high": "high", "critical": "critical"}
 CASE_FIELDS = ("priority", "tags", "custom_fields", "name", "description")
 
@@ -96,6 +97,7 @@ class Engine:
         self._dirty: set[int] = set()
         self.ingested: Counter = Counter()
         self.sources: Counter = Counter()
+        self.assets: dict[tuple, dict] = {}  # (type, name) -> discovered asset
         self.disabled_rules: set[str] = set()  # rules switched off in the rules catalog (per tenant)
         self.suppressed: Counter = Counter()  # events received per data source, for the "events by data source" widget
         self._outbox: deque[dict] = deque(maxlen=500)
@@ -171,38 +173,53 @@ class Engine:
             out.extend(self._custom_events(rec, now))
         self.sources.update(f"{SIM_SOURCE.get(e['domain'], e['domain'])} (จำลอง)" for e in out)
         out = self._enabled(out)
+        for e in out:
+            self._touch_assets([{"host": e["host"], "user": e["user"], "agent": e.get("agent"), "ts": e["ts"]}],
+                               f"{SIM_SOURCE.get(e['domain'], e['domain'])} (จำลอง)", real=False)
+        self._asset_alerts([e for e in out if SEV.index(e["severity"]) >= 2])
         for ev in out:
             self._ingest(ev)
         return flushed + out
 
     # ---------- real telemetry ----------
-    def ingest_external(self, records: list[dict], source: str | None = None) -> dict:
-        """Run normalized real records (see app.ingest) through the detectors and the XDR correlator."""
+    def ingest_external(self, records: list[dict], source: str | None = None, entity: str | None = None,
+                        detect: bool = True) -> dict:
+        """Run normalized real records (see app.ingest) through the detectors and the XDR correlator.
+        `entity` tags every alert from this batch; detect=False stores logs only (entity in monitor mode)."""
         events: list[dict] = []
         agent_recs = [r for r in records if r.get("agent")]
         telemetry = [r for r in records if not r.get("agent")]
         if agent_recs:
             for rec in agent_recs:
                 rec.setdefault("id", next(self.agents.sim.ids))
-            for a, rec in self._agent_alerts(agent_recs):
-                events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
+            if detect:
+                for a, rec in self._agent_alerts(agent_recs):
+                    events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
             self._agent_outbox.extend(agent_recs)
         for rec in telemetry:
             if rec["kind"] == "process" and rec.get("host") and rec["host"] not in self.endpoints:
                 self.endpoints[rec["host"]] = {"host": rec["host"], "os": rec.get("os") or "unknown",
                                                "user": rec.get("user") or "", "status": "healthy",
                                                "realtime_protection": True, "last_seen": rec["ts"], "alerts": 0}
-            for a in self.offai.ingest([rec], rec["ts"], real=True):
-                events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
+            if detect:
+                for a in self.offai.ingest([rec], rec["ts"], real=True):
+                    events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
         for rec in records:
             rec["simulated"] = False
             rec["_source"] = source or "API"
+            if entity:
+                rec["_entity"] = entity
             self.raw.append(rec)
-            events.extend(self._custom_events(rec, rec["ts"], simulated=False))
+            if detect:
+                events.extend(self._custom_events(rec, rec["ts"], simulated=False))
         events = self._enabled(events)
+        if entity:
+            for ev in events:
+                ev["entity"] = entity
         for ev in events:
             self._ingest(ev)
         self._outbox.extend(events)
+        touched_assets = self._touch_assets(records, source or "API", real=True) | self._asset_alerts(events)
         if self.persist:
             soc_store.save_events(events, self.tenant)
             soc_store.save_agent_records(agent_recs, self.tenant)
@@ -211,6 +228,7 @@ class Engine:
             soc_store.save_endpoints([self.endpoints[h] for h in touched if h in self.endpoints], self.tenant)
             soc_store.save_agents([self.agents.agents[a] for a in {r["agent"] for r in agent_recs}
                                    if a in self.agents.agents], self.tenant)
+            soc_store.save_assets([self.assets[k] for k in touched_assets if self.assets[k].get("real")], self.tenant)
             self.flush()
         by_src = Counter(f"{source or 'API'} · {KIND_SOURCE.get(r['kind'], r['kind'])}" for r in records)
         self.sources.update(by_src)
@@ -221,6 +239,49 @@ class Engine:
         return {"accepted": len(records), "alerts": len(events),
                 "by_kind": dict(Counter(r["kind"] for r in records)),
                 "alerts_by_rule": dict(Counter(e.get("rule") for e in events if e.get("rule")))}
+
+    # ---------- asset discovery (accounts, hosts, AI agents seen in logs) ----------
+    def _asset(self, typ: str, name, ts: float, source: str, real: bool) -> tuple | None:
+        name = str(name or "").strip()
+        if not name or name.lower() in PLACEHOLDER_USERS or name in ("-", "?") or len(name) > 255:
+            return None
+        key = (typ, name)
+        a = self.assets.get(key)
+        if a is None:
+            if len(self.assets) >= MAX_ASSETS:
+                return None
+            a = self.assets[key] = {"type": typ, "name": name, "first_seen": ts, "last_seen": ts, "events": 0,
+                                    "alerts": 0, "sources": [], "tags": [], "revoked": False, "manual": False,
+                                    "real": real}
+        a["last_seen"] = max(a["last_seen"], ts)
+        a["first_seen"] = min(a["first_seen"], ts)
+        a["real"] = a.get("real") or real
+        if source and source not in a["sources"] and len(a["sources"]) < 20:
+            a["sources"].append(source)
+        return key
+
+    def _touch_assets(self, records: list[dict], source: str, real: bool) -> set:
+        touched = set()
+        for r in records:
+            ts = r.get("ts") or time.time()
+            keys = [self._asset("host", r.get(f), ts, source, real) for f in ("host", "dest_host", "src_host", "client_host")]
+            keys.append(self._asset("account", r.get("user"), ts, source, real))
+            if r.get("agent"):
+                keys.append(self._asset("ai_agent", r.get("agent"), ts, source, real))
+            for k in {k for k in keys if k}:
+                self.assets[k]["events"] += 1
+                touched.add(k)
+        return touched
+
+    def _asset_alerts(self, events: list[dict]) -> set:
+        touched = set()
+        for e in events:
+            for typ, name in (("host", e.get("host")), ("account", e.get("user")), ("ai_agent", e.get("agent"))):
+                k = (typ, str(name or "").strip())
+                if k in self.assets:
+                    self.assets[k]["alerts"] += 1
+                    touched.add(k)
+        return touched
 
     def _enabled(self, events: list[dict]) -> list[dict]:
         if not self.disabled_rules:

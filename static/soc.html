@@ -27,6 +27,9 @@
     <a href="#landCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-6 4 4 7-9"/><path d="M14 6h5v5"/></svg><span>Threat Landscape</span></a>
     <a href="#queryCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg><span>Query builder</span></a>
     <a href="#nbCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h11a2 2 0 012 2v14a2 2 0 01-2 2H6z"/><path d="M6 3v18M10 8h6M10 12h6"/></svg><span>Notebooks</span></a>
+    <a href="#intakesCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v6H4zM4 14h16v6H4z"/><path d="M8 7h.01M8 17h.01"/></svg><span>Intakes</span><em id="nb-intake">0</em></a>
+    <a href="#entitiesCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V8l8-5 8 5v13"/><path d="M9 21v-6h6v6"/></svg><span>Entities</span></a>
+    <a href="#assetsCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 20h10"/><circle cx="17" cy="10" r="2"/></svg><span>Assets</span><em id="nb-asset">0</em></a>
     <a href="#catalogCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10"/><circle cx="19" cy="19" r="2"/></svg><span>Rules catalog</span></a>
     <a href="#tasksCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M9 4V2.8h6V4M8 11l2 2 4-4M8 17h8"/></svg><span>Tasks</span><em id="nb-task">0</em></a>
     <a href="#sec-edr"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>EDR · Endpoints</span><em id="nb-ep">0</em></a>
@@ -478,6 +481,36 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
     </div>
   </section>
 
+  <section class="card span3" id="intakesCard">
+    <h2>Intakes <small class="muted" id="inTotal">แหล่ง log แต่ละตัวมี key ของตัวเอง ส่งเข้า <code>POST /api/soc/intake</code></small>
+      <span class="seg" id="inDays"><button data-d="1" class="on">24 ชม.</button><button data-d="7">7 วัน</button><button data-d="30">30 วัน</button></span>
+      <button id="inNew" class="sm" data-perm="rules.manage">+ New intake</button></h2>
+    <div class="intake-list" id="inList"></div>
+  </section>
+
+  <section class="card span3" id="entitiesCard">
+    <h2>Entities <small class="muted">กลุ่มองค์กร / สาขา / หน่วยธุรกิจ ที่เป็นเจ้าของ intake · กำหนดได้ว่าจะสร้าง alert หรือเก็บ log อย่างเดียว</small>
+      <button id="enNew" class="sm" data-perm="rules.manage">+ New entity</button></h2>
+    <div class="tbl-wrap"><table class="tbl" id="enTbl"><thead><tr><th>ชื่อ</th><th>รายละเอียด</th><th class="num">Intakes</th><th>Alert generation</th><th></th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card span3" id="assetsCard">
+    <h2>Assets <small class="muted" id="asTotal">ค้นพบอัตโนมัติจาก log (host / บัญชีผู้ใช้ / AI agent) และเพิ่มเองได้</small>
+      <button id="asNew" class="sm" data-perm="agents.manage">+ New asset</button></h2>
+    <div class="tabs" id="asTabs" role="tablist"><button data-t="" class="on">ทั้งหมด <em id="asAll">0</em></button><button data-t="host">Hosts <em id="asHost">0</em></button>
+      <button data-t="account">Accounts / Users <em id="asAccount">0</em></button><button data-t="ai_agent">AI agents <em id="asAgent">0</em></button></div>
+    <div class="task-bar">
+      <input id="asQ" type="search" placeholder="ค้นหาชื่อ / tag / แหล่งที่เห็น" aria-label="ค้นหา asset">
+      <select id="asSort" aria-label="เรียง"><option value="last_seen">เห็นล่าสุด</option><option value="first_seen">เพิ่งพบใหม่</option><option value="alerts">Alerts มากสุด</option>
+        <option value="events">Events มากสุด</option><option value="criticality">Criticality</option><option value="name">ชื่อ</option></select>
+      <label class="chk"><input id="asReal" type="checkbox"> log จริงเท่านั้น</label>
+      <label class="chk"><input id="asRevoked" type="checkbox"> แสดง asset ที่ revoke แล้ว</label>
+    </div>
+    <div class="tbl-wrap tall"><table class="tbl" id="asTbl"><thead><tr><th>ชื่อ</th><th>ประเภท</th><th>Tags</th><th>เห็นโดย (intake / source)</th>
+      <th>พบครั้งแรก</th><th>เห็นล่าสุด</th><th class="num">Events</th><th class="num">Alerts</th><th>Criticality</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div class="pager"><button id="asPrev" class="ghost sm">‹ ก่อนหน้า</button><span id="asPage" class="muted"></span><button id="asNext" class="ghost sm">ถัดไป ›</button></div>
+  </section>
+
   <section class="card span3" id="catalogCard">
     <h2>Rules catalog <small class="muted">ทุก detection rule ที่ระบบใช้ · เปิด/ปิดราย tenant · สถิติ 7 วัน</small></h2>
     <div class="kpis cat-kpis">
@@ -486,9 +519,13 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
       <div class="kpi"><span>Rules ของคุณ (custom)</span><b id="catCustom">–</b></div>
       <div class="kpi"><span>Alerts 7 วัน</span><b id="catAlerts">–</b></div>
       <div class="kpi"><span>ถูกปฏิเสธ (FP/benign) 7 วัน</span><b id="catRejected">–</b></div>
+      <div class="kpi"><span>Active IOCs (CTI)</span><b id="catIocs">–</b><small id="catIocsS"></small></div>
     </div>
     <div class="cat">
-      <div><h3>MITRE ATT&amp;CK coverage <small class="muted">ช่อง = technique ที่มี rule · สีเข้ม = alert มาก</small></h3><div id="catHeat" class="heat"></div></div>
+      <div><h3>MITRE ATT&amp;CK coverage <small class="muted">ช่อง = technique ที่มี rule · สีเข้ม = alert มาก</small></h3><div id="catHeat" class="heat"></div>
+        <h3 class="mt">กรองตามชนิด log ที่ rule ต้องใช้ <small class="muted">✓ = มี log ชนิดนี้เข้าระบบแล้ว</small></h3>
+        <div class="seg" id="catSrcMode"><button data-m="all" class="on">ทั้งหมด</button><button data-m="configured">เฉพาะที่มี log</button></div>
+        <div id="catSrcs" class="src-filter"></div></div>
       <div>
         <div class="task-bar">
           <input id="catQ" type="search" placeholder="ค้นหา rule / technique" aria-label="ค้นหา rule">
@@ -543,6 +580,59 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
     <div id="cfRows"></div>
     <p><button type="button" id="cfAdd" class="ghost sm">+ เพิ่ม field</button></p>
     <p id="cfErr" class="err"></p>
+    <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button value="save">บันทึก</button></div>
+  </form>
+</dialog>
+
+<dialog id="inDlg" class="dlg">
+  <form method="dialog" id="inForm">
+    <h2>New intake</h2>
+    <label>ชื่อ intake <input name="name" required maxlength="120" placeholder="เช่น HQ_Fortigate, สาขาบางนา_Windows"></label>
+    <div class="row3">
+      <label>รูปแบบ log <select name="format"><option value="auto">auto (ตรวจเอง)</option><option value="native">native (JSON ของระบบนี้)</option>
+        <option value="ecs">Elastic ECS / Beats</option><option value="defender">Microsoft Defender (Advanced Hunting)</option><option value="access_log">Web access log</option></select></label>
+      <label>Entity <select name="entity_id"><option value="">— ไม่ระบุ —</option></select></label>
+    </div>
+    <p id="inErr" class="err"></p>
+    <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button value="save">สร้าง intake</button></div>
+  </form>
+</dialog>
+
+<dialog id="keyDlg" class="dlg">
+  <form method="dialog">
+    <h2>Intake key <small class="muted" id="keyFor"></small></h2>
+    <p class="warn-box">แสดงครั้งเดียวเท่านั้น — ระบบเก็บเฉพาะค่า hash ถ้าทำหายต้องสร้าง key ใหม่ (rotate)</p>
+    <pre class="nb-code" id="keyVal"></pre>
+    <p class="small muted">ตัวอย่างการส่ง log:</p>
+    <pre class="nb-code" id="keyCurl"></pre>
+    <div class="dlg-actions"><button type="button" id="keyCopy" class="ghost">คัดลอก key</button><button value="ok">เก็บแล้ว ปิด</button></div>
+  </form>
+</dialog>
+
+<dialog id="enDlg" class="dlg">
+  <form method="dialog" id="enForm">
+    <h2 id="enDlgTitle">New entity</h2>
+    <label>ชื่อ <input name="name" required maxlength="120" placeholder="เช่น สาขาบางนา, บริษัทลูก ABC"></label>
+    <label>รายละเอียด <input name="description" maxlength="1000"></label>
+    <label>Alert generation <select name="mode"><option value="automatic">automatic — ตรวจจับและสร้าง alert</option>
+      <option value="monitor">monitor — เก็บ log อย่างเดียว ไม่สร้าง alert (ช่วงทดลอง / onboarding)</option></select></label>
+    <p id="enErr" class="err"></p>
+    <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button value="save">บันทึก</button></div>
+  </form>
+</dialog>
+
+<dialog id="asDlg" class="dlg">
+  <form method="dialog" id="asForm">
+    <h2 id="asDlgTitle">New asset</h2>
+    <div class="row3">
+      <label>ประเภท <select name="type"><option value="host">Host</option><option value="account">Account / User</option><option value="ai_agent">AI agent</option></select></label>
+      <label>ชื่อ <input name="name" required maxlength="255" placeholder="เช่น SRV-DB-01, somchai.k"></label>
+      <label>Criticality <select name="criticality"><option value="0">0 — ไม่ระบุ</option><option value="1">1 ต่ำ</option><option value="2">2</option><option value="3">3 กลาง</option><option value="4">4</option><option value="5">5 สำคัญที่สุด</option></select></label>
+    </div>
+    <label>Tags (คั่นด้วย ,) <input name="tags" placeholder="crown-jewel, pci, vip"></label>
+    <label>รายละเอียด <input name="description" maxlength="1000"></label>
+    <label class="chk"><input name="revoked" type="checkbox"> Revoke (เลิกใช้แล้ว / ไม่ต้องติดตาม)</label>
+    <p id="asErr" class="err"></p>
     <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button value="save">บันทึก</button></div>
   </form>
 </dialog>

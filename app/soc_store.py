@@ -48,6 +48,11 @@ CREATE INDEX IF NOT EXISTS idx_soc2_inbox_ts ON soc2_inbox(tenant, ts);
 CREATE TABLE IF NOT EXISTS soc2_settings (tenant TEXT NOT NULL, k TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, k));
 CREATE TABLE IF NOT EXISTS soc2_notebooks (tenant TEXT NOT NULL, id INTEGER NOT NULL, doc TEXT NOT NULL, updated_at REAL,
     deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_entities (tenant TEXT NOT NULL, id INTEGER NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_intakes (tenant TEXT NOT NULL, id INTEGER NOT NULL, key_hash TEXT NOT NULL UNIQUE, doc TEXT NOT NULL,
+    PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_assets (tenant TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, doc TEXT NOT NULL,
+    PRIMARY KEY (tenant, type, name));
 CREATE TABLE IF NOT EXISTS soc2_counters (tenant TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (tenant, k));
 """
 LEGACY = {  # old single-tenant table -> (new table, column list)
@@ -282,6 +287,63 @@ def notebook(nb_id: int, tenant: str = DEFAULT) -> dict | None:
     return json.loads(r["doc"]) if r else None
 
 
+def _next_id(c, table: str, tenant: str) -> int:
+    return c.execute(f"SELECT COALESCE(MAX(id), 0) + 1 FROM {table} WHERE tenant = ?", (tenant,)).fetchone()[0]
+
+
+def save_entity(ent: dict, tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        if ent.get("id") is None:
+            ent = {**ent, "id": _next_id(c, "soc2_entities", tenant)}
+        c.execute("INSERT OR REPLACE INTO soc2_entities (tenant, id, doc) VALUES (?,?,?)", (tenant, ent["id"], _dump(ent)))
+    return ent
+
+
+def entities(tenant: str = DEFAULT) -> list[dict]:
+    with _lock, _conn() as c:
+        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_entities WHERE tenant = ? ORDER BY id", (tenant,))]
+
+
+def save_intake(intake: dict, key_hash: str, tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        if intake.get("id") is None:
+            intake = {**intake, "id": _next_id(c, "soc2_intakes", tenant)}
+        c.execute("INSERT OR REPLACE INTO soc2_intakes (tenant, id, key_hash, doc) VALUES (?,?,?,?)",
+                  (tenant, intake["id"], key_hash, _dump(intake)))
+    return intake
+
+
+def intakes(tenant: str = DEFAULT) -> list[dict]:
+    with _lock, _conn() as c:
+        return [{**json.loads(r["doc"]), "_key_hash": r["key_hash"]}
+                for r in c.execute("SELECT doc, key_hash FROM soc2_intakes WHERE tenant = ? ORDER BY id", (tenant,))]
+
+
+def intake_by_key(key_hash: str) -> tuple[str, dict] | None:
+    with _lock, _conn() as c:
+        r = c.execute("SELECT tenant, doc FROM soc2_intakes WHERE key_hash = ?", (key_hash,)).fetchone()
+    return (r["tenant"], json.loads(r["doc"])) if r else None
+
+
+def save_assets(assets: list[dict], tenant: str = DEFAULT) -> None:
+    if not assets:
+        return
+    with _lock, _conn() as c:
+        c.executemany("INSERT OR REPLACE INTO soc2_assets (tenant, type, name, doc) VALUES (?,?,?,?)",
+                      [(tenant, a["type"], a["name"], _dump(a)) for a in assets])
+
+
+def assets(tenant: str = DEFAULT, limit: int = 100000) -> list[dict]:
+    with _lock, _conn() as c:
+        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_assets WHERE tenant = ? LIMIT ?", (tenant, limit))]
+
+
+def counts_prefix(prefix: str, tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        return {r["k"]: r["n"] for r in c.execute("SELECT k, n FROM soc2_counters WHERE tenant = ? AND k LIKE ?",
+                                                  (tenant, prefix.replace("%", "") + "%"))}
+
+
 def add_counts(counts: dict, tenant: str = DEFAULT) -> None:
     if not counts:
         return
@@ -299,7 +361,8 @@ def counts(tenant: str = DEFAULT) -> dict:
 def tenants() -> list[str]:
     with _lock, _conn() as c:
         rows = c.execute("SELECT tenant FROM soc2_incidents UNION SELECT tenant FROM soc2_events "
-                         "UNION SELECT tenant FROM soc2_agents UNION SELECT tenant FROM soc2_rules UNION SELECT tenant FROM soc2_tasks").fetchall()
+                         "UNION SELECT tenant FROM soc2_agents UNION SELECT tenant FROM soc2_rules UNION SELECT tenant FROM soc2_tasks "
+                         "UNION SELECT tenant FROM soc2_intakes").fetchall()
     return sorted({r[0] for r in rows})
 
 

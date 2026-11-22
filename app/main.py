@@ -1,14 +1,16 @@
 """OSINT Toolkit — FastAPI entry point."""
 import asyncio
 import csv
+import hashlib
 import hmac
 import io
 import os
 import tempfile
 import json
 import re
+import secrets
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -58,6 +60,7 @@ async def lifespan(_: FastAPI):
         e.restore(soc_store.load(e.tenant))
         e.custom.load(soc_store.list_rules(e.tenant))
         e.disabled_rules = set(soc_store.get_setting("disabled_rules", [], e.tenant))
+        e.assets.update({(a["type"], a["name"]): a for a in soc_store.assets(e.tenant)})
         e.sources.update({k[4:]: n for k, n in soc_store.counts(e.tenant).items() if k.startswith("src:")})
         e.persist = True
         e.on_incident = lambda inc, t=e.tenant: _on_incident(t, inc)
@@ -342,10 +345,7 @@ INGEST_SOURCE = {"auto": "API", "native": "API", "ecs": "Elastic ECS", "defender
                  "access_log": "Web access log"}
 
 
-@app.post("/api/soc/ingest")
-async def soc_ingest(request: Request, format: str = "auto", host: str | None = None,
-                     who: rbac.Principal = Depends(require("ingest"))):
-    """Ingest real EDR / NDR / web / AI-agent telemetry. Formats: auto, native, ecs, defender, access_log."""
+async def _read_body(request: Request) -> bytes:
     size = request.headers.get("content-length")
     if size and size.isdigit() and int(size) > ingest.MAX_BYTES:
         raise HTTPException(413, f"body larger than {ingest.MAX_BYTES} bytes")
@@ -354,14 +354,265 @@ async def soc_ingest(request: Request, format: str = "auto", host: str | None = 
         body += chunk
         if len(body) > ingest.MAX_BYTES:
             raise HTTPException(413, f"body larger than {ingest.MAX_BYTES} bytes")
+    return body
+
+
+def _parse(body: bytes, fmt: str, host: str | None):
     try:
-        records, rejected = ingest.parse(body, format, host)
+        return ingest.parse(body, fmt, host)
     except ingest.IngestError as e:
         raise HTTPException(413 if "larger" in str(e) or "more than" in str(e) else 422, str(e)) from e
+
+
+@app.post("/api/soc/ingest")
+async def soc_ingest(request: Request, format: str = "auto", host: str | None = None,
+                     who: rbac.Principal = Depends(require("ingest"))):
+    """Ingest real EDR / NDR / web / AI-agent telemetry. Formats: auto, native, ecs, defender, access_log."""
+    records, rejected = _parse(await _read_body(request), format, host)
     result = E(who).ingest_external(records, source=INGEST_SOURCE.get(format, format))
     if not hub.has_subscribers(who.tenant):  # nobody watching: new viewers get these via the snapshot, so don't re-broadcast later
         E(who).drop_outbox()
     return {**result, "rejected": rejected, "format": format}
+
+
+ASSET_FIELDS = ("host", "dest_host", "src_host", "client_host", "user", "agent")
+
+
+def _key_hash(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+@app.post("/api/soc/intake")
+async def soc_intake_ingest(request: Request, host: str | None = None, x_intake_key: str = Header(default="")):
+    """Ingest with a per-intake key (header X-Intake-Key): tenant, format, entity and mode come from the intake,
+    so log shippers never hold a user token. Counts valid / invalid / warning events per day."""
+    if not x_intake_key or len(x_intake_key) > 200:
+        raise HTTPException(401, "missing X-Intake-Key")
+    found = soc_store.intake_by_key(_key_hash(x_intake_key))
+    if not found or found[1].get("disabled"):
+        raise HTTPException(401, "invalid or disabled intake key")
+    tenant, intake = found
+    q = _hits[(("intake", intake["id"], tenant), True)]
+    now_m = time.monotonic()
+    while q and now_m - q[0] > 60:
+        q.popleft()
+    if len(q) >= settings.read_rate_limit_per_min:
+        raise HTTPException(429, "rate limit exceeded")
+    q.append(now_m)
+    records, rejected = _parse(await _read_body(request), intake["format"], host)
+    ent = next((e for e in soc_store.entities(tenant) if e["id"] == intake.get("entity_id")), None)
+    eng = hub.engine_for(tenant)
+    result = eng.ingest_external(records, source=intake["name"], entity=ent["name"] if ent else None,
+                                 detect=(ent or {}).get("mode", "automatic") == "automatic")
+    if not hub.has_subscribers(tenant):
+        eng.drop_outbox()
+    warn = sum(1 for r in records if r.get("_ts_warning") or not any(r.get(f) for f in ASSET_FIELDS))
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    soc_store.add_counts({f"intake:{intake['id']}:{day}:valid": len(records), f"intake:{intake['id']}:{day}:invalid": rejected,
+                          f"intake:{intake['id']}:{day}:warning": warn}, tenant)
+    intake["last_event_at"] = time.time()
+    soc_store.save_intake(intake, _key_hash(x_intake_key), tenant)
+    return {**result, "rejected": rejected, "warnings": warn, "intake": intake["name"]}
+
+
+# ---------- entities and intakes ----------
+class EntityIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    mode: Literal["automatic", "monitor"] = "automatic"  # monitor = collect logs only, raise no alerts
+
+
+@app.get("/api/soc/entities")
+async def soc_entities(who: rbac.Principal = Depends(require("soc.read"))):
+    ins = soc_store.intakes(who.tenant)
+    return {"entities": [{**e, "intakes": sum(1 for i in ins if i.get("entity_id") == e["id"])}
+                         for e in soc_store.entities(who.tenant)]}
+
+
+@app.post("/api/soc/entities")
+async def soc_entity_create(req: EntityIn, who: rbac.Principal = Depends(require("rules.manage"))):
+    if any(e["name"].lower() == req.name.strip().lower() for e in soc_store.entities(who.tenant)):
+        raise HTTPException(409, "entity name already exists")
+    ent = soc_store.save_entity({"id": None, **req.model_dump(), "name": req.name.strip(), "created_by": who.name,
+                                 "created_at": time.time()}, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.entity", target=f"entity:{ent['id']}",
+                 purpose=f"create: {ent['name']} mode={ent['mode']}", legal_basis="own_asset", case_ref=None, result={})
+    return ent
+
+
+@app.put("/api/soc/entities/{ent_id}")
+async def soc_entity_update(ent_id: int, req: EntityIn, who: rbac.Principal = Depends(require("rules.manage"))):
+    ent = next((e for e in soc_store.entities(who.tenant) if e["id"] == ent_id), None)
+    if ent is None:
+        raise HTTPException(404, "entity not found")
+    ent.update(req.model_dump(), name=req.name.strip(), updated_by=who.name, updated_at=time.time())
+    soc_store.save_entity(ent, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.entity", target=f"entity:{ent_id}",
+                 purpose=f"update: {ent['name']} mode={ent['mode']}", legal_basis="own_asset", case_ref=None, result={})
+    return ent
+
+
+def _intake_stats(tenant: str, ids: list[int], days: int) -> dict:
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime(time.time() - (days - 1) * 86400))
+    out = {i: {"valid": 0, "invalid": 0, "warning": 0} for i in ids}
+    for k, n in soc_store.counts_prefix("intake:", tenant).items():
+        _, iid, day, kind = k.split(":")
+        if int(iid) in out and day >= cutoff and kind in out[int(iid)]:
+            out[int(iid)][kind] += n
+    return out
+
+
+def _public_intake(i: dict) -> dict:
+    return {k: v for k, v in i.items() if not k.startswith("_")}
+
+
+@app.get("/api/soc/intakes")
+async def soc_intakes(days: int = 1, who: rbac.Principal = Depends(require("soc.read"))):
+    days = 1 if days not in (1, 7, 30) else days
+    ins = soc_store.intakes(who.tenant)
+    stats = _intake_stats(who.tenant, [i["id"] for i in ins], days)
+    ents = {e["id"]: e for e in soc_store.entities(who.tenant)}
+    return {"intakes": [{**_public_intake(i), **stats[i["id"]], "entity": (ents.get(i.get("entity_id")) or {}).get("name"),
+                         "mode": (ents.get(i.get("entity_id")) or {}).get("mode", "automatic")} for i in ins],
+            "days": days, "formats": list(ingest.FORMATS)}
+
+
+class IntakeIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120, pattern=r"^[^<>\"'`\x00-\x1f]+$")
+    format: Literal["auto", "native", "ecs", "defender", "access_log"] = "auto"
+    entity_id: int | None = None
+
+
+def _check_entity(who: rbac.Principal, ent_id: int | None) -> None:
+    if ent_id is not None and not any(e["id"] == ent_id for e in soc_store.entities(who.tenant)):
+        raise HTTPException(422, "unknown entity")
+
+
+@app.post("/api/soc/intakes")
+async def soc_intake_create(req: IntakeIn, who: rbac.Principal = Depends(require("rules.manage"))):
+    _check_entity(who, req.entity_id)
+    if any(i["name"].lower() == req.name.lower() for i in soc_store.intakes(who.tenant)):
+        raise HTTPException(409, "intake name already exists")
+    key = "ik_" + secrets.token_urlsafe(32)
+    intake = soc_store.save_intake({"id": None, **req.model_dump(), "created_by": who.name, "created_at": time.time(),
+                                    "key_hint": key[:7] + "…" + key[-4:], "disabled": False}, _key_hash(key), who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.intake", target=f"intake:{intake['id']}",
+                 purpose=f"create: {intake['name']} format={intake['format']}", legal_basis="own_asset", case_ref=None, result={})
+    return {**intake, "key": key, "note": "เก็บ key นี้ไว้ — ระบบเก็บเฉพาะค่า hash และจะไม่แสดงอีก"}
+
+
+class IntakePatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120, pattern=r"^[^<>\"'`\x00-\x1f]+$")
+    entity_id: int | None = None
+    clear_entity: bool = False
+    disabled: bool | None = None
+    rotate_key: bool = False
+
+
+@app.patch("/api/soc/intakes/{intake_id}")
+async def soc_intake_update(intake_id: int, req: IntakePatch, who: rbac.Principal = Depends(require("rules.manage"))):
+    cur = next((i for i in soc_store.intakes(who.tenant) if i["id"] == intake_id), None)
+    if cur is None:
+        raise HTTPException(404, "intake not found")
+    key_hash, intake = cur.pop("_key_hash"), cur
+    if req.name:
+        intake["name"] = req.name
+    if req.entity_id is not None:
+        _check_entity(who, req.entity_id)
+        intake["entity_id"] = req.entity_id
+    if req.clear_entity:
+        intake["entity_id"] = None
+    if req.disabled is not None:
+        intake["disabled"] = req.disabled
+    key = None
+    if req.rotate_key:
+        key = "ik_" + secrets.token_urlsafe(32)
+        key_hash = _key_hash(key)
+        intake["key_hint"] = key[:7] + "…" + key[-4:]
+    intake.update(updated_by=who.name, updated_at=time.time())
+    soc_store.save_intake(intake, key_hash, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.intake", target=f"intake:{intake_id}",
+                 purpose="rotate key" if key else f"update disabled={intake.get('disabled')}", legal_basis="own_asset",
+                 case_ref=None, result={})
+    return {**intake, **({"key": key} if key else {})}
+
+
+# ---------- assets ----------
+ASSET_TYPES = ("host", "account", "ai_agent")
+
+
+def _all_assets(who: rbac.Principal) -> dict[tuple, dict]:
+    out = {(a["type"], a["name"]): a for a in soc_store.assets(who.tenant)}
+    for k, a in E(who).assets.items():
+        out[k] = {**out.get(k, {}), **a, "tags": (out.get(k) or a).get("tags", a["tags"]),
+                  "revoked": (out.get(k) or a).get("revoked", False), "description": (out.get(k) or {}).get("description", "")}
+    return out
+
+
+@app.get("/api/soc/assets")
+async def soc_assets_list(type: str = "", q: str = "", revoked: bool = False, tag: str = "", sort: str = "last_seen", real_only: bool = False,
+                          page: int = 1, size: int = 50, who: rbac.Principal = Depends(require("soc.read"))):
+    crit = soc_store.get_setting("asset_criticality", {}, who.tenant)
+    rows = [{**a, "criticality": crit.get(a["name"], 0)} for a in _all_assets(who).values()]
+    if real_only:
+        rows = [r for r in rows if r.get("real")]
+    counts = Counter(r["type"] for r in rows if not r.get("revoked"))
+    if type:
+        rows = [r for r in rows if r["type"] == type]
+    rows = [r for r in rows if bool(r.get("revoked")) == revoked]
+    if tag:
+        rows = [r for r in rows if tag.lower() in (t.lower() for t in r.get("tags", []))]
+    if q:
+        ql = q.lower()
+        rows = [r for r in rows if ql in f"{r['name']} {' '.join(r.get('tags', []))} {' '.join(r.get('sources', []))}".lower()]
+    keys = {"last_seen": lambda r: -(r.get("last_seen") or 0), "first_seen": lambda r: -(r.get("first_seen") or 0),
+            "events": lambda r: -r.get("events", 0), "alerts": lambda r: (-r.get("alerts", 0), -(r.get("last_seen") or 0)),
+            "criticality": lambda r: (-r["criticality"], -r.get("alerts", 0)), "name": lambda r: r["name"].lower()}
+    rows.sort(key=keys.get(sort, keys["last_seen"]))
+    size = max(10, min(size, 200))
+    pages = max(1, -(-len(rows) // size))
+    page = max(1, min(page, pages))
+    return {"total": len(rows), "page": page, "pages": pages, "items": rows[(page - 1) * size: page * size],
+            "by_type": dict(counts)}
+
+
+class AssetIn(BaseModel):
+    type: Literal["host", "account", "ai_agent"]
+    name: str = Field(min_length=1, max_length=255)
+    tags: list[str] | None = Field(default=None, max_length=30)
+    description: str | None = Field(default=None, max_length=1000)
+    criticality: int | None = Field(default=None, ge=0, le=5)
+    revoked: bool | None = None
+
+
+@app.put("/api/soc/assets")
+async def soc_asset_upsert(req: AssetIn, who: rbac.Principal = Depends(require("agents.manage"))):
+    """Create a manual asset or update tags / description / criticality / revoked on a discovered one."""
+    name = req.name.strip()
+    key = (req.type, name)
+    a = _all_assets(who).get(key) or {"type": req.type, "name": name, "first_seen": time.time(), "last_seen": None,
+                                      "events": 0, "alerts": 0, "sources": [], "tags": [], "revoked": False,
+                                      "manual": True, "real": True}
+    if req.tags is not None:
+        a["tags"] = _clean_tags(req.tags)
+    if req.description is not None:
+        a["description"] = req.description
+    if req.revoked is not None:
+        a["revoked"] = req.revoked
+    a["real"] = True
+    E(who).assets[key] = {**E(who).assets.get(key, {}), **a}
+    soc_store.save_assets([a], who.tenant)
+    if req.criticality is not None:
+        crit = soc_store.get_setting("asset_criticality", {}, who.tenant)
+        if req.criticality:
+            crit[name] = req.criticality
+        else:
+            crit.pop(name, None)
+        soc_store.set_setting("asset_criticality", crit, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.asset", target=f"{req.type}:{name}",
+                 purpose=f"upsert revoked={a.get('revoked')} criticality={req.criticality}", legal_basis="own_asset",
+                 case_ref=None, result={})
+    return {**a, "criticality": soc_store.get_setting("asset_criticality", {}, who.tenant).get(name, 0)}
 
 
 class AgentSpec(BaseModel):
@@ -978,6 +1229,10 @@ async def soc_rules_catalog(who: rbac.Principal = Depends(require("soc.read"))):
         incs.setdefault(i["id"], i)
     out = catalog.catalog(soc_store.list_rules(who.tenant), E(who).disabled_rules, events, incs, now)
     out["suppressed_since_start"] = dict(E(who).suppressed)
+    out["configured_sources"] = sorted({k.split(" · ")[-1] for k in soc_store.counts(who.tenant) if k.startswith("src:")}
+                                       | {k.split(" · ")[-1] for k in E(who).sources if "(จำลอง)" not in k})
+    out["active_iocs"] = {n: len(threatintel.feed_index(n)) for n in ("threatfox", "feodo", "kev")}
+    out["active_iocs"]["agentic"] = len(threatintel.agentic_index())
     return out
 
 

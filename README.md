@@ -175,6 +175,19 @@ poll ได้ ส่วน POST/PATCH และการสแกน OSINT ย�
   จำนวนที่ analyst ปฏิเสธ (verdict false positive / benign), quality score, MITRE coverage heatmap, ไฟล์ KQL/SPL ที่ส่งออกได้;
   เปิด/ปิด rule ราย tenant (`PUT /api/soc/rules/{id}/enabled`) — alert ของ rule ที่ปิดจะไม่ถูกสร้าง (นับไว้ใน `suppressed`)
 
+### Intakes, Entities และ Assets
+
+- **Intakes**: แหล่ง log แต่ละตัว (เช่น `HQ_Fortigate`, `สาขาบางนา_Windows`) มี key ของตัวเอง — log shipper ส่งเข้า
+  `POST /api/soc/intake` ด้วย header `X-Intake-Key` โดยไม่ต้องถือ token ผู้ใช้; รูปแบบ log, tenant และ entity มาจาก intake;
+  นับ valid / invalid (record ที่ parse ไม่ได้) / warning (timestamp หาย-อ่านไม่ได้-อยู่ในอนาคต หรือผูกกับ host/user ไม่ได้) รายวัน
+  ดูย้อนหลัง 24 ชม. / 7 / 30 วัน; key เก็บเป็น SHA-256 แสดงครั้งเดียว, rotate และปิดใช้ได้ — `/api/soc/intakes`
+- **Entities**: กลุ่มเจ้าของ intake (บริษัทลูก / สาขา / BU); alert ที่เกิดจาก intake จะมี `entity`; โหมด `monitor`
+  เก็บ log อย่างเดียวไม่สร้าง alert (ใช้ช่วง onboarding / tuning) — `/api/soc/entities`
+- **Assets**: host / บัญชีผู้ใช้ / AI agent ที่ค้นพบจาก log อัตโนมัติ พร้อมพบครั้งแรก-ล่าสุด, events, alerts, แหล่งที่เห็น;
+  เพิ่มเอง, ใส่ tag, ตั้ง criticality 0–5 และ revoke ได้ — `GET /api/soc/assets`, `PUT /api/soc/assets` (สิทธิ์ `agents.manage`)
+- **Rules catalog** เพิ่ม: ชนิด log ที่แต่ละ rule ต้องใช้ + กรองเฉพาะ rule ที่มี log เข้าระบบแล้ว, จำนวน IOC ที่ใช้งานอยู่จาก CTI,
+  ปุ่ม "แจ้งเตือนเมื่อเจอ" สร้างกฎแจ้งเตือนของ rule นั้น
+
 ### แจ้งเตือน incident ออกนอกระบบ (Teams / LINE / Slack / Email / Webhook)
 
 ตั้งค่าผ่าน environment variables (บน Render: service → **Environment**) — ไม่ต้องแก้โค้ด, secret ไม่ถูกเก็บใน repo

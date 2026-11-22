@@ -1141,7 +1141,7 @@ window.addEventListener("hashchange", () => {
   if (t) openTask(t); else $("#tasksCard").scrollIntoView({ behavior: "smooth" });
 });
 function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); loadAlertsList(); loadEvents(); loadLandscape(); loadNotifyRules();
-  loadCases(); loadSavedQueries(); loadNotebooks(); loadCatalog(); loadCaseMeta(); }
+  loadCases(); loadSavedQueries(); loadNotebooks(); loadCatalog(); loadCaseMeta(); loadIntakes(); loadEntities(); loadAssets(); }
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);
 
@@ -1684,13 +1684,23 @@ function renderCatalog() {
   const d = CAT.data; if (!d) return;
   setKpi("#catTotal", d.summary.total); setKpi("#catEnabled", d.summary.enabled); setKpi("#catCustom", d.summary.custom);
   setKpi("#catAlerts", d.summary.alerts_7d); setKpi("#catRejected", d.summary.rejected_7d);
+  const iocs = d.active_iocs || {}, tot = Object.values(iocs).reduce((a, b) => a + b, 0);
+  setKpi("#catIocs", tot >= 1e6 ? (tot / 1e6).toFixed(1) + "M" : tot >= 1e4 ? (tot / 1e3).toFixed(1) + "K" : tot.toLocaleString());
+  $("#catIocsS").textContent = `ThreatFox ${iocs.threatfox || 0} · Feodo ${iocs.feodo || 0} · KEV ${iocs.kev || 0} · agentic ${iocs.agentic || 0}`;
+  const allSrc = [...new Set(d.rules.flatMap((r) => r.log_sources))].sort();
+  CAT.sel = CAT.sel || new Set();
+  $("#catSrcs").innerHTML = allSrc.filter((x) => CAT.mode !== "configured" || d.configured_sources.includes(x)).map((x) => `<label class="chk">
+    <input type="checkbox" value="${esc(x)}" ${CAT.sel.has(x) ? "checked" : ""}> ${esc(x)} ${d.configured_sources.includes(x) ? '<span class="ok-ink">✓</span>' : ""}
+    <small class="muted">${d.rules.filter((r) => r.log_sources.includes(x)).length}</small></label>`).join("");
   const max = Math.max(1, ...d.mitre.flatMap((m) => m.techniques.map((t) => t.alerts_7d)));
   const order = (t) => { const i = TACTIC_ORDER.indexOf(t); return i < 0 ? 99 : i; };
   $("#catHeat").innerHTML = [...d.mitre].sort((a, b) => order(a.tactic) - order(b.tactic)).map((m) => `<div class="heat-col"><div class="heat-h" title="${esc(m.tactic)}">${esc(m.tactic)}</div>
     ${m.techniques.map((t) => `<div class="heat-c" style="--a:${(0.12 + 0.88 * t.alerts_7d / max).toFixed(2)}" title="${esc(t.id)} ${esc(t.name)} · ${t.alerts_7d} alerts 7 วัน">${esc(t.id)}</div>`).join("")}</div>`).join("");
   const q = $("#catQ").value.trim().toLowerCase(), cat = $("#catCat").value, en = $("#catEn").value;
   let rows = d.rules.filter((r) => (!q || `${r.id} ${r.title} ${r.technique} ${r.technique_name}`.toLowerCase().includes(q))
-    && (!cat || r.category === cat) && (en === "" || String(Number(r.enabled)) === en));
+    && (!cat || r.category === cat) && (en === "" || String(Number(r.enabled)) === en)
+    && (!CAT.sel.size || r.log_sources.some((x) => CAT.sel.has(x)))
+    && (CAT.mode !== "configured" || r.log_sources.some((x) => d.configured_sources.includes(x))));
   const s = $("#catSort").value;
   rows.sort(s === "id" ? (a, b) => a.id.localeCompare(b.id) : s === "quality" ? (a, b) => (a.quality ?? 101) - (b.quality ?? 101) : (a, b) => b.alerts_7d - a.alerts_7d);
   const edit = can("rules.manage");
@@ -1698,7 +1708,9 @@ function renderCatalog() {
     <div class="cr-main"><div class="cr-t"><span class="mono">${esc(r.id)}</span> ${esc(r.title)}</div>
       <div class="cr-m"><span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span> <span class="dt">${esc(r.category)}</span>
         <span class="muted small">${esc(r.technique || "")} ${esc(r.technique_name && r.technique_name !== r.technique ? r.technique_name : "")} · ${esc(r.tactic || "")}</span>
-        ${r.exports.map((x) => `<span class="thr" title="${esc(x.file)}">${esc(x.format.split(" ")[0])}</span>`).join(" ")}</div></div>
+        ${r.exports.map((x) => `<span class="thr" title="${esc(x.file)}">${esc(x.format.split(" ")[0])}</span>`).join(" ")}</div>
+      <div class="cr-m small muted">ต้องใช้ log: ${r.log_sources.map((x) => `<span class="${d.configured_sources.includes(x) ? "ok-ink" : ""}">${esc(x)}</span>`).join(", ")}
+        <button class="link cr-notify" data-rule="${esc(r.id)}" title="สร้างกฎแจ้งเตือนสำหรับ rule นี้">🔔 แจ้งเตือนเมื่อเจอ</button></div></div>
     <div class="cr-stats"><div><b>${r.alerts_7d}</b><small>alerts 7 วัน</small></div><div><b>${r.rejected_7d}</b><small>ถูกปฏิเสธ</small></div>
       <div class="cr-q">${r.quality === null ? '<small class="muted">ยังไม่มีข้อมูลคุณภาพ</small>' : `<small>Quality ${r.quality}</small><span class="qbar"><i style="width:${r.quality}%" class="${r.quality >= 80 ? "good" : r.quality >= 50 ? "mid" : "bad"}"></i></span>`}</div></div>
     <label class="switch" title="${r.source === "custom" && r.status !== "enabled" ? "custom rule นี้ยังไม่ได้เปิดใน AI Rule Assistant" : ""}"><input type="checkbox" data-rule="${esc(r.id)}" ${r.enabled ? "checked" : ""} ${edit && !(r.source === "custom" && r.status !== "enabled") ? "" : "disabled"} aria-label="เปิดใช้ ${esc(r.id)}"><span></span></label>
@@ -1712,3 +1724,181 @@ $("#catList").addEventListener("change", async (ev) => {
   catch (e) { alert(e.message); cb.checked = !cb.checked; }
 });
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadCases(); }, 30000);
+
+$("#catSrcs").addEventListener("change", (ev) => { const cb = ev.target.closest("input"); if (!cb) return; cb.checked ? CAT.sel.add(cb.value) : CAT.sel.delete(cb.value); renderCatalog(); });
+$("#catSrcMode").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button"); if (!b) return;
+  CAT.mode = b.dataset.m; b.parentElement.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); renderCatalog();
+});
+$("#catList").addEventListener("click", (ev) => {
+  const b = ev.target.closest(".cr-notify"); if (!b) return;
+  if (!can("rules.manage")) { alert("ต้องมีสิทธิ์ rules.manage เพื่อสร้างกฎแจ้งเตือน"); return; }
+  openRule(null);
+  const f = $("#nrForm");
+  f.name.value = `แจ้งเตือนเมื่อ ${b.dataset.rule} ทำงาน`; f.rule_prefixes.value = b.dataset.rule; f.min_severity.value = "info";
+});
+
+// ---------- intakes ----------
+const IN = { days: 1, items: [], ents: [] };
+const FMT_TH = { auto: "auto", native: "Native JSON", ecs: "Elastic ECS", defender: "Microsoft Defender", access_log: "Web access log" };
+const big = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
+async function loadIntakes() {
+  try {
+    const r = await api("/api/soc/intakes?days=" + IN.days);
+    IN.items = r.intakes;
+    $("#nb-intake").textContent = r.intakes.filter((i) => !i.disabled).length;
+    const edit = can("rules.manage");
+    $("#inList").innerHTML = r.intakes.map((i) => `<div class="intake ${i.disabled ? "off" : ""}" data-id="${i.id}">
+      <div class="in-main"><b>${esc(i.name)}</b>${i.disabled ? ' <span class="ist">disabled</span>' : ""}
+        <div class="cr-m"><span class="dt">${esc(FMT_TH[i.format] || i.format)}</span>${i.entity ? `<span class="thr">🏢 ${esc(i.entity)}</span>` : ""}
+          ${i.mode === "monitor" ? '<span class="vd">monitor · ไม่สร้าง alert</span>' : ""}
+          <span class="mono small muted">${esc(i.key_hint || "")}</span></div></div>
+      <div class="in-stat"><b class="${i.valid ? "acc" : ""}">${big(i.valid)}</b><small>Valid events</small></div>
+      <div class="in-stat"><b class="${i.invalid ? "bad-ink" : ""}">${big(i.invalid)}</b><small>Invalid events</small></div>
+      <div class="in-stat"><b class="${i.warning ? "warn-ink" : ""}">${big(i.warning)}</b><small>Events in warning</small></div>
+      <div class="in-stat"><b class="small">${i.last_event_at ? ago(i.last_event_at) + "ที่แล้ว" : "—"}</b><small>ส่งล่าสุด</small></div>
+      <div class="in-act">${edit ? `<select class="in-ent" aria-label="Entity ของ ${esc(i.name)}"><option value="">— entity —</option>${IN.ents.map((e) => `<option value="${e.id}" ${e.id === i.entity_id ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select>
+        <button class="ghost sm in-rot">Rotate key</button><button class="ghost sm in-dis">${i.disabled ? "เปิดใช้" : "ปิดใช้"}</button>` : ""}</div></div>`).join("")
+      || '<p class="muted">ยังไม่มี intake — สร้าง intake แล้วนำ key ไปใส่ใน log shipper (เช่น tools/ship_logs.py, Fluent Bit, Logstash http output)</p>';
+  } catch (e) { $("#inList").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+$("#inDays").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button"); if (!b) return;
+  IN.days = Number(b.dataset.d); b.parentElement.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); loadIntakes();
+});
+function showKey(name, key) {
+  $("#keyFor").textContent = name; $("#keyVal").textContent = key;
+  $("#keyCurl").textContent = `curl -X POST ${location.origin}/api/soc/intake \\\n  -H "X-Intake-Key: ${key}" \\\n  --data-binary @events.ndjson`;
+  $("#keyDlg").showModal();
+}
+$("#keyCopy").onclick = () => navigator.clipboard?.writeText($("#keyVal").textContent).then(() => { $("#keyCopy").textContent = "คัดลอกแล้ว ✓"; });
+$("#inNew").onclick = async () => {
+  await loadEntities();
+  const f = $("#inForm"); f.reset(); $("#inErr").textContent = "";
+  f.entity_id.innerHTML = '<option value="">— ไม่ระบุ —</option>' + IN.ents.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
+  $("#inDlg").showModal();
+};
+$("#inForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  const f = ev.target;
+  try {
+    const r = await api("/api/soc/intakes", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: f.name.value.trim(), format: f.format.value, entity_id: f.entity_id.value ? Number(f.entity_id.value) : null }) });
+    $("#inDlg").close(); loadIntakes(); loadEntities(); showKey(r.name, r.key);
+  } catch (e) { $("#inErr").textContent = e.message; }
+});
+async function patchIntake(id, body) {
+  return api(`/api/soc/intakes/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+$("#inList").addEventListener("click", async (ev) => {
+  const row = ev.target.closest(".intake"); if (!row) return;
+  const it = IN.items.find((x) => x.id === Number(row.dataset.id));
+  try {
+    if (ev.target.closest(".in-rot") && confirm(`สร้าง key ใหม่ให้ ${it.name}? key เดิมจะใช้ไม่ได้ทันที`)) { const r = await patchIntake(it.id, { rotate_key: true }); showKey(it.name, r.key); loadIntakes(); }
+    if (ev.target.closest(".in-dis")) { await patchIntake(it.id, { disabled: !it.disabled }); loadIntakes(); }
+  } catch (e) { alert(e.message); }
+});
+$("#inList").addEventListener("change", async (ev) => {
+  const sel = ev.target.closest(".in-ent"); if (!sel) return;
+  const id = Number(sel.closest(".intake").dataset.id);
+  try { await patchIntake(id, sel.value ? { entity_id: Number(sel.value) } : { clear_entity: true }); loadIntakes(); loadEntities(); } catch (e) { alert(e.message); }
+});
+
+// ---------- entities ----------
+async function loadEntities() {
+  try {
+    IN.ents = (await api("/api/soc/entities")).entities;
+    const edit = can("rules.manage");
+    $("#enTbl tbody").innerHTML = IN.ents.map((e) => `<tr data-id="${e.id}"><td><span class="who">${esc(e.name[0].toUpperCase())}</span><b>${esc(e.name)}</b></td>
+      <td class="a-title">${esc(e.description || "")}</td><td class="num">${e.intakes}</td>
+      <td><span class="${e.mode === "monitor" ? "vd" : "dt"}">${e.mode === "monitor" ? "monitor (log only)" : "automatic"}</span></td>
+      <td>${edit ? '<button class="ghost sm en-edit">แก้ไข</button>' : ""} <button class="ghost sm en-in">ดู intakes</button></td></tr>`).join("")
+      || '<tr><td colspan="5" class="muted">ยังไม่มี entity — เช่น แยกตามบริษัทลูก สาขา หรือหน่วยธุรกิจ</td></tr>';
+  } catch (e) { $("#enTbl tbody").innerHTML = `<tr><td colspan="5" class="err">${esc(e.message)}</td></tr>`; }
+}
+const EN = { edit: null };
+function openEntity(e) {
+  EN.edit = e; const f = $("#enForm"); f.reset(); $("#enErr").textContent = "";
+  $("#enDlgTitle").textContent = e ? `แก้ไข ${e.name}` : "New entity";
+  if (e) { f.name.value = e.name; f.description.value = e.description || ""; f.mode.value = e.mode; }
+  $("#enDlg").showModal();
+}
+$("#enNew").onclick = () => openEntity(null);
+$("#enForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  const f = ev.target, body = { name: f.name.value.trim(), description: f.description.value.trim(), mode: f.mode.value };
+  try {
+    await api(EN.edit ? `/api/soc/entities/${EN.edit.id}` : "/api/soc/entities", { method: EN.edit ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("#enDlg").close(); loadEntities(); loadIntakes();
+  } catch (e) { $("#enErr").textContent = e.message; }
+});
+$("#enTbl").addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr[data-id]"); if (!tr) return;
+  const e = IN.ents.find((x) => x.id === Number(tr.dataset.id));
+  if (ev.target.closest(".en-edit")) openEntity(e);
+  if (ev.target.closest(".en-in")) {
+    document.querySelectorAll("#inList .intake").forEach((row) => { row.classList.toggle("hl", IN.items.find((i) => i.id === Number(row.dataset.id))?.entity_id === e.id); });
+    $("#intakesCard").scrollIntoView({ behavior: "smooth" });
+  }
+});
+
+// ---------- assets ----------
+const AS = { type: "", page: 1, items: [] };
+const TYPE_TH = { host: "🖥 Host", account: "👤 Account/User", ai_agent: "🤖 AI agent" };
+async function loadAssets() {
+  const p = new URLSearchParams({ page: AS.page, size: 50, sort: $("#asSort").value, revoked: $("#asRevoked").checked });
+  if (AS.type) p.set("type", AS.type);
+  if ($("#asReal").checked) p.set("real_only", "true");
+  if ($("#asQ").value.trim()) p.set("q", $("#asQ").value.trim());
+  try {
+    const r = await api("/api/soc/assets?" + p);
+    AS.items = r.items; AS.page = r.page;
+    const bt = r.by_type, all = (bt.host || 0) + (bt.account || 0) + (bt.ai_agent || 0);
+    $("#asAll").textContent = all; $("#asHost").textContent = bt.host || 0; $("#asAccount").textContent = bt.account || 0; $("#asAgent").textContent = bt.ai_agent || 0;
+    $("#nb-asset").textContent = all;
+    $("#asPage").textContent = `หน้า ${r.page} / ${r.pages} · ${r.total.toLocaleString()} รายการ`;
+    $("#asPrev").disabled = r.page <= 1; $("#asNext").disabled = r.page >= r.pages;
+    const edit = can("agents.manage");
+    $("#asTbl tbody").innerHTML = r.items.map((a, i) => `<tr data-i="${i}"><td class="mono">${a.real ? "" : '<span class="muted small">(จำลอง) </span>'}${esc(a.name)}${a.description ? `<div class="sub">${esc(a.description)}</div>` : ""}</td>
+      <td><span class="dt">${TYPE_TH[a.type] || esc(a.type)}</span>${a.manual ? ' <span class="muted small">manual</span>' : ""}</td>
+      <td>${(a.tags || []).map((t) => `<span class="thr">${esc(t)}</span>`).join(" ") || '<span class="muted">—</span>'}</td>
+      <td class="small">${(a.sources || []).slice(0, 3).map(esc).join(", ")}${(a.sources || []).length > 3 ? ` +${a.sources.length - 3}` : ""}</td>
+      <td>${a.first_seen ? esc(t2(a.first_seen)) : "—"}</td><td>${a.last_seen ? ago(a.last_seen) + "ที่แล้ว" : "—"}</td>
+      <td class="num">${a.events.toLocaleString()}</td><td class="num">${a.alerts ? `<b class="bad-ink">${a.alerts}</b>` : 0}</td>
+      <td><span class="crit c${a.criticality}" title="Criticality ${a.criticality}/5">${a.criticality}</span></td>
+      <td>${edit ? '<button class="ghost sm as-edit">แก้ไข</button>' : ""}</td></tr>`).join("")
+      || '<tr><td colspan="10" class="muted">ยังไม่พบ asset — จะถูกเพิ่มอัตโนมัติเมื่อมี log เข้ามา</td></tr>';
+  } catch (e) { $("#asTbl tbody").innerHTML = `<tr><td colspan="10" class="err">${esc(e.message)}</td></tr>`; }
+}
+$("#asTabs").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button"); if (!b) return;
+  AS.type = b.dataset.t; AS.page = 1; b.parentElement.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); loadAssets();
+});
+let asT;
+$("#asQ").addEventListener("input", () => { clearTimeout(asT); asT = setTimeout(() => { AS.page = 1; loadAssets(); }, 300); });
+$("#asSort").onchange = $("#asRevoked").onchange = $("#asReal").onchange = () => { AS.page = 1; loadAssets(); };
+$("#asPrev").onclick = () => { AS.page--; loadAssets(); };
+$("#asNext").onclick = () => { AS.page++; loadAssets(); };
+function openAsset(a) {
+  const f = $("#asForm"); f.reset(); $("#asErr").textContent = "";
+  $("#asDlgTitle").textContent = a ? `แก้ไข ${a.name}` : "New asset";
+  f.type.disabled = f.name.disabled = !!a;
+  if (a) { f.type.value = a.type; f.name.value = a.name; f.criticality.value = String(a.criticality || 0); f.tags.value = (a.tags || []).join(", "); f.description.value = a.description || ""; f.revoked.checked = !!a.revoked; }
+  $("#asDlg").showModal();
+}
+$("#asNew").onclick = () => openAsset(null);
+$("#asTbl").addEventListener("click", (ev) => { if (ev.target.closest(".as-edit")) openAsset(AS.items[Number(ev.target.closest("tr").dataset.i)]); });
+$("#asForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  const f = ev.target;
+  try {
+    await api("/api/soc/assets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      type: f.type.value, name: f.name.value.trim(), criticality: Number(f.criticality.value), tags: splitList(f.tags.value),
+      description: f.description.value.trim(), revoked: f.revoked.checked }) });
+    $("#asDlg").close(); loadAssets(); loadCaseMeta();
+  } catch (e) { $("#asErr").textContent = e.message; }
+});
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) { loadIntakes(); loadAssets(); } }, 60000);

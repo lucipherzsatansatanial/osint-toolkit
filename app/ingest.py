@@ -78,7 +78,10 @@ def clean(rec: dict, now: float) -> dict | None:
     if isinstance(rec.get("flags"), list):
         out["flags"] = [str(f)[:64] for f in rec["flags"][:20]]
     kind = str(rec.get("kind") or "")
-    out["ts"] = _ts(rec.get("ts"), now)
+    got = _ts(rec.get("ts"), None)
+    out["ts"] = now if got is None else got
+    if got is None or got > now + 3600:
+        out["_ts_warning"] = True  # missing / unreadable / future timestamp: counted as a warning by intakes
     out["simulated"] = False
     if out.get("agent"):
         if kind == "net":

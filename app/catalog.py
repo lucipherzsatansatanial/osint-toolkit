@@ -28,6 +28,13 @@ def _exports() -> dict[str, list[dict]]:
     return out
 
 
+# log types (app.telemetry.KIND_SOURCE labels) each built-in rule needs
+P, W, N, L, D, X, A = "EDR process", "Web / proxy", "Network flow", "Identity logon", "Database audit", "DLP", "AI agent audit"
+RULE_SOURCES = {"OAI-001": [P], "OAI-002": [N, W], "OAI-003": [P], "OAI-004": [W], "OAI-005": [P, W], "OAI-006": [P, W, N],
+                "OAI-007": [N], "OAI-008": [W], "OAI-009": [L, N], "OAI-010": [D], "OAI-011": [D, X, N], "OAI-012": [P],
+                "OAI-013": [P], "OAI-014": [P]}
+CUSTOM_KIND = {"process": P, "http": W, "net": N, "logon": L, "db": D, "dlp": X, "agent": A}
+
 _EXPORTS = None
 
 
@@ -39,7 +46,8 @@ def builtin_rules() -> list[dict]:
     for rules, kind in ((offensive_ai.RULES, "builtin"), (agent_detect.RULES, "builtin")):
         for rid, (title, sev, tech, tactic) in rules.items():
             rows.append({"id": rid, "title": title, "severity": sev, "technique": tech, "tactic": tactic,
-                         "category": src_label(rid, kind), "source": "built-in", "exports": _EXPORTS.get(rid, [])})
+                         "category": src_label(rid, kind), "source": "built-in", "exports": _EXPORTS.get(rid, []),
+                         "log_sources": RULE_SOURCES.get(rid, [A])})
     return rows
 
 
@@ -50,7 +58,8 @@ def src_label(rid: str, kind: str) -> str:
 def catalog(custom: list[dict], disabled: set[str], events: list[dict], incidents: dict, now: float) -> dict:
     rules = builtin_rules() + [{"id": r["id"], "title": r.get("title"), "severity": r.get("severity"),
                                 "technique": r.get("technique"), "tactic": r.get("tactic"), "category": "Custom",
-                                "source": "custom", "status": r.get("status"), "exports": []} for r in custom]
+                                "source": "custom", "status": r.get("status"), "exports": [],
+                                "log_sources": [CUSTOM_KIND.get(r.get("kind"), r.get("kind") or "?")]} for r in custom]
     week = now - 7 * 86400
     total, rejected, last = Counter(), Counter(), {}
     for e in events:
