@@ -155,7 +155,7 @@ API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/in
 |---|---|
 | `viewer` ผู้ดู | ดู dashboard, incident, รายงาน, hunting |
 | `analyst` นักวิเคราะห์ | + สแกน OSINT และดูประวัติสแกน, จัดการ incident (สถานะ/ผู้รับผิดชอบ/บันทึก) |
-| `lead` หัวหน้าทีม SOC | + ส่ง log (ingest), ลงทะเบียน agent, Contain/Release, ทดสอบช่องทางแจ้งเตือน |
+| `lead` หัวหน้าทีม SOC | + ส่ง log (ingest), ลงทะเบียน agent, Contain/Release, ทดสอบช่องทางแจ้งเตือน, เปิด/ปิดกฎที่สร้างเอง |
 | `admin` ผู้ดูแลระบบ | + จัดการผู้ใช้ |
 | `ingest` บัญชีส่ง log | ส่ง log เข้า `/api/soc/ingest` ได้อย่างเดียว (ใช้กับ `tools/ship_logs.py`) |
 
@@ -193,6 +193,21 @@ API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/in
 - สิทธิ์: hunting/enrichment/AI = `ai.use` (analyst+), ดู attack chains = `soc.read`; ทุกการเรียกลง audit log
 - API: `POST /api/soc/hunt/nl`, `POST /api/soc/enrich`, `GET /api/soc/chains`, `POST /api/soc/chains/{id}/ai`
 
+### เฟส 4: AI Rule Assistant, Agent Risk Scoring, Response Plans
+
+- **AI Rule Assistant** (การ์ด "AI Rule Assistant"): อธิบายสิ่งที่อยากตรวจจับเป็นภาษาไทย → Claude ร่าง
+  *กฎสำหรับระบบ* (ภาษากฎปลอดภัย ไม่รันโค้ด: `kind`, `conditions` แบบ contains/equals/regex/in/gte/lte, `threshold` นับครั้งในช่วงเวลา) +
+  **Sigma / KQL / SPL** + กรณีทดสอบ (ควรตรง/ไม่ควรตรง) + false positive ที่อาจเกิด → ระบบ **ตรวจรูปแบบ** (รวม Sigma YAML และกัน regex ReDoS),
+  **รันกรณีทดสอบ** และ **ย้อนทดสอบ** กับ record ล่าสุด 5,000 รายการ เพื่อดูว่าจะแจ้งเตือนถี่แค่ไหน → แก้ JSON แล้วทดสอบซ้ำได้ →
+  บันทึกเป็น `CUS-xxx` (ปิดอยู่) → **หัวหน้าทีม (`rules.manage`) เปิดใช้** แล้วกฎจะตรวจ log ทุกรายการ (ไม่มี key ก็ "เขียนกฎเอง" ได้)
+- **Agent Risk Scoring**: คะแนน 0–100 ต่อ agent แยกปัจจัยที่อธิบายได้ — exposure (สิทธิ์อ่อนไหว, shell, egress), governance
+  (ไม่ลงทะเบียน, ไม่มีเจ้าของ, ไม่มี MCP allowlist), behaviour (detection 24 ชม., ถูกปฏิเสธ tool, prompt injection) — ชี้ที่คอลัมน์ Risk เพื่อดูเหตุผล
+- **Response plan** ในหน้ารายละเอียด incident: checklist ตาม NIST (Containment → Eradication → Recovery → Notification → Lessons learned)
+  สร้างจาก rule/MITRE playbook; ติ๊กแล้วบันทึกผู้ทำ/เวลาใน incident และ audit log; ถ้าเข้าข่ายข้อมูลส่วนบุคคลรั่ว (OAI-010/011, AGT-004/009, T1567 …)
+  แสดง **นาฬิกา 72 ชม. ตาม PDPA ม.37(4)** — นับจากเวลาตรวจพบครั้งแรก ควรยืนยันเวลา "ทราบเหตุ" กับ DPO
+- API: `POST /api/soc/rules/draft`, `POST /api/soc/rules/test`, `GET/POST /api/soc/rules`, `PATCH /api/soc/rules/{id}`,
+  `GET /api/soc/agents/risk`, `GET /api/soc/incidents/{id}/response`, `POST /api/soc/incidents/{id}/response/{step}`
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -214,7 +229,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (113 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (122 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

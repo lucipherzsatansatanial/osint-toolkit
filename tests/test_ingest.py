@@ -148,3 +148,11 @@ def test_unknown_users_do_not_merge_hosts():
                                        for h in ("SRV-A", "SRV-B")]).encode(), "native", now=NOW)
     e.ingest_external(recs)
     assert len(e.incidents) == 2
+
+
+def test_process_without_pid_does_not_break_ingest():
+    e = telemetry.Engine(seed=1, simulate=False)
+    recs, rej = ingest.parse(json.dumps([{"kind": "process", "host": "H1", "image": "nmap", "cmdline": "nmap x",
+                                          "parent_image": "claude", "parent_cmdline": "claude --yolo", "ts": NOW}]).encode(),
+                             "native", now=NOW)
+    assert rej == 0 and e.ingest_external(recs)["alerts_by_rule"] == {"OAI-001": 1}

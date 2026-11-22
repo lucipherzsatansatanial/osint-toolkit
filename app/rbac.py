@@ -8,7 +8,7 @@
 Roles
   viewer   read dashboards, incidents, reports, hunting
   analyst  + OSINT scans and scan history, incident workflow, AI copilot
-  lead     + ingest, register agents, containment, alert-channel tests
+  lead     + ingest, register agents, containment, alert-channel tests, enable custom rules
   admin    + user management
   ingest   service account for log shippers: ingest only
 """
@@ -27,7 +27,7 @@ _lock = threading.Lock()
 
 READ = {"soc.read"}
 ANALYST = READ | {"osint.scan", "osint.history", "incident.write", "ai.use"}
-LEAD = ANALYST | {"ingest", "agents.manage", "respond", "notify.test"}
+LEAD = ANALYST | {"ingest", "agents.manage", "respond", "notify.test", "rules.manage"}
 ROLES: dict[str, set[str]] = {
     "viewer": READ,
     "analyst": ANALYST,

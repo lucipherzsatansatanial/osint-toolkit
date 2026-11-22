@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS soc_agent_records (rowid INTEGER PRIMARY KEY AUTOINCR
 CREATE INDEX IF NOT EXISTS idx_soc_agent_records_ts ON soc_agent_records(ts);
 CREATE TABLE IF NOT EXISTS soc_agents (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS soc_endpoints (host TEXT PRIMARY KEY, doc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS soc_rules (id TEXT PRIMARY KEY, status TEXT NOT NULL, doc TEXT NOT NULL, updated_at REAL);
 """
 
 
@@ -123,3 +124,14 @@ def purge_expired(now: float | None = None) -> int:
         n += c.execute("DELETE FROM soc_incidents WHERE last_ts < ? AND status NOT IN ('open', 'investigating')",
                        (cutoff,)).rowcount
     return n
+
+
+def save_rule(rule: dict) -> None:
+    with _lock, _conn() as c:
+        c.execute("INSERT OR REPLACE INTO soc_rules (id, status, doc, updated_at) VALUES (?,?,?,?)",
+                  (rule["id"], rule.get("status", "disabled"), _dump(rule), time.time()))
+
+
+def list_rules() -> list[dict]:
+    with _lock, _conn() as c:
+        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc_rules ORDER BY id")]

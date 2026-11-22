@@ -331,7 +331,8 @@ class Detector:
         k = rec["kind"]
         entity = rec.get("dst_host") if k == "http" else rec.get("dest_host") if k == "logon" else rec.get("host")
         if k == "process":
-            self.procs[(rec["host"], rec["pid"])] = rec
+            if rec.get("pid") is not None:  # some EDR exports omit pids; still evaluate the record
+                self.procs[(rec["host"], rec["pid"])] = rec
             t = tool_name(rec.get("image", ""))
             if t in OFFENSIVE:
                 parent = self._ancestor_bypass(rec["host"], rec.get("ppid"), rec)
@@ -585,6 +586,7 @@ class OffensiveAIMonitor:
         self.detector = Detector(approved)
         self.real_detector = Detector(approved)
         self.sim = OffensiveAISim(rng)
+        self.last_records: list[dict] = []
         self.rule_hits: Counter = Counter()
         self.fw_hits: Counter = Counter()
         self._index_version = None
@@ -598,6 +600,7 @@ class OffensiveAIMonitor:
     def ingest(self, recs: list[dict], now: float, real: bool = False) -> list[dict]:
         self.refresh_index()
         det = self.real_detector if real else self.detector
+        self.last_records = recs
         alerts = []
         for rec in recs:
             for rule, extra in det.evaluate(rec, now):

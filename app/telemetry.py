@@ -20,6 +20,7 @@ from app import soc_store
 from app.agent_detect import AgentMonitor, _agent_state
 from app.config import settings
 from app.offensive_ai import OffensiveAIMonitor
+from app.phase4 import RuleEngine
 from app.modules import threatintel
 
 DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "data", "agent"]
@@ -98,6 +99,8 @@ class Engine:
                           for h, os_, u in (HOSTS if simulate else [])}
         self.agents = AgentMonitor(self.rng, demo_inventory=simulate)
         self.offai = OffensiveAIMonitor(self.rng)
+        self.custom = RuleEngine()
+        self.raw: deque[dict] = deque(maxlen=5000)  # recent raw records, for back-testing custom rules
         self.last_agent_records: list[dict] = []
 
     # ---------- generation ----------
@@ -145,6 +148,10 @@ class Engine:
         alerts += self.offai.step(now)
         for a in alerts:
             out.append(self._event(a["spec"], a["host"], a["user"], now, **a["extra"]))
+        for rec in list(self.offai.last_records) + recs:
+            rec.setdefault("ts", now)
+            self.raw.append(rec)
+            out.extend(self._custom_events(rec, now))
         for ev in out:
             self._ingest(ev)
         return flushed + out
@@ -168,6 +175,9 @@ class Engine:
                                                "realtime_protection": True, "last_seen": rec["ts"], "alerts": 0}
             for a in self.offai.ingest([rec], rec["ts"], real=True):
                 events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
+        for rec in records:
+            self.raw.append(rec)
+            events.extend(self._custom_events(rec, rec["ts"], simulated=False))
         for ev in events:
             self._ingest(ev)
         self._outbox.extend(events)
@@ -184,6 +194,21 @@ class Engine:
         return {"accepted": len(records), "alerts": len(events),
                 "by_kind": dict(Counter(r["kind"] for r in records)),
                 "alerts_by_rule": dict(Counter(e.get("rule") for e in events if e.get("rule")))}
+
+    def _custom_events(self, rec: dict, now: float, simulated: bool | None = None) -> list[dict]:
+        out = []
+        for r in self.custom.evaluate(rec, now):
+            kind = "agent" if rec.get("agent") else rec.get("kind")
+            domain = {"process": "endpoint", "logon": "identity", "db": "data", "dlp": "data", "agent": "agent"}.get(kind, "network")
+            host = rec.get("dst_host") or rec.get("dest_host") or rec.get("host") or "unknown"
+            user = rec.get("user") or rec.get("on_behalf_of") or (f"src:{rec['src_ip']}" if rec.get("src_ip") else "unknown")
+            extra = {"rule": r["id"], "detector": "custom",
+                     "record": str(rec.get("cmdline") or rec.get("uri") or rec.get("summary") or rec.get("dest") or "")[:160]}
+            if simulated is False or rec.get("simulated") is False:
+                extra["simulated"] = False
+            out.append(self._event((domain, f"[{r['id']}] {r.get('title', 'Custom rule')}", r.get("severity", "medium"),
+                                    r.get("technique") or "—", r.get("tactic") or "Custom"), host, user, now, **extra))
+        return out
 
     def flush(self) -> None:
         """Persist incidents that changed (real ones only)."""

@@ -193,3 +193,31 @@ def test_phase3_endpoints(client, monkeypatch):
     tv = client.post("/api/users", headers=H, json={"username": "v3", "role": "viewer"}).json()["token"]
     assert client.post("/api/soc/enrich", headers={"X-API-Key": tv}, json={"indicator": "x.example"}).status_code == 403
     assert client.get("/api/soc/chains", headers={"X-API-Key": tv}).status_code == 200
+
+
+def test_phase4_endpoints(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    rule = {"kind": "net", "match": "all", "title": "moonshot", "severity": "high",
+            "conditions": [{"field": "dest", "op": "contains", "value": "moonshot"}]}
+    t = client.post("/api/soc/rules/test", headers=H, json={"rule": rule, "test_cases": [
+        {"description": "hit", "record_json": '{"kind":"net","host":"S","dest":"api.moonshot.cn"}', "should_match": True}]}).json()
+    assert t["errors"] == [] and t["tests"][0]["passed"]
+    assert "error" in client.post("/api/soc/rules/draft", headers=H, json={"description": "detect moonshot calls please"}).json()
+    ta = client.post("/api/users", headers=H, json={"username": "an.4", "role": "analyst"}).json()["token"]
+    saved = client.post("/api/soc/rules", headers={"X-API-Key": ta}, json={"rule": rule}).json()
+    assert saved["id"] == "CUS-001" and saved["status"] == "disabled" and saved["created_by"] == "an.4"
+    assert client.patch("/api/soc/rules/CUS-001", headers={"X-API-Key": ta}, json={"status": "enabled"}).status_code == 403
+    assert client.patch("/api/soc/rules/CUS-001", headers=H, json={"status": "enabled"}).json()["status"] == "enabled"
+    r = client.post("/api/soc/ingest", headers=H, json=[{"kind": "net", "host": "SRV-ZZ", "dest": "api.moonshot.cn"}]).json()
+    assert r["alerts_by_rule"].get("CUS-001") == 1
+    assert client.get("/api/soc/rules", headers=H).json()["rules"][0]["hits"] >= 1
+    assert client.post("/api/soc/rules", headers=H, json={"rule": {**rule, "kind": "bad"}}).status_code == 422
+    risk = client.get("/api/soc/agents/risk", headers=H).json()["agents"]
+    assert risk and {"score", "level", "factors"} <= set(risk[0])
+    inc_id = client.get("/api/soc/incidents", headers=H).json()[0]["id"]
+    plan = client.get(f"/api/soc/incidents/{inc_id}/response", headers=H).json()
+    sid = plan["steps"][0]["id"]
+    after = client.post(f"/api/soc/incidents/{inc_id}/response/{sid}", headers={"X-API-Key": ta}, json={"done": True}).json()
+    assert after["steps"][0]["done"] and after["steps"][0]["done_by"] == "an.4"
+    assert client.get(f"/api/soc/incidents/{inc_id}", headers=H).json()["response"][sid]["done"] is True
+    assert client.post(f"/api/soc/incidents/{inc_id}/response/zz-9", headers=H, json={"done": True}).status_code == 404

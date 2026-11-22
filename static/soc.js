@@ -26,7 +26,7 @@ async function connect() {
     $("#keyBar").hidden = true;
     setLive(true);
     loadMe();
-    loadCti(); loadQueries(); loadNotify(); loadAiStatus(); loadChains();
+    loadCti(); loadQueries(); loadNotify(); loadAiStatus(); loadChains(); loadRisk(); loadRules();
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
     for (;;) {
@@ -219,6 +219,7 @@ function renderDetail(inc) {
   $("#detailCard").hidden = false;
   renderWorkflow(inc);
   renderCopilot(inc);
+  loadResponse(inc.id);
   $("#d-title").innerHTML = `#${inc.id} · ${esc(inc.title)} · <span class="sev" style="--sevc:var(--${esc(inc.severity)})">${esc(inc.severity)}</span>
     <small class="muted">users: ${esc(inc.users.join(", "))} · tactics: ${esc(inc.tactics.join(" → "))}</small>`;
   // graph: domain nodes (left) → incident hub (center) → affected hosts (right)
@@ -498,6 +499,119 @@ $("#chAiBtn").onclick = async () => {
 };
 setInterval(() => { if (state.me) loadChains(); }, 30000);
 
+// ---------- phase 4: rule assistant, agent risk, response plan ----------
+state.risk = {};
+const riskOf = (a) => state.risk?.[a.id]?.score ?? a.risk;
+const riskTip = (id) => (state.risk?.[id]?.factors || []).map((f) => `+${f.points} ${f.category}: ${f.reason}`).join("\n") || "";
+async function loadRisk() {
+  try { const r = await api("/api/soc/agents/risk"); state.risk = Object.fromEntries(r.agents.map((x) => [x.agent, x])); if (state.agents) renderAgents(state.agents); } catch {}
+}
+setInterval(() => { if (state.me) loadRisk(); }, 20000);
+
+let RDRAFT = null, RCODE = "sigma";
+function renderRuleResult(res) {
+  const d = res.draft || RDRAFT?.draft || {}, r = res.rule, t = (x) => esc(x ?? "");
+  const tests = res.tests || [], bt = res.backtest;
+  $("#ruleOut").innerHTML = `${d.title ? `<div class="ai-head">${t(d.title)}</div><div class="muted">${t(d.description)}</div>` : ""}
+    <div class="ai-badges"><span>${t(r.severity)}</span><span>${t(r.technique || "—")}</span><span>${t(r.tactic || "")}</span><span>kind=${t(r.kind)}</span></div>
+    ${res.errors?.length ? `<p class="bad">ข้อผิดพลาด: ${res.errors.map(t).join(" · ")}</p>` : '<p class="ok">✓ กฎถูกรูปแบบ</p>'}
+    ${res.sigma_errors?.length ? `<p class="bad">${res.sigma_errors.map(t).join(" · ")}</p>` : ""}
+    <h4>กฎสำหรับระบบ (แก้ได้ แล้วกด "ทดสอบอีกครั้ง")</h4>
+    <textarea id="ruleJson" rows="9">${t(JSON.stringify({ kind: r.kind, match: r.match, conditions: r.conditions, threshold: r.threshold,
+      title: r.title, severity: r.severity, technique: r.technique, tactic: r.tactic }, null, 2))}</textarea>
+    ${tests.length ? `<h4>กรณีทดสอบ (${tests.filter((x) => x.passed).length}/${tests.length} ผ่าน)</h4><ul class="tests">${tests.map((x) =>
+      `<li class="${x.passed ? "ok" : "bad"}">${x.passed ? "✓" : "✗"} ${t(x.description)} — ควร${x.should_match ? "ตรง" : "ไม่ตรง"}, ผล: ${x.matched ? "ตรง" : "ไม่ตรง"}${x.error ? " (" + t(x.error) + ")" : ""}</li>`).join("")}</ul>` : ""}
+    ${bt ? `<h4>ย้อนทดสอบกับข้อมูลล่าสุด</h4><div>${bt.hits} ครั้ง จาก ${bt.scanned} records (ช่วง ${bt.span_minutes} นาที${bt.real_hits ? `, ข้อมูลจริง ${bt.real_hits}` : ""})
+      ${bt.hits > 20 ? ' <span class="bad">— อาจแจ้งเตือนถี่เกินไป</span>' : ""}</div>` : ""}
+    ${d.false_positives?.length ? `<h4>False positive ที่อาจเกิด</h4><ul>${d.false_positives.map((x) => `<li>${t(x)}</li>`).join("")}</ul>` : ""}
+    ${d.sigma || d.kql || d.spl ? `<div class="code-tabs">${["sigma", "kql", "spl"].filter((k) => d[k]).map((k) => `<button type="button" data-k="${k}" class="${k === RCODE ? "on" : ""}">${k.toUpperCase()}</button>`).join("")}
+      <button type="button" class="mini" id="codeCopy">คัดลอก</button></div><pre class="code" id="ruleCode">${t(d[RCODE] || d.sigma || d.kql || d.spl)}</pre>` : ""}
+    ${d.model ? `<div class="ai-foot">ร่างโดย ${t(d.model)} · ต้องตรวจทานก่อนเปิดใช้</div>` : ""}`;
+  $("#ruleRetest").hidden = $("#ruleSave").hidden = false;
+}
+$("#ruleOut").addEventListener("click", (ev) => {
+  const b = ev.target.closest(".code-tabs button[data-k]");
+  if (b) { RCODE = b.dataset.k; $("#ruleCode").textContent = RDRAFT.draft[RCODE]; document.querySelectorAll(".code-tabs button[data-k]").forEach((x) => x.classList.toggle("on", x === b)); }
+  if (ev.target.id === "codeCopy") navigator.clipboard.writeText($("#ruleCode").textContent).catch(() => {});
+});
+$("#ruleForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const desc = $("#ruleDesc").value.trim(); if (desc.length < 10) return;
+  $("#ruleOut").innerHTML = '<p class="muted"><span class="spin"></span> AI กำลังร่างกฎ (อาจใช้ 20–60 วินาที)…</p>';
+  try {
+    const r = await api("/api/soc/rules/draft", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) });
+    if (r.error) { $("#ruleOut").innerHTML = `<p class="err">${esc(r.error)}</p>`; return; }
+    RDRAFT = r; RCODE = "sigma"; renderRuleResult(r);
+  } catch (e) { $("#ruleOut").innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
+});
+$("#ruleManual").onclick = () => {
+  RDRAFT = { draft: {}, rule: { kind: "process", match: "all", title: "กฎใหม่", severity: "medium", technique: "", tactic: "",
+    conditions: [{ field: "cmdline", op: "contains", value: "" }], threshold: { count: 0, window_sec: 0, group_by: "" } }, errors: [] };
+  renderRuleResult(RDRAFT);
+};
+function editedRule() {
+  try { return JSON.parse($("#ruleJson").value); } catch { alert("JSON ของกฎไม่ถูกต้อง"); return null; }
+}
+$("#ruleRetest").onclick = async () => {
+  const rule = editedRule(); if (!rule) return;
+  try {
+    const r = await api("/api/soc/rules/test", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule, test_cases: RDRAFT?.draft?.test_cases || [] }) });
+    RDRAFT = { ...(RDRAFT || {}), ...r, draft: RDRAFT?.draft || {} }; renderRuleResult(RDRAFT);
+  } catch (e) { alert("ไม่สำเร็จ: " + e.message); }
+};
+$("#ruleSave").onclick = async () => {
+  const rule = editedRule(); if (!rule) return;
+  const d = RDRAFT?.draft || {};
+  try {
+    const r = await api("/api/soc/rules", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule: { ...rule, description: d.description, sigma: d.sigma, kql: d.kql, spl: d.spl, false_positives: d.false_positives } }) });
+    alert(`บันทึก ${r.id} เป็น draft (ปิดอยู่) แล้ว — หัวหน้าทีมเปิดใช้ได้ในรายการด้านขวา`); loadRules();
+  } catch (e) { alert("บันทึกไม่สำเร็จ: " + e.message); }
+};
+async function loadRules() {
+  try {
+    const r = await api("/api/soc/rules");
+    $("#nb-rules").textContent = r.rules.filter((x) => x.status === "enabled").length;
+    $("#customRules").innerHTML = r.rules.map((x) => `<li class="${x.hits ? "hit" : ""}"><span class="mono">${esc(x.id)}</span>
+      <span>${esc(x.title)} <span class="sev" style="--sevc:var(--${esc(x.severity)})">${esc(x.severity)}</span>
+      <span class="st ${esc(x.status)}">${x.status === "enabled" ? "เปิด" : "ปิด"}</span><small class="muted"> · ${esc(x.kind)} · โดย ${esc(x.created_by || "")}</small>
+      ${can("rules.manage") ? `<button class="mini release" data-rid="${esc(x.id)}" data-to="${x.status === "enabled" ? "disabled" : "enabled"}">${x.status === "enabled" ? "ปิด" : "เปิดใช้"}</button>` : ""}</span><b>${x.hits}</b></li>`).join("")
+      || '<li class="muted">ยังไม่มีกฎที่สร้างเอง</li>';
+  } catch {}
+}
+$("#customRules").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-rid]"); if (!b) return;
+  if (b.dataset.to === "enabled" && !confirm(`เปิดใช้ ${b.dataset.rid}? กฎจะเริ่มตรวจ log ทุกรายการทันที`)) return;
+  try { await api(`/api/soc/rules/${encodeURIComponent(b.dataset.rid)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: b.dataset.to }) }); loadRules(); }
+  catch (e) { alert("ไม่สำเร็จ: " + e.message); }
+});
+setInterval(() => { if (state.me) loadRules(); }, 30000);
+
+const PHASE_ICON = { contain: "🛡️", eradicate: "🧹", recover: "♻️", notify: "📣", lessons: "📝" };
+async function loadResponse(id) {
+  try { renderResponse(await api(`/api/soc/incidents/${id}/response`)); } catch { $("#respPlan").innerHTML = ""; }
+}
+function renderResponse(p) {
+  if (p.incident !== state.selected) return;
+  const left = p.pdpa_deadline ? p.pdpa_deadline - Date.now() / 1000 : null;
+  const fmt = (s) => s <= 0 ? "เลยกำหนดแล้ว" : `เหลือ ${Math.floor(s / 3600)} ชม. ${Math.floor((s % 3600) / 60)} นาที`;
+  const canW = can("incident.write");
+  $("#respPlan").innerHTML = `<h3><span>แผนตอบสนอง (Response plan)</span><small class="muted">${Math.round(p.progress * 100)}% เสร็จ</small></h3>
+    <div class="bar"><i style="width:${p.progress * 100}%"></i></div>
+    ${left !== null ? `<div class="pdpa">⏱ PDPA ม.37(4): หากมีข้อมูลส่วนบุคคลรั่วไหลและมีความเสี่ยงต่อสิทธิ ต้องแจ้ง สคส. ภายใน 72 ชม. — ${fmt(left)}
+      (นับจากเวลาที่ตรวจพบครั้งแรก — ควรยืนยันเวลาที่องค์กร "ทราบเหตุ" กับ DPO)</div>` : ""}
+    ${p.phases.map((ph) => { const st = p.steps.filter((x) => x.phase === ph.id); return st.length ? `<h4>${PHASE_ICON[ph.id] || ""} ${esc(ph.name)}</h4>${st.map((x) =>
+      `<label class="${x.done ? "done" : ""}"><input type="checkbox" data-step="${esc(x.id)}" ${x.done ? "checked" : ""} ${canW ? "" : "disabled"}>
+       <span>${esc(x.action)}<small>${esc(x.owner)} · ${esc(x.why)}${x.done ? ` · ✓ ${esc(x.done_by || "")} ${x.done_at ? new Date(x.done_at * 1000).toLocaleString("th-TH", { hour12: false }) : ""}` : ""}</small></span></label>`).join("")}` : ""; }).join("")}`;
+}
+$("#respPlan").addEventListener("change", async (ev) => {
+  const cb = ev.target.closest("input[data-step]"); if (!cb || !state.selected) return;
+  try { renderResponse(await api(`/api/soc/incidents/${state.selected}/response/${encodeURIComponent(cb.dataset.step)}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: cb.checked }) })); }
+  catch (e) { cb.checked = !cb.checked; alert("ไม่สำเร็จ: " + e.message); }
+});
+
 // ---------- alert channels + deep links ----------
 async function loadNotify() {
   const el = $("#notifyPill");
@@ -575,7 +689,7 @@ function renderAgents(list) {
   $("#agents tbody").innerHTML = list.map((a) => `<tr><td class="mono">${esc(a.id)}<div class="muted" style="font-family:inherit">owner ${esc(a.owner)}</div></td>
     <td class="mono">${esc(a.host)}</td><td title="${esc((a.scopes || []).join(", "))}">${a.scopes ? a.scopes.length : "?"}${a.shell ? ' <span class="muted">+shell</span>' : ""}</td>
     <td>${a.calls}</td><td style="color:var(${a.denied ? "--high" : "--muted"})">${a.denied}</td>
-    <td><span class="risk"><i style="width:${a.risk}%"></i></span>${a.risk}</td>
+    <td class="riskbtn" title="${esc(riskTip(a.id))}"><span class="risk"><i style="width:${riskOf(a)}%"></i></span>${riskOf(a)}${state.risk?.[a.id] ? ` <span class="st ${esc(state.risk[a.id].level === "low" ? "normal" : state.risk[a.id].level === "medium" ? "suspicious" : "compromised")}">${esc(state.risk[a.id].level)}</span>` : ""}</td>
     <td><span class="st ${esc(a.status)}">${esc(a.status)}</span>${a.registered === false ? ' <span class="st unregistered" title="seen in logs but not in the agent inventory">unregistered</span>' : ""}</td>
     <td>${can("respond") ? `<button title="บันทึกสถานะ contained และ audit log — ยังไม่มี connector สั่ง revoke token จริง" class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button>` : ""}</td></tr>`).join("");
 }

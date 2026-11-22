@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, ingest, phase3, soc_report, soc_store
+from app import ai, ingest, phase3, phase4, soc_report, soc_store
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -37,6 +37,7 @@ async def lifespan(_: FastAPI):
     soc_store.init()
     soc_store.purge_expired()
     hub.engine.restore(soc_store.load())
+    hub.engine.custom.load(soc_store.list_rules())
     hub.engine.persist = True
     notifier.reload()
     notifier.start()
@@ -445,6 +446,127 @@ async def soc_chain_ai(chain_id: str, who: rbac.Principal = Depends(require("ai.
                  legal_basis="own_asset", case_ref=chain_id,
                  result={"source": out.get("source"), "model": out.get("model"), "usage": out.get("usage")})
     return out
+
+
+# ---------- Phase 4: AI rule assistant, agent risk, response plans ----------
+class RuleDraftRequest(BaseModel):
+    description: str = Field(min_length=10, max_length=3000)
+
+
+def _raw_records() -> list[dict]:
+    return list(hub.engine.raw)
+
+
+@app.post("/api/soc/rules/draft")
+async def soc_rule_draft(req: RuleDraftRequest, who: rbac.Principal = Depends(require("ai.use"))):
+    draft = await phase4.draft_rule(req.description)
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.ai_rule_draft", target="rule", purpose=req.description[:300],
+                 legal_basis="own_asset", case_ref=None,
+                 result={"ok": "error" not in draft, "model": draft.get("model"), "usage": draft.get("usage")})
+    if "error" in draft:
+        return draft
+    rule = phase4.assemble(draft)
+    return {"draft": draft, "rule": rule, **phase4.evaluate_draft(rule, draft.get("test_cases", []), _raw_records())}
+
+
+class RuleTestRequest(BaseModel):
+    rule: dict
+    test_cases: list[dict] = Field(default_factory=list, max_length=20)
+
+
+@app.post("/api/soc/rules/test")
+async def soc_rule_test(req: RuleTestRequest, _: rbac.Principal = Depends(require("ai.use"))):
+    rule = phase4.assemble({"local_rule": req.rule, **{k: v for k, v in req.rule.items() if k != "conditions"}})
+    return {"rule": rule, **phase4.evaluate_draft(rule, req.test_cases, _raw_records())}
+
+
+@app.get("/api/soc/rules")
+async def soc_rules(_: rbac.Principal = Depends(require("soc.read"))):
+    rules = soc_store.list_rules()
+    for r in rules:
+        r["hits"] = hub.engine.custom.hits.get(r["id"], 0)
+    return {"rules": rules}
+
+
+class RuleSave(BaseModel):
+    rule: dict
+
+
+@app.post("/api/soc/rules")
+async def soc_rule_save(req: RuleSave, who: rbac.Principal = Depends(require("ai.use"))):
+    """Save a rule as a draft (disabled). Enabling needs rules.manage."""
+    rule = phase4.assemble({"local_rule": req.rule, **{k: v for k, v in req.rule.items() if k != "conditions"}})
+    errs = phase4.validate_rule(rule)
+    if errs:
+        raise HTTPException(422, "; ".join(errs))
+    existing = soc_store.list_rules()
+    rule["id"] = req.rule.get("id") if req.rule.get("id") in {r["id"] for r in existing} \
+        else f"CUS-{len(existing) + 1:03d}"
+    rule.update(status="disabled", created_by=who.name, updated_at=time.time())
+    soc_store.save_rule(rule)
+    hub.engine.custom.load(soc_store.list_rules())
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.rule_save", target=rule["id"], purpose=rule.get("title", "")[:300],
+                 legal_basis="own_asset", case_ref=None, result={"status": "disabled"})
+    return rule
+
+
+class RuleStatus(BaseModel):
+    status: Literal["enabled", "disabled"]
+
+
+@app.patch("/api/soc/rules/{rule_id}")
+async def soc_rule_status(rule_id: str, req: RuleStatus, who: rbac.Principal = Depends(require("rules.manage"))):
+    rule = next((r for r in soc_store.list_rules() if r["id"] == rule_id), None)
+    if rule is None:
+        raise HTTPException(404, "rule not found")
+    rule.update(status=req.status, status_by=who.name, updated_at=time.time())
+    soc_store.save_rule(rule)
+    hub.engine.custom.load(soc_store.list_rules())
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.rule_status", target=rule_id, purpose=req.status,
+                 legal_basis="own_asset", case_ref=None, result={"status": req.status})
+    return rule
+
+
+@app.get("/api/soc/agents/risk")
+async def soc_agent_risk(_: rbac.Principal = Depends(require("soc.read"))):
+    e, now = hub.engine, time.time()
+    out = []
+    for ag in e.agents.agents.values():
+        alerts = [a for a in e.events if a.get("agent") == ag["id"] and now - a["ts"] <= 86400]
+        recs = [r for r in e.agents.records if r.get("agent") == ag["id"]][-300:]
+        out.append(phase4.agent_risk(ag, alerts, recs))
+    return {"agents": sorted(out, key=lambda x: -x["score"])}
+
+
+@app.get("/api/soc/incidents/{inc_id}/response")
+async def soc_response_plan(inc_id: int, _: rbac.Principal = Depends(require("soc.read"))):
+    inc = _find_incident(inc_id)
+    return phase4.response_plan(inc, inc.get("response"))
+
+
+class StepUpdate(BaseModel):
+    done: bool
+
+
+@app.post("/api/soc/incidents/{inc_id}/response/{step_id}")
+async def soc_response_step(inc_id: int, step_id: str, req: StepUpdate,
+                            who: rbac.Principal = Depends(require("incident.write"))):
+    inc = _find_incident(inc_id)
+    plan = phase4.response_plan(inc, inc.get("response"))
+    if step_id not in {s["id"] for s in plan["steps"]}:
+        raise HTTPException(404, "step not found")
+    inc.setdefault("response", {})[step_id] = {"done": req.done, "by": who.name, "at": time.time()}
+    step = next(s for s in plan["steps"] if s["id"] == step_id)
+    inc.setdefault("history", []).append({"ts": time.time(), "analyst": who.name,
+                                          "change": f"response {step_id} {'done' if req.done else 'reopened'}: {step['action'][:80]}"})
+    hub.engine.incidents.setdefault(inc_id, inc)
+    if inc.get("real"):
+        hub.engine._dirty.add(inc_id)
+        hub.engine.flush()
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.response_step", target=f"incident:{inc_id}",
+                 purpose=f"{step_id} done={req.done}", legal_basis="own_asset", case_ref=f"INC-{inc_id}",
+                 result={"step": step_id, "done": req.done})
+    return phase4.response_plan(inc, inc.get("response"))
 
 
 class IncidentUpdate(BaseModel):
