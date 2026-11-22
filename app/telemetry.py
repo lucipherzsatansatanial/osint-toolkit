@@ -16,13 +16,16 @@ import time
 from collections import Counter, deque
 from typing import Any
 
-from app.agent_detect import AgentMonitor
+from app import soc_store
+from app.agent_detect import AgentMonitor, _agent_state
 from app.config import settings
 from app.offensive_ai import OffensiveAIMonitor
 from app.modules import threatintel
 
 DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "agent"]
 SEV = ["info", "low", "medium", "high", "critical"]
+INCIDENT_STATUSES = ("open", "investigating", "resolved", "false_positive", "closed")
+ACTIVE = ("open", "investigating")  # new alerts still correlate into these
 CORR_WINDOW = 1800
 
 HOSTS = [("FIN-WS-014", "Windows 11", "finance.ops"), ("FIN-WS-022", "Windows 11", "ap.clerk"),
@@ -74,6 +77,8 @@ def sev_up(s: str) -> str:
 class Engine:
     def __init__(self, seed: int | None = None, max_events: int = 300, simulate: bool = True):
         self.simulate = simulate
+        self.persist = False  # switched on by the app after restore(); tests use in-memory engines
+        self._dirty: set[int] = set()
         self.ingested: Counter = Counter()
         self._outbox: deque[dict] = deque(maxlen=500)
         self._agent_outbox: deque[dict] = deque(maxlen=500)
@@ -159,16 +164,83 @@ class Engine:
                 self.endpoints[rec["host"]] = {"host": rec["host"], "os": rec.get("os") or "unknown",
                                                "user": rec.get("user") or "", "status": "healthy",
                                                "realtime_protection": True, "last_seen": rec["ts"], "alerts": 0}
-            for a in self.offai.ingest([rec], rec["ts"]):
+            for a in self.offai.ingest([rec], rec["ts"], real=True):
                 events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
         for ev in events:
             self._ingest(ev)
         self._outbox.extend(events)
+        if self.persist:
+            soc_store.save_events(events)
+            soc_store.save_agent_records(agent_recs)
+            touched = {r.get("host") for r in telemetry} | {e["host"] for e in events}
+            soc_store.save_endpoints([self.endpoints[h] for h in touched if h in self.endpoints])
+            soc_store.save_agents([self.agents.agents[a] for a in {r["agent"] for r in agent_recs}
+                                   if a in self.agents.agents])
+            self.flush()
         self.ingested.update(r["kind"] for r in records)
         self.ingested["total"] += len(records)
         return {"accepted": len(records), "alerts": len(events),
                 "by_kind": dict(Counter(r["kind"] for r in records)),
                 "alerts_by_rule": dict(Counter(e.get("rule") for e in events if e.get("rule")))}
+
+    def flush(self) -> None:
+        """Persist incidents that changed (real ones only)."""
+        if self.persist and self._dirty:
+            soc_store.save_incidents([self.incidents[i] for i in self._dirty if i in self.incidents])
+        self._dirty.clear()
+
+    def restore(self, data: dict) -> None:
+        """Load persisted real state (see app.soc_store.load) and continue id sequences after it."""
+        for ev in data["events"]:
+            self.events.append(ev)
+            self.totals[ev["domain"]] += 1
+            self.totals["sev:" + ev["severity"]] += 1
+            self.by_tactic[ev["tactic"]] += 1
+        for ev in data["events"]:  # rule / framework hit counters shown on the dashboard
+            rule = ev.get("rule") or ""
+            if rule.startswith("AGT-"):
+                self.agents.rule_hits[rule] += 1
+            elif rule.startswith("OAI-"):
+                self.offai.rule_hits[rule] += 1
+                for fw in (ev.get("framework") or "").split():
+                    self.offai.fw_hits[fw] += 1
+        self.restored = len(data["events"])
+        for inc in data["incidents"]:
+            self.incidents[inc["id"]] = inc
+        for ep in data["endpoints"]:
+            self.endpoints[ep["host"]] = ep
+        for a in data["agents"]:
+            self.agents.agents[a["id"]] = _agent_state(a) | {k: a[k] for k in ("status", "contained", "alerts",
+                                                                                "denied", "calls", "risk") if k in a}
+        for r in data["agent_records"]:
+            self.agents.records.append(r)
+        self.ids = itertools.count(max(data["max_event_id"], max((e["id"] for e in self.events), default=0)) + 1)
+        self.inc_ids = itertools.count(max(1000, data["max_incident_id"]) + 1)
+        self.agents.sim.ids = itertools.count(max((r.get("id") or 0 for r in data["agent_records"]), default=0) + 1)
+
+    def update_incident(self, inc_id: int, analyst: str, status: str | None = None, assignee: str | None = None,
+                        note: str | None = None, now: float | None = None) -> dict | None:
+        inc = self.incidents.get(inc_id) or (soc_store.incident(inc_id) if self.persist else None)
+        if inc is None:
+            return None
+        self.incidents.setdefault(inc_id, inc)
+        now = time.time() if now is None else now
+        inc.setdefault("notes", [])
+        inc.setdefault("history", [])
+        if status and status != inc["status"]:
+            if status not in INCIDENT_STATUSES:
+                raise ValueError(f"status must be one of {', '.join(INCIDENT_STATUSES)}")
+            inc["history"].append({"ts": now, "analyst": analyst, "change": f"status {inc['status']} → {status}"})
+            inc["status"] = status
+        if assignee is not None and assignee != inc.get("assignee"):
+            inc["history"].append({"ts": now, "analyst": analyst, "change": f"assignee → {assignee or '-'}"})
+            inc["assignee"] = assignee or None
+        if note:
+            inc["notes"].append({"ts": now, "analyst": analyst, "text": note})
+        if inc.get("real"):
+            self._dirty.add(inc_id)
+            self.flush()
+        return inc
 
     def drop_outbox(self) -> None:
         self._outbox.clear()
@@ -221,13 +293,16 @@ class Engine:
 
     def _correlate(self, ev: dict) -> int:
         for inc in self.incidents.values():
-            if inc["status"] != "open" or ev["ts"] - inc["last_ts"] > CORR_WINDOW:
+            if inc["status"] not in ACTIVE or ev["ts"] - inc["last_ts"] > CORR_WINDOW:
+                continue
+            if inc.get("real", False) != (ev.get("simulated") is False):
                 continue
             if ev["user"] in inc["users"] or ev["host"] in inc["hosts"]:
                 break
         else:
             inc = {"id": next(self.inc_ids), "first_ts": ev["ts"], "status": "open", "users": [],
-                   "hosts": [], "domains": [], "tactics": [], "alerts": [], "severity": "info"}
+                   "hosts": [], "domains": [], "tactics": [], "alerts": [], "severity": "info",
+                   "real": ev.get("simulated") is False, "assignee": None, "notes": [], "history": []}
             self.incidents[inc["id"]] = inc
         inc["last_ts"] = ev["ts"]
         for key, val in (("users", ev["user"]), ("hosts", ev["host"]), ("domains", ev["domain"]),
@@ -236,27 +311,36 @@ class Engine:
                 inc[key].append(val)
         inc["alerts"].append({k: ev.get(k) for k in ("id", "ts", "domain", "title", "severity", "technique",
                                                      "host", "cti_match", "agent", "session", "rule",
-                                                     "framework", "detector")})
+                                                     "framework", "detector", "simulated", "user",
+                                                     "record", "indicator", "source_url", "provider",
+                                                     "region")})
+        if inc.get("real"):
+            self._dirty.add(inc["id"])
         base = max((a["severity"] for a in inc["alerts"]), key=SEV.index)
         inc["coordinated"] = len(inc["domains"]) >= 2 and SEV.index(base) >= SEV.index("high")
         inc["severity"] = sev_up(base) if inc["coordinated"] else base
         inc["title"] = ("Coordinated multi-domain attack" if inc["coordinated"]
                         else inc["alerts"][0]["title"])
-        if len(self.incidents) > 60:  # drop oldest closed/stale
-            for k in sorted(self.incidents)[:len(self.incidents) - 60]:
+        if len(self.incidents) > 200:  # memory bound: drop oldest inactive (real ones stay in SQLite)
+            stale = [k for k in sorted(self.incidents) if self.incidents[k]["status"] not in ACTIVE]
+            for k in stale[:len(self.incidents) - 200]:
                 del self.incidents[k]
         return inc["id"]
 
     def expire(self, now: float) -> None:
         for inc in self.incidents.values():
             if inc["status"] == "open" and now - inc["last_ts"] > CORR_WINDOW:
-                inc["status"] = "closed"
+                inc["status"] = "closed"  # auto-close idle, untriaged cases; analyst states are left alone
+                inc.setdefault("history", []).append({"ts": now, "analyst": "system", "change": "status open → closed (idle)"})
+                if inc.get("real"):
+                    self._dirty.add(inc["id"])
+        self.flush()
 
     # ---------- views ----------
     def stats(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
         recent = [e for e in self.events if now - e["ts"] <= 60]
-        open_inc = [i for i in self.incidents.values() if i["status"] == "open"]
+        open_inc = [i for i in self.incidents.values() if i["status"] in ACTIVE]
         return {
             "ts": now,
             "events_per_min": len(recent),
@@ -269,7 +353,8 @@ class Engine:
             "cti_hits": sum(1 for e in self.events if e.get("cti_match")),
             "endpoints": {s: sum(1 for ep in self.endpoints.values() if ep["status"] == s)
                           for s in ("healthy", "at_risk", "compromised")},
-            "mode": {"simulation": self.simulate, "ingested": self.ingested["total"]},
+            "mode": {"simulation": self.simulate, "ingested": self.ingested["total"],
+                     "restored": getattr(self, "restored", 0)},
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -279,7 +364,7 @@ class Engine:
                 "rules": self.agents.rules(), "offai": self.offai.summary()}
 
     def incident_list(self) -> list[dict]:
-        return sorted(self.incidents.values(), key=lambda i: (i["status"] != "open", -i["last_ts"]))[:25]
+        return sorted(self.incidents.values(), key=lambda i: (i["status"] not in ACTIVE, -i["last_ts"]))[:25]
 
 
 class Hub:
@@ -297,6 +382,12 @@ class Hub:
             self.task = asyncio.create_task(self._run())
         if self.cti_task is None or self.cti_task.done():
             self.cti_task = asyncio.create_task(self._cti_loop())
+
+    def stop(self) -> None:
+        for t in (self.task, self.cti_task):
+            if t and not t.done():
+                t.cancel()
+        self.task = self.cti_task = None
 
     async def _cti_loop(self) -> None:
         while True:

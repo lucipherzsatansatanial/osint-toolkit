@@ -104,6 +104,21 @@ python3 tools/ship_logs.py agent_audit.ndjson --url https://<host>              
 | `SOC_AI_APPROVED_HOSTS` | `SRV-AI-01,SRV-AI-02` | host ที่อนุญาตให้เรียก API โมเดล AI (OAI-002 จะไม่แจ้ง) |
 | `SOC_SERVER_PREFIXES` | `SRV` | prefix ชื่อเครื่องที่ถือเป็น server สำหรับ OAI-002 |
 
+### Incident workflow และการเก็บข้อมูลถาวร
+
+- **เก็บถาวรเฉพาะข้อมูลจริง** (SQLite ไฟล์เดียวกับ audit log): alert, incident, AI-agent audit record, agent ที่ลงทะเบียน, endpoint — restart แล้วโหลดกลับมาครบ; ข้อมูลจำลองไม่ถูกบันทึกและไม่ถูกรวมเข้ากับ incident จริง
+- **Workflow**: สถานะ `open → investigating → resolved / false_positive` (incident ที่ไม่มีความเคลื่อนไหว 30 นาทีและยังไม่มีคนรับจะ `closed` อัตโนมัติ), ผู้รับผิดชอบ, บันทึกของ analyst — ทุกการเปลี่ยนแปลงลง audit log
+- **รายงาน**: ปุ่ม "รายงาน (HTML/PDF)" ในหน้ารายละเอียด incident (พิมพ์เป็น PDF ได้) และ "Export CSV" (เปิดใน Excel ได้ภาษาไทย, กัน formula injection)
+- ข้อจำกัด: state ของกฎแบบ sliding window (fan-out, rotating proxy, multi-stage) เริ่มใหม่หลัง restart
+- **Render free plan** เก็บ DB ไว้ที่ `/tmp` ซึ่งหายเมื่อ redeploy/หลับ — ถ้าต้องการเก็บถาวรจริงต้องใช้ persistent disk (แผนเสียเงิน) แล้วตั้ง `OSINT_DB_PATH` ไปที่ disk นั้น
+
+API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/incidents/{id}`, `GET /api/soc/incidents/{id}/report`, `GET /api/soc/incidents.csv`
+
+| ตัวแปร | ค่าเริ่มต้น | ความหมาย |
+|---|---|---|
+| `SOC_RETENTION_DAYS` | `90` | ลบ alert / agent record / incident ที่ปิดแล้วเก่ากว่านี้ |
+| `SOC_AUTOSTART` | `on` | ดึง CTI feed และเริ่ม correlation ตั้งแต่เปิดเซิร์ฟเวอร์ (ไม่ต้องรอคนเปิด dashboard) |
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -125,7 +140,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (76 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (81 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

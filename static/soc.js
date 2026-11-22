@@ -101,7 +101,7 @@ function renderStats(s) {
   if (s.mode) {
     const m = s.mode, el = $("#modePill");
     el.textContent = m.simulation ? (m.ingested ? `Telemetry: SIMULATED + ${m.ingested} real` : "Telemetry: SIMULATED")
-      : `Telemetry: LIVE · ${m.ingested.toLocaleString()} records`;
+      : `Telemetry: LIVE · ${m.ingested.toLocaleString()} records ใหม่${m.restored ? ` · ${m.restored} alerts จากฐานข้อมูล` : ""}`;
     el.className = "pill " + (m.simulation ? "warn" : "ok");
   }
   sparkHist.push(s.events_per_min); if (sparkHist.length > 60) sparkHist.shift();
@@ -196,9 +196,10 @@ function renderIncidents(list) {
   state.incidents = list;
   $("#incidents").innerHTML = list.length ? list.map((i) => `<div class="inc ${i.coordinated ? "coord" : ""} ${i.status}"
       data-id="${i.id}" style="--sevc:var(--${esc(i.severity)})">
-      <div class="t"><span>#${i.id} ${esc(i.title)}</span><span class="sev">${esc(i.severity)}</span></div>
+      <div class="t"><span>${i.real ? '<span class="real">REAL</span>' : ""}#${i.id} ${esc(i.title)}</span><span class="sev">${esc(i.severity)}</span></div>
       <div class="m">${i.domains.map((d) => `<span class="chip" style="color:var(--${esc(d)})">${esc(d)}</span>`).join("")}
-        <span>${i.alerts.length} alerts</span><span>${esc(i.hosts.join(", "))}</span><span>${hhmmss(i.last_ts)}</span></div></div>`).join("")
+        <span>${i.alerts.length} alerts</span><span>${esc(i.hosts.join(", "))}</span><span>${hhmmss(i.last_ts)}</span>
+        ${i.status !== "open" ? `<span class="ist ${esc(i.status)}">${esc(i.status.replace("_", " "))}</span>` : ""}${i.assignee ? `<span>👤 ${esc(i.assignee)}</span>` : ""}</div></div>`).join("")
     : `<p class="muted">ยังไม่มี incident — รอ telemetry…</p>`;
   if (state.selected) { const cur = list.find((i) => i.id === state.selected); if (cur) renderDetail(cur); }
 }
@@ -212,6 +213,7 @@ $("#d-close").onclick = () => { state.selected = null; $("#detailCard").hidden =
 
 function renderDetail(inc) {
   $("#detailCard").hidden = false;
+  renderWorkflow(inc);
   $("#d-title").innerHTML = `#${inc.id} · ${esc(inc.title)} · <span class="sev" style="--sevc:var(--${esc(inc.severity)})">${esc(inc.severity)}</span>
     <small class="muted">users: ${esc(inc.users.join(", "))} · tactics: ${esc(inc.tactics.join(" → "))}</small>`;
   // graph: domain nodes (left) → incident hub (center) → affected hosts (right)
@@ -241,6 +243,46 @@ function renderDetail(inc) {
     <span class="mono muted">${hhmmss(a.ts)}</span> <span class="sev" style="--sevc:var(--${esc(a.severity)})">${esc(a.severity)}</span>
     ${esc(a.title)}<div class="muted">${esc(a.domain)} · ${esc(a.host)} · ${esc(a.technique)}${a.session ? ` · <a href="#" class="slink" data-s="${esc(a.session)}">${esc(a.agent)} / ${esc(a.session)}</a>` : ""}${a.cti_match ? ` · <span style="color:var(--cti)">CTI: ${esc(a.cti_match)}</span>` : ""}</div></li>`).join("");
 }
+
+// ---------- incident workflow ----------
+function analystName() {
+  let a = store.get("analyst");
+  if (!a) { a = prompt("ชื่อผู้ปฏิบัติงาน (analyst)") || ""; if (a.length >= 2) store.set("analyst", a); }
+  return a.length >= 2 ? a : "";
+}
+function renderWorkflow(inc) {
+  if (state.wfFor !== inc.id) {  // only reset the form when switching incidents, never while typing
+    state.wfFor = inc.id;
+    $("#wfStatus").value = inc.status; $("#wfAssignee").value = inc.assignee || ""; $("#wfNote").value = ""; $("#wfMsg").textContent = "";
+  }
+  const items = [...(inc.notes || []).map((n) => ({ ...n, kind: "note" })), ...(inc.history || []).map((h) => ({ ...h, kind: "sys" }))]
+    .sort((a, b) => b.ts - a.ts);
+  $("#wfNotes").innerHTML = items.map((x) => x.kind === "note"
+    ? `<li><span class="mono muted">${new Date(x.ts * 1000).toLocaleString("th-TH", { hour12: false })}</span> <b>${esc(x.analyst)}</b>: ${esc(x.text)}</li>`
+    : `<li class="sys"><span class="mono">${new Date(x.ts * 1000).toLocaleString("th-TH", { hour12: false })}</span> ${esc(x.analyst)} · ${esc(x.change)}</li>`).join("")
+    || '<li class="muted">ยังไม่มีบันทึก</li>';
+}
+$("#wfSave").onclick = async () => {
+  const id = state.selected, analyst = analystName(); if (!id || !analyst) return;
+  const body = { analyst, status: $("#wfStatus").value, assignee: $("#wfAssignee").value.trim() };
+  const note = $("#wfNote").value.trim(); if (note) body.note = note;
+  try {
+    const inc = await api(`/api/soc/incidents/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const i = state.incidents.findIndex((x) => x.id === id); if (i >= 0) state.incidents[i] = inc;
+    $("#wfNote").value = ""; $("#wfMsg").textContent = inc.real ? "บันทึกแล้ว (เก็บถาวร + audit log)" : "บันทึกแล้ว (incident จำลอง: ไม่เก็บถาวร)";
+    renderIncidents(state.incidents);
+  } catch (e) { $("#wfMsg").textContent = "ไม่สำเร็จ: " + e.message; }
+};
+async function download(path, filename, open) {
+  const r = await fetch(path, { headers: headers() });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const url = URL.createObjectURL(await r.blob());
+  const a = document.createElement("a"); a.href = url;
+  if (open) a.target = "_blank"; else a.download = filename;
+  a.rel = "noopener"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+$("#wfReport").onclick = () => { if (state.selected) download(`/api/soc/incidents/${state.selected}/report?analyst=${encodeURIComponent(store.get("analyst"))}`, "", true).catch((e) => { $("#wfMsg").textContent = e.message; }); };
+$("#incCsv").onclick = () => download("/api/soc/incidents.csv", "soc-incidents.csv", false).catch((e) => alert(e.message));
 
 // ---------- Agentic AI ----------
 const RULE_SEV = {};

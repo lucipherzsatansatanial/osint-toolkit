@@ -8,8 +8,9 @@ from fastapi.testclient import TestClient
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("OSINT_DB_PATH", str(tmp_path / "t.db"))
     monkeypatch.setenv("OSINT_API_KEY", "secret")
-    import app.config, app.audit, app.main
-    for m in (app.config, app.audit, app.main):
+    monkeypatch.setenv("SOC_AUTOSTART", "off")
+    import app.config, app.audit, app.soc_store, app.main
+    for m in (app.config, app.audit, app.soc_store, app.main):
         importlib.reload(m)
 
     async def fake_scan(target, *a):
@@ -97,3 +98,23 @@ def test_soc_ingest_api(client):
                       json=[{"id": "hr-bot", "scopes": ["hr.read"], "egress": [], "shell": False}]).json()
     assert reg[0]["registered"] is True and reg[0]["account"] == "hr-bot"
     assert client.post("/api/soc/agents/register", headers=H, json=[{"id": "bad id!"}]).status_code == 422
+
+
+def test_soc_incident_workflow_api(client):
+    import app.main
+    r = client.post("/api/soc/ingest", headers=H, json=[{"kind": "net", "host": "SRV-FILE-02", "dest": "api.deepseek.com"}]).json()
+    assert r["alerts"] == 1
+    incs = client.get("/api/soc/incidents", headers=H).json()
+    inc_id = incs[0]["id"]
+    assert incs[0]["real"] is True
+    assert client.patch(f"/api/soc/incidents/{inc_id}", headers=H, json={"analyst": "tester"}).status_code == 422
+    assert client.patch(f"/api/soc/incidents/{inc_id}", headers=H, json={"analyst": "tester", "status": "nope"}).status_code == 422
+    up = client.patch(f"/api/soc/incidents/{inc_id}", headers=H,
+                      json={"analyst": "tester", "status": "investigating", "assignee": "tier2", "note": "checking"}).json()
+    assert up["status"] == "investigating" and up["notes"][0]["analyst"] == "tester"
+    assert client.patch("/api/soc/incidents/424242", headers=H, json={"analyst": "tester", "note": "x"}).status_code == 404
+    rep = client.get(f"/api/soc/incidents/{inc_id}/report", headers=H)
+    assert rep.status_code == 200 and "Incident #" in rep.text and "default-src 'none'" in rep.headers["content-security-policy"]
+    csv_r = client.get("/api/soc/incidents.csv", headers=H)
+    assert csv_r.status_code == 200 and str(inc_id) in csv_r.text
+    assert client.get("/api/history", headers=H).json()[0]["module"] == "soc.incident"

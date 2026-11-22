@@ -88,7 +88,7 @@ def test_engine_real_only_mode_detects_and_tracks_shadow_ai():
     assert "DEV-9" in e.endpoints and e.agents.agents["hr-bot"]["registered"] is False
     out = e.step(NOW + 1)  # ingested events are broadcast once, then cleared
     assert len(out) == 4 and all(ev["simulated"] is False and ev["src_country"] is None for ev in out)
-    assert e.step(NOW + 2) == [] and e.stats(NOW)["mode"] == {"simulation": False, "ingested": 3}
+    assert e.step(NOW + 2) == [] and e.stats(NOW)["mode"] == {"simulation": False, "ingested": 3, "restored": 0}
 
 
 def test_registered_agent_scopes_apply():

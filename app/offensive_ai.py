@@ -375,7 +375,10 @@ class OffensiveAIMonitor:
     def __init__(self, rng, approved: set[tuple[str, str]] | None = None):
         if approved is None:
             approved = {(h, "*") for h in settings.ai_approved_hosts} or {("SRV-AI-01", "*"), ("SRV-AI-02", "*")}
+        # Separate state for simulated and real telemetry: dedup/sliding windows must never let
+        # simulated activity suppress (or trigger) alerts on real logs.
         self.detector = Detector(approved)
+        self.real_detector = Detector(approved)
         self.sim = OffensiveAISim(rng)
         self.rule_hits: Counter = Counter()
         self.fw_hits: Counter = Counter()
@@ -384,14 +387,15 @@ class OffensiveAIMonitor:
     def refresh_index(self) -> None:
         rows = threatintel.agentic_index()
         if rows and self._index_version is not rows:
-            self.detector.index = IndicatorIndex(rows)
+            self.detector.index = self.real_detector.index = IndicatorIndex(rows)
             self._index_version = rows
 
-    def ingest(self, recs: list[dict], now: float) -> list[dict]:
+    def ingest(self, recs: list[dict], now: float, real: bool = False) -> list[dict]:
         self.refresh_index()
+        det = self.real_detector if real else self.detector
         alerts = []
         for rec in recs:
-            for rule, extra in self.detector.evaluate(rec, now):
+            for rule, extra in det.evaluate(rec, now):
                 title, sev, tech, tactic = RULES[rule]
                 sev = extra.pop("severity", None) or sev
                 self.rule_hits[rule] += 1

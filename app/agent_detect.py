@@ -238,7 +238,8 @@ def _agent_state(a: dict) -> dict:
 
 class AgentMonitor:
     def __init__(self, rng, demo_inventory: bool = True):
-        self.agents = {a["id"]: _agent_state({**a, "registered": True}) for a in (AGENTS if demo_inventory else [])}
+        self.agents = {a["id"]: _agent_state({**a, "registered": True, "demo": True})
+                       for a in (AGENTS if demo_inventory else [])}
         self.detector = Detector(self.agents)
         self.sim = AgentSim(rng, self.agents)
         self.records: deque[dict] = deque(maxlen=2000)

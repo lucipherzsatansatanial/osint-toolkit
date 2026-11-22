@@ -56,7 +56,7 @@
   </section>
 
   <section class="card">
-    <h2><span class="c-xdr">XDR</span> — Correlated incidents</h2>
+    <h2><span class="c-xdr">XDR</span> — Correlated incidents <button id="incCsv" class="ghost sm" title="incident จาก log จริงที่บันทึกไว้">Export CSV</button></h2>
     <div id="incidents" class="incidents"></div>
   </section>
 
@@ -72,6 +72,18 @@
       <svg id="graph" viewBox="0 0 720 300" role="img" aria-label="Correlation graph"></svg>
       <ol id="timeline" class="timeline"></ol>
     </div>
+      <div class="wf">
+      <label>สถานะ <select id="wfStatus">
+        <option value="open">open — เปิด</option><option value="investigating">investigating — กำลังสอบสวน</option>
+        <option value="resolved">resolved — แก้ไขแล้ว</option><option value="false_positive">false positive — แจ้งเตือนผิด</option>
+        <option value="closed">closed — ปิด</option></select></label>
+      <label>ผู้รับผิดชอบ <input id="wfAssignee" maxlength="80" autocomplete="off"></label>
+      <label class="grow">บันทึกของ analyst <input id="wfNote" maxlength="4000" autocomplete="off" placeholder="สิ่งที่ตรวจพบ / ขั้นตอนที่ทำแล้ว"></label>
+      <button id="wfSave">บันทึก</button>
+      <button id="wfReport" class="ghost">รายงาน (HTML/PDF)</button>
+      <span id="wfMsg" class="muted"></span>
+    </div>
+    <ul id="wfNotes" class="wfnotes"></ul>
   </section>
 
   <section class="card span3" id="agentCard">
