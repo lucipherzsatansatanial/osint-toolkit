@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS soc2_notify_rules (tenant TEXT NOT NULL, id INTEGER N
 CREATE TABLE IF NOT EXISTS soc2_inbox (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, ts REAL NOT NULL,
     read_by TEXT NOT NULL DEFAULT '[]', doc TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_soc2_inbox_ts ON soc2_inbox(tenant, ts);
+CREATE TABLE IF NOT EXISTS soc2_settings (tenant TEXT NOT NULL, k TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, k));
+CREATE TABLE IF NOT EXISTS soc2_notebooks (tenant TEXT NOT NULL, id INTEGER NOT NULL, doc TEXT NOT NULL, updated_at REAL,
+    deleted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant, id));
 CREATE TABLE IF NOT EXISTS soc2_counters (tenant TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (tenant, k));
 """
 LEGACY = {  # old single-tenant table -> (new table, column list)
@@ -243,6 +246,40 @@ def mark_inbox_read(user: str, tenant: str = DEFAULT, ids: list[int] | None = No
                 c.execute("UPDATE soc2_inbox SET read_by = ? WHERE rowid = ?", (json.dumps(who + [user]), r["rowid"]))
                 n += 1
     return n
+
+
+def get_setting(key: str, default=None, tenant: str = DEFAULT):
+    with _lock, _conn() as c:
+        r = c.execute("SELECT doc FROM soc2_settings WHERE tenant = ? AND k = ?", (tenant, key)).fetchone()
+    return json.loads(r["doc"]) if r else default
+
+
+def set_setting(key: str, value, tenant: str = DEFAULT) -> None:
+    with _lock, _conn() as c:
+        c.execute("INSERT OR REPLACE INTO soc2_settings (tenant, k, doc) VALUES (?,?,?)", (tenant, key, _dump(value)))
+
+
+def save_notebook(nb: dict, tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        if nb.get("id") is None:
+            nb = {**nb, "id": c.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM soc2_notebooks WHERE tenant = ?",
+                                        (tenant,)).fetchone()[0]}
+        c.execute("INSERT OR REPLACE INTO soc2_notebooks (tenant, id, doc, updated_at, deleted) VALUES (?,?,?,?,?)",
+                  (tenant, nb["id"], _dump(nb), time.time(), 1 if nb.get("deleted") else 0))
+    return nb
+
+
+def notebooks(tenant: str = DEFAULT, deleted: bool = False) -> list[dict]:
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT doc FROM soc2_notebooks WHERE tenant = ? AND deleted = ? ORDER BY updated_at DESC",
+                         (tenant, 1 if deleted else 0))
+        return [json.loads(r["doc"]) for r in rows]
+
+
+def notebook(nb_id: int, tenant: str = DEFAULT) -> dict | None:
+    with _lock, _conn() as c:
+        r = c.execute("SELECT doc FROM soc2_notebooks WHERE tenant = ? AND id = ?", (tenant, nb_id)).fetchone()
+    return json.loads(r["doc"]) if r else None
 
 
 def add_counts(counts: dict, tenant: str = DEFAULT) -> None:

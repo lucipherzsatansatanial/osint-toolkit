@@ -21,9 +21,13 @@
   <nav class="nav" id="nav">
     <div class="nav-h">ศูนย์ปฏิบัติการ</div>
     <a href="#top" class="on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>ภาพรวม</span></a>
+    <a href="#casesCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2M3 12h18"/></svg><span>Cases</span><em id="nb-case">0</em></a>
     <a href="#alertsListCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><span>Alerts</span></a>
     <a href="#eventsCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M9 19V5M14 19v-7M19 19V8"/></svg><span>Events</span></a>
     <a href="#landCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-6 4 4 7-9"/><path d="M14 6h5v5"/></svg><span>Threat Landscape</span></a>
+    <a href="#queryCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg><span>Query builder</span></a>
+    <a href="#nbCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h11a2 2 0 012 2v14a2 2 0 01-2 2H6z"/><path d="M6 3v18M10 8h6M10 12h6"/></svg><span>Notebooks</span></a>
+    <a href="#catalogCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10"/><circle cx="19" cy="19" r="2"/></svg><span>Rules catalog</span></a>
     <a href="#tasksCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M9 4V2.8h6V4M8 11l2 2 4-4M8 17h8"/></svg><span>Tasks</span><em id="nb-task">0</em></a>
     <a href="#sec-edr"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>EDR · Endpoints</span><em id="nb-ep">0</em></a>
     <a href="#sec-xdr"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5l2.8 8M16 7.5l-2.8 8M8.5 6h7"/></svg><span>XDR · Incidents</span><em id="nb-inc">0</em></a>
@@ -151,6 +155,23 @@
 
   <section class="card span3" id="detailCard" hidden>
     <h2>Incident <span id="d-title"></span> <button id="d-close" class="ghost sm">ปิด</button></h2>
+    <div class="casebar" id="caseBar">
+      <span id="cbType" class="cb-type"></span>
+      <label>Priority <select id="cbPrio" data-perm-dis="incident.write"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+      <label class="grow">Tags <input id="cbTags" placeholder="คั่นด้วย , เช่น phishing, vip" maxlength="400" data-perm-dis="incident.write"></label>
+      <button id="cbSave" class="sm" data-perm="incident.write">บันทึก</button>
+      <span id="cbMsg" class="muted small"></span>
+    </div>
+    <div class="impact" id="cbImpact"></div>
+    <div class="cfields" id="cbFields"></div>
+    <div class="tabs" role="tablist" id="caseTabs">
+      <button role="tab" data-tab="details" class="on">Details</button>
+      <button role="tab" data-tab="alerts">Alerts <em id="ctAlerts">0</em></button>
+      <button role="tab" data-tab="tasks">Tasks <em id="ctTasks">0</em></button>
+      <button role="tab" data-tab="events">Events <em id="ctEvents">–</em></button>
+      <button role="tab" data-tab="notebooks">Notebooks <em id="ctNb">0</em></button>
+    </div>
+    <div class="tabpane" data-pane="details">
     <div class="detail">
       <svg id="graph" viewBox="0 0 720 300" role="img" aria-label="Correlation graph"></svg>
       <ol id="timeline" class="timeline"></ol>
@@ -184,6 +205,13 @@
         <div class="presets" id="chatPresets"></div>
       </div>
     </div>
+      </div>
+    <div class="tabpane" data-pane="alerts" hidden><div class="tbl-wrap tall"><table class="tbl" id="caseAlerts"><thead><tr><th>เวลา</th><th>Alert</th><th>Host</th><th>User</th><th>Rule</th><th>CTI</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="tabpane" data-pane="tasks" hidden><p><button id="caseTaskNew" class="sm" data-perm="incident.write">+ สร้างงานใน case นี้</button></p>
+      <div class="tbl-wrap"><table class="tbl" id="caseTasks"><thead><tr><th>#</th><th>ชื่องาน</th><th>ผู้รับผิดชอบ</th><th>สถานะ</th><th>กำหนดส่ง</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="tabpane" data-pane="events" hidden><p class="muted small" id="caseEvMeta"></p>
+      <div class="tbl-wrap tall"><table class="tbl ev-tbl" id="caseEvents"><thead><tr><th>เวลา</th><th>ชนิด</th><th>Host</th><th>Description</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="tabpane" data-pane="notebooks" hidden><p><button id="caseNbNew" class="sm" data-perm="incident.write">+ สร้าง notebook ของ case นี้</button></p><ul class="list" id="caseNbs"></ul></div>
   </section>
 
   <section class="card span3" id="agentCard">
@@ -340,6 +368,27 @@
     <details class="roles"><summary>สิทธิ์ของแต่ละบทบาท</summary><ul id="rolesList"></ul></details>
   </section>
 
+  <section class="card span3" id="casesCard">
+    <h2>Cases <small class="muted" id="csTotal"></small>
+      <button id="cfEdit" class="ghost sm" data-perm="rules.manage">Custom fields</button>
+      <button id="csNew" class="sm" data-perm="incident.write">+ New case</button></h2>
+    <div class="task-bar">
+      <input id="csQ" type="search" placeholder="ค้นหาชื่อ case / host / tag / เลข case" aria-label="ค้นหา case">
+      <select id="csStatus" aria-label="สถานะ"><option value="">ทุกสถานะ</option><option value="open,investigating" selected>กำลังดำเนินการ</option><option value="open">open</option>
+        <option value="investigating">investigating</option><option value="resolved,closed">resolved / closed</option><option value="false_positive">false positive</option></select>
+      <select id="csPrio" aria-label="Priority"><option value="">ทุก priority</option><option value="critical">Critical</option><option value="high">High</option><option value="critical,high">Critical + High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+      <select id="csType" aria-label="ประเภท"><option value="">ทุกประเภท</option><option value="automatic">Automatic</option><option value="manual">Manual</option></select>
+      <select id="csTag" aria-label="Tag"><option value="">ทุก tag</option></select>
+      <select id="csSort" aria-label="เรียง"><option value="updated">แก้ไขล่าสุด</option><option value="created">สร้างล่าสุด</option><option value="priority">Priority</option></select>
+      <label class="chk"><input id="csMine" type="checkbox"> ของฉัน</label>
+      <label class="chk"><input id="csReal" type="checkbox"> log จริง</label>
+    </div>
+    <div class="tbl-wrap tall"><table class="tbl cases-tbl" id="csTbl">
+      <thead><tr><th>#</th><th>ชื่อ case</th><th>สถานะ</th><th>Priority</th><th>Verdict</th><th>Custom fields</th><th>Tags</th><th>ผู้รับผิดชอบ</th><th>ประเภท</th><th class="num">Alerts</th><th>แก้ไขล่าสุด</th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="pager"><button id="csPrev" class="ghost sm">‹ ก่อนหน้า</button><span id="csPage" class="muted"></span><button id="csNext" class="ghost sm">ถัดไป ›</button></div>
+  </section>
+
   <section class="card span3" id="alertsListCard">
     <h2>Alerts <small class="muted" id="alTotal"></small></h2>
     <div class="task-bar">
@@ -386,6 +435,72 @@
     </div>
   </section>
 
+  <section class="card span3" id="queryCard">
+    <h2>Query builder <small class="muted">ภาษา pipe อ่านง่าย รันในเครื่อง ไม่มี eval</small>
+      <button id="qbHelp" class="ghost sm" type="button">วิธีเขียน</button></h2>
+    <div class="qb">
+      <div class="qb-main">
+        <textarea id="qbText" class="code" rows="6" spellcheck="false" aria-label="query">events
+| where kind == "logon"
+| count by user, dest_host
+| limit 50</textarea>
+        <div class="task-bar">
+          <select id="qbRange" aria-label="ช่วงเวลา"><option value="15">15 นาที</option><option value="60" selected>1 ชม.</option><option value="1440">24 ชม.</option><option value="10080">7 วัน</option></select>
+          <button id="qbRun">▶ Run query</button>
+          <button id="qbSave" class="ghost" data-perm="incident.write">บันทึก query</button>
+          <button id="qbCsv" class="ghost">Export CSV</button>
+          <span id="qbMeta" class="muted small"></span>
+        </div>
+        <pre id="qbDoc" class="qb-doc" hidden>events | alerts                     แหล่งข้อมูล: log ดิบ หรือ alert
+| where f == "x" and n > 10 or g in (a, b)   ตัวดำเนินการ: == != contains !contains startswith endswith
+                                                  > >= < <= in !in exists !exists  (and ก่อน or)
+| sort by ts desc      | limit 100      | fields ts, host, user      | count by host, user
+field ซ้อนใช้จุด เช่น record.cmdline · ข้อความใส่ "..." หรือ '...'</pre>
+        <p id="qbErr" class="err"></p>
+        <div class="tbl-wrap tall"><table class="tbl" id="qbTbl"><thead></thead><tbody></tbody></table></div>
+      </div>
+      <aside class="qb-side"><h3>Query ที่บันทึกไว้</h3><ul class="list" id="qbSaved"></ul></aside>
+    </div>
+  </section>
+
+  <section class="card span3" id="nbCard">
+    <h2>Notebooks <small class="muted">บันทึกการสืบสวน (Markdown) แชร์ในทีม tenant เดียวกัน</small></h2>
+    <div class="nb">
+      <aside class="nb-side">
+        <button id="nbNew" class="sm" data-perm="incident.write">+ New notebook</button>
+        <div class="seg"><button data-trash="0" class="on">Notebooks</button><button data-trash="1">ถังขยะ</button></div>
+        <input id="nbQ" type="search" placeholder="ค้นหา notebook" aria-label="ค้นหา notebook">
+        <ul id="nbList" class="nb-list"></ul>
+      </aside>
+      <div class="nb-main" id="nbMain">
+        <p class="muted">เลือกหรือสร้าง notebook</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card span3" id="catalogCard">
+    <h2>Rules catalog <small class="muted">ทุก detection rule ที่ระบบใช้ · เปิด/ปิดราย tenant · สถิติ 7 วัน</small></h2>
+    <div class="kpis cat-kpis">
+      <div class="kpi"><span>Rules ทั้งหมด</span><b id="catTotal">–</b></div>
+      <div class="kpi"><span>เปิดใช้งาน</span><b id="catEnabled">–</b></div>
+      <div class="kpi"><span>Rules ของคุณ (custom)</span><b id="catCustom">–</b></div>
+      <div class="kpi"><span>Alerts 7 วัน</span><b id="catAlerts">–</b></div>
+      <div class="kpi"><span>ถูกปฏิเสธ (FP/benign) 7 วัน</span><b id="catRejected">–</b></div>
+    </div>
+    <div class="cat">
+      <div><h3>MITRE ATT&amp;CK coverage <small class="muted">ช่อง = technique ที่มี rule · สีเข้ม = alert มาก</small></h3><div id="catHeat" class="heat"></div></div>
+      <div>
+        <div class="task-bar">
+          <input id="catQ" type="search" placeholder="ค้นหา rule / technique" aria-label="ค้นหา rule">
+          <select id="catCat" aria-label="หมวด"><option value="">ทุกหมวด</option><option>Offensive-AI behaviour</option><option>AI-agent policy</option><option>Custom</option></select>
+          <select id="catEn" aria-label="สถานะ"><option value="">ทั้งหมด</option><option value="1">เปิดอยู่</option><option value="0">ปิดอยู่</option></select>
+          <select id="catSort" aria-label="เรียง"><option value="alerts">Alerts 7 วัน</option><option value="id">Rule ID</option><option value="quality">Quality ต่ำก่อน</option></select>
+        </div>
+        <div id="catList" class="cat-list"></div>
+      </div>
+    </div>
+  </section>
+
   <section class="card span3" id="nrulesCard">
     <h2>กฎการแจ้งเตือน <small class="muted">เลือกว่า incident แบบไหนควรแจ้งใคร ผ่านช่องทางไหน</small>
       <button id="nrNew" class="sm" data-perm="rules.manage">+ สร้างกฎ</button></h2>
@@ -403,6 +518,34 @@
     </div>
   </section>
 </main>
+
+<dialog id="caseDlg" class="dlg">
+  <form method="dialog" id="caseForm">
+    <h2>New case</h2>
+    <label>ชื่อ case <input name="name" required maxlength="200" placeholder="เช่น CFO ได้รับอีเมล phishing"></label>
+    <label>รายละเอียด <textarea name="description" rows="4" maxlength="8000"></textarea></label>
+    <div class="row3">
+      <label>Priority <select name="priority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+      <label>ผู้รับผิดชอบ <select name="assignee"><option value="">— ยังไม่มอบหมาย —</option></select></label>
+      <label>Tags <input name="tags" placeholder="phishing, vip"></label>
+    </div>
+    <label>Host ที่เกี่ยวข้อง (คั่นด้วย ,) <input name="hosts" placeholder="LT-CFO-01, MAIL-GW"></label>
+    <div id="caseCf" class="cfields"></div>
+    <p id="caseErr" class="err"></p>
+    <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button value="save">สร้าง case</button></div>
+  </form>
+</dialog>
+
+<dialog id="cfDlg" class="dlg">
+  <form method="dialog" id="cfForm">
+    <h2>Custom fields ของ case</h2>
+    <p class="muted small">key ใช้ a-z 0-9 _ · ชนิด select ใส่ตัวเลือกคั่นด้วย ,</p>
+    <div id="cfRows"></div>
+    <p><button type="button" id="cfAdd" class="ghost sm">+ เพิ่ม field</button></p>
+    <p id="cfErr" class="err"></p>
+    <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button value="save">บันทึก</button></div>
+  </form>
+</dialog>
 
 <dialog id="nrDlg" class="dlg">
   <form method="dialog" id="nrForm">

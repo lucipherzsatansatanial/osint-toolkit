@@ -159,6 +159,22 @@ poll ได้ ส่วน POST/PATCH และการสแกน OSINT ย�
   ความรุนแรง, ทดสอบกับ incident ปัจจุบันได้ก่อนบันทึก — `GET|POST /api/soc/notify-rules`, `PUT|DELETE /api/soc/notify-rules/{id}`,
   `POST /api/soc/notify-rules/test`, `POST /api/soc/notifications/read` (สร้าง/แก้กฎต้องมีสิทธิ์ `rules.manage`)
 
+### Cases, Query builder, Notebooks และ Rules catalog
+
+- **Cases**: ทุก incident คือ case — ตารางพร้อม Priority, Verdict, Custom fields, Tags, ผู้รับผิดชอบ, ประเภท (Automatic จาก
+  correlation / Manual ที่ analyst เปิดเอง); สร้าง case ด้วยมือ (`POST /api/soc/cases`), ตั้ง custom fields ของ tenant
+  (`PUT /api/soc/case-fields`, สิทธิ์ `rules.manage`), ระดับความสำคัญของ asset 0–5 (`PUT /api/soc/assets/criticality`);
+  หน้า case มีแท็บ Details / Alerts / Tasks / Events (log ดิบของ host+user ในช่วงเวลา case ±1 ชม.) / Notebooks.
+  case ที่สร้างด้วยมือไม่ถูกรวม alert อัตโนมัติและไม่ถูกปิดเองเมื่อไม่มีความเคลื่อนไหว
+- **Query builder** (`POST /api/soc/query`): `events | where kind == "logon" and user contains adm | count by host | limit 50`
+  — where / sort / limit / count by / fields, ตัวดำเนินการ `== != contains startswith endswith > < in exists`; ตีความเอง
+  ไม่มี eval หรือ regex จากผู้ใช้; บันทึก query ของ tenant ได้ (`/api/soc/queries`), export CSV (กัน formula injection)
+- **Notebooks**: บันทึกการสืบสวนแบบ Markdown (render แบบ escape ทั้งหมดก่อน) ผูกกับ case ได้, ถังขยะ/กู้คืน,
+  กันเขียนทับกันด้วย `base_updated_at` (409 ถ้ามีคนบันทึกก่อน) — `/api/soc/notebooks`
+- **Rules catalog** (`GET /api/soc/rules/catalog`): OAI-001..014, AGT-001..012 และ custom rules พร้อม alerts 7 วัน,
+  จำนวนที่ analyst ปฏิเสธ (verdict false positive / benign), quality score, MITRE coverage heatmap, ไฟล์ KQL/SPL ที่ส่งออกได้;
+  เปิด/ปิด rule ราย tenant (`PUT /api/soc/rules/{id}/enabled`) — alert ของ rule ที่ปิดจะไม่ถูกสร้าง (นับไว้ใน `suppressed`)
+
 ### แจ้งเตือน incident ออกนอกระบบ (Teams / LINE / Slack / Email / Webhook)
 
 ตั้งค่าผ่าน environment variables (บน Render: service → **Environment**) — ไม่ต้องแก้โค้ด, secret ไม่ถูกเก็บใน repo

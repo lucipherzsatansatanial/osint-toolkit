@@ -79,6 +79,10 @@ KIND_SOURCE = {"process": "EDR process", "http": "Web / proxy", "net": "Network 
                "tool_call": "AI agent audit", "llm_call": "AI agent audit", "auth": "AI agent audit"}
 
 
+PRIORITY_SEV = {"low": "low", "medium": "medium", "high": "high", "critical": "critical"}
+CASE_FIELDS = ("priority", "tags", "custom_fields", "name", "description")
+
+
 def sev_up(s: str) -> str:
     return SEV[min(SEV.index(s) + 1, len(SEV) - 1)]
 
@@ -91,7 +95,9 @@ class Engine:
         self.on_incident = None  # optional callback(incident) — the app wires the notifier here
         self._dirty: set[int] = set()
         self.ingested: Counter = Counter()
-        self.sources: Counter = Counter()  # events received per data source, for the "events by data source" widget
+        self.sources: Counter = Counter()
+        self.disabled_rules: set[str] = set()  # rules switched off in the rules catalog (per tenant)
+        self.suppressed: Counter = Counter()  # events received per data source, for the "events by data source" widget
         self._outbox: deque[dict] = deque(maxlen=500)
         self._agent_outbox: deque[dict] = deque(maxlen=500)
         self.rng = random.Random(seed)
@@ -164,6 +170,7 @@ class Engine:
             self.raw.append(rec)
             out.extend(self._custom_events(rec, now))
         self.sources.update(f"{SIM_SOURCE.get(e['domain'], e['domain'])} (จำลอง)" for e in out)
+        out = self._enabled(out)
         for ev in out:
             self._ingest(ev)
         return flushed + out
@@ -192,6 +199,7 @@ class Engine:
             rec["_source"] = source or "API"
             self.raw.append(rec)
             events.extend(self._custom_events(rec, rec["ts"], simulated=False))
+        events = self._enabled(events)
         for ev in events:
             self._ingest(ev)
         self._outbox.extend(events)
@@ -213,6 +221,35 @@ class Engine:
         return {"accepted": len(records), "alerts": len(events),
                 "by_kind": dict(Counter(r["kind"] for r in records)),
                 "alerts_by_rule": dict(Counter(e.get("rule") for e in events if e.get("rule")))}
+
+    def _enabled(self, events: list[dict]) -> list[dict]:
+        if not self.disabled_rules:
+            return events
+        keep = []
+        for e in events:
+            if e.get("rule") in self.disabled_rules:
+                self.suppressed[e["rule"]] += 1
+            else:
+                keep.append(e)
+        return keep
+
+    def create_case(self, analyst: str, name: str, description: str = "", priority: str = "medium",
+                    assignee: str | None = None, tags: list[str] | None = None, hosts: list[str] | None = None,
+                    custom_fields: dict | None = None, now: float | None = None) -> dict:
+        """A case opened by an analyst (not from correlation). Always kept: it is real work."""
+        now = time.time() if now is None else now
+        inc = {"id": next(self.inc_ids), "first_ts": now, "last_ts": now, "status": "open", "users": [],
+               "hosts": list(hosts or []), "domains": [], "tactics": [], "alerts": [],
+               "severity": PRIORITY_SEV.get(priority, "medium"), "priority": priority, "title": name, "name": name,
+               "description": description, "type": "manual", "real": True, "assignee": assignee or None,
+               "tags": list(tags or []), "custom_fields": dict(custom_fields or {}), "notes": [],
+               "history": [{"ts": now, "analyst": analyst, "change": "case created manually"}],
+               "created_by": analyst, "coordinated": False, "tenant": self.tenant}
+        self.incidents[inc["id"]] = inc
+        self._dirty.add(inc["id"])
+        if self.persist:
+            self.flush()
+        return inc
 
     def _custom_events(self, rec: dict, now: float, simulated: bool | None = None) -> list[dict]:
         out = []
@@ -265,7 +302,8 @@ class Engine:
         self.agents.sim.ids = itertools.count(max((r.get("id") or 0 for r in data["agent_records"]), default=0) + 1)
 
     def update_incident(self, inc_id: int, analyst: str, status: str | None = None, assignee: str | None = None,
-                        note: str | None = None, now: float | None = None, verdict: str | None = None) -> dict | None:
+                        note: str | None = None, now: float | None = None, verdict: str | None = None,
+                        **fields) -> dict | None:
         inc = self.incidents.get(inc_id) or (soc_store.incident(inc_id, self.tenant) if self.persist else None)
         if inc is None:
             return None
@@ -281,6 +319,13 @@ class Engine:
         if assignee is not None and assignee != inc.get("assignee"):
             inc["history"].append({"ts": now, "analyst": analyst, "change": f"assignee → {assignee or '-'}"})
             inc["assignee"] = assignee or None
+        for k, v in fields.items():
+            if k in CASE_FIELDS and v is not None and v != inc.get(k):
+                inc[k] = v
+                if k == "name":
+                    inc["title"] = v
+                shown = ", ".join(v) if isinstance(v, list) else (str(v)[:60] if not isinstance(v, dict) else "updated")
+                inc["history"].append({"ts": now, "analyst": analyst, "change": f"{k} → {shown or '-'}"})
         if verdict is not None and verdict != inc.get("verdict"):
             inc["history"].append({"ts": now, "analyst": analyst, "change": f"verdict → {verdict or '-'}"})
             inc["verdict"] = verdict or None
@@ -346,7 +391,7 @@ class Engine:
 
     def _correlate(self, ev: dict) -> int:
         for inc in self.incidents.values():
-            if inc["status"] not in ACTIVE or ev["ts"] - inc["last_ts"] > CORR_WINDOW:
+            if inc["status"] not in ACTIVE or ev["ts"] - inc["last_ts"] > CORR_WINDOW or inc.get("type") == "manual":
                 continue
             if inc.get("real", False) != (ev.get("simulated") is False):
                 continue
@@ -375,8 +420,8 @@ class Engine:
         base = max((a["severity"] for a in inc["alerts"]), key=SEV.index)
         inc["coordinated"] = len(inc["domains"]) >= 2 and SEV.index(base) >= SEV.index("high")
         inc["severity"] = sev_up(base) if inc["coordinated"] else base
-        inc["title"] = ("Coordinated multi-domain attack" if inc["coordinated"]
-                        else inc["alerts"][0]["title"])
+        inc["title"] = inc.get("name") or ("Coordinated multi-domain attack" if inc["coordinated"]
+                                           else inc["alerts"][0]["title"])
         if len(self.incidents) > 200:  # memory bound: drop oldest inactive (real ones stay in SQLite)
             stale = [k for k in sorted(self.incidents) if self.incidents[k]["status"] not in ACTIVE]
             for k in stale[:len(self.incidents) - 200]:
@@ -385,7 +430,7 @@ class Engine:
 
     def expire(self, now: float) -> None:
         for inc in self.incidents.values():
-            if inc["status"] == "open" and now - inc["last_ts"] > CORR_WINDOW:
+            if inc["status"] == "open" and now - inc["last_ts"] > CORR_WINDOW and inc.get("type") != "manual":
                 inc["status"] = "closed"  # auto-close idle, untriaged cases; analyst states are left alone
                 inc.setdefault("history", []).append({"ts": now, "analyst": "system", "change": "status open → closed (idle)"})
                 if inc.get("real"):

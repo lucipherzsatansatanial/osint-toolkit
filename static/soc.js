@@ -224,9 +224,10 @@ function renderDetail(inc) {
   $("#detailCard").hidden = false;
   renderWorkflow(inc);
   renderCopilot(inc);
+  renderCase(inc);
   loadResponse(inc.id);
   $("#d-title").innerHTML = `#${inc.id} · ${esc(inc.title)} · <span class="sev" style="--sevc:var(--${esc(inc.severity)})">${esc(inc.severity)}</span>
-    <small class="muted">users: ${esc(inc.users.join(", "))} · tactics: ${esc(inc.tactics.join(" → "))}</small>`;
+    <small class="muted">${[inc.users.length ? "users: " + esc(inc.users.join(", ")) : "", inc.tactics.length ? "tactics: " + esc(inc.tactics.join(" → ")) : ""].filter(Boolean).join(" · ")}</small>`;
   // graph: domain nodes (left) → incident hub (center) → affected hosts (right)
   const W = 720, H = 300, doms = inc.domains, hosts = inc.hosts;
   const y = (i, n) => (H / (n + 1)) * (i + 1);
@@ -1139,7 +1140,8 @@ window.addEventListener("hashchange", () => {
   $("#bellPanel").hidden = true;
   if (t) openTask(t); else $("#tasksCard").scrollIntoView({ behavior: "smooth" });
 });
-function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); loadAlertsList(); loadEvents(); loadLandscape(); loadNotifyRules(); }
+function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); loadAlertsList(); loadEvents(); loadLandscape(); loadNotifyRules();
+  loadCases(); loadSavedQueries(); loadNotebooks(); loadCatalog(); loadCaseMeta(); }
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);
 
@@ -1367,3 +1369,346 @@ $("#nrTbl").addEventListener("change", async (ev) => {
 });
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) { loadAlertsList(); } }, 30000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) { loadLandscape(); } }, 120000);
+
+
+// ---------- cases ----------
+const CPRIO = { low: "Low", medium: "Medium", high: "High", critical: "Critical" };
+const CS = { page: 1, fields: [], crit: {} };
+async function loadCaseMeta() {
+  try { CS.fields = (await api("/api/soc/case-fields")).fields; } catch {}
+  try { CS.crit = (await api("/api/soc/assets/criticality")).criticality; } catch {}
+}
+const cfText = (cf) => Object.entries(cf || {}).map(([k, v]) => `${esc((CS.fields.find((f) => f.key === k) || {}).label || k)}: ${esc(v)}`).join(" · ");
+async function loadCases() {
+  const p = new URLSearchParams({ page: CS.page, size: 25, sort: $("#csSort").value });
+  for (const [id, k] of [["#csQ", "q"], ["#csStatus", "status"], ["#csPrio", "priority"], ["#csType", "type"], ["#csTag", "tag"]])
+    if ($(id).value.trim()) p.set(k, $(id).value.trim());
+  if ($("#csMine").checked) p.set("assignee", "me");
+  if ($("#csReal").checked) p.set("real_only", "true");
+  try {
+    const r = await api("/api/soc/cases?" + p);
+    CS.page = r.page; CS.fields = r.fields;
+    $("#csTotal").textContent = `${r.total.toLocaleString()} cases`;
+    $("#nb-case").textContent = r.total;
+    $("#csPage").textContent = `หน้า ${r.page} / ${r.pages}`;
+    $("#csPrev").disabled = r.page <= 1; $("#csNext").disabled = r.page >= r.pages;
+    const cur = $("#csTag").value;
+    $("#csTag").innerHTML = '<option value="">ทุก tag</option>' + r.tags.map((t) => `<option ${t === cur ? "selected" : ""}>${esc(t)}</option>`).join("");
+    $("#csTbl tbody").innerHTML = r.items.map((c) => `<tr class="clk" data-inc="${c.id}"><td>${c.id}</td>
+      <td class="a-title">${c.real ? '<span class="real">REAL</span>' : ""}${esc(c.name)}<div class="sub">${esc(c.hosts.join(", "))}</div></td>
+      <td><span class="ist ${esc(c.status)}">${esc(c.status)}</span></td>
+      <td><span class="prio ${esc(c.priority)}">${esc(CPRIO[c.priority])}</span></td>
+      <td>${c.verdict ? `<span class="vd ${esc(c.verdict)}">${esc(VERDICT_TH[c.verdict] || c.verdict)}</span>` : '<span class="muted">—</span>'}</td>
+      <td class="small">${cfText(c.custom_fields) || '<span class="muted">—</span>'}</td>
+      <td>${c.tags.map((t) => `<span class="thr">${esc(t)}</span>`).join(" ") || '<span class="muted">—</span>'}</td>
+      <td>${c.assignee ? `<span class="who">${esc(c.assignee[0].toUpperCase())}</span>${esc(c.assignee)}` : '<span class="muted">—</span>'}</td>
+      <td><span class="dt">${c.type === "manual" ? "Manual" : "✦ Automatic"}</span></td>
+      <td class="num">${c.alerts}</td><td>${ago(c.updated_ts)}ที่แล้ว</td></tr>`).join("")
+      || '<tr><td colspan="11" class="muted">ไม่พบ case ตามเงื่อนไข</td></tr>';
+  } catch (e) { $("#csTbl tbody").innerHTML = `<tr><td colspan="11" class="err">${esc(e.message)}</td></tr>`; }
+}
+let csT;
+$("#csQ").addEventListener("input", () => { clearTimeout(csT); csT = setTimeout(() => { CS.page = 1; loadCases(); }, 300); });
+["#csStatus", "#csPrio", "#csType", "#csTag", "#csSort", "#csMine", "#csReal"].forEach((x) => { $(x).onchange = () => { CS.page = 1; loadCases(); }; });
+$("#csPrev").onclick = () => { CS.page--; loadCases(); };
+$("#csNext").onclick = () => { CS.page++; loadCases(); };
+$("#csTbl").addEventListener("click", (ev) => { const tr = ev.target.closest("tr[data-inc]"); if (tr) location.hash = "#inc-" + tr.dataset.inc; });
+function cfInputs(box, values = {}) {
+  box.innerHTML = CS.fields.map((f) => `<label>${esc(f.label)} ${f.type === "select"
+    ? `<select data-cf="${esc(f.key)}"><option value="">—</option>${f.options.map((o) => `<option ${values[f.key] === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`
+    : `<input data-cf="${esc(f.key)}" type="${f.type === "number" ? "number" : "text"}" value="${esc(values[f.key] ?? "")}">`}</label>`).join("");
+}
+const cfValues = (box) => Object.fromEntries([...box.querySelectorAll("[data-cf]")].map((el) => [el.dataset.cf, el.value.trim() || null]));
+const splitList = (v) => v.split(",").map((x) => x.trim()).filter(Boolean);
+$("#csNew").onclick = async () => {
+  await loadCaseMeta();
+  const f = $("#caseForm"); f.reset();
+  f.assignee.innerHTML = '<option value="">— ยังไม่มอบหมาย —</option>' + TS.users.map((u) => `<option>${esc(u)}</option>`).join("");
+  cfInputs($("#caseCf")); $("#caseErr").textContent = "";
+  $("#caseDlg").showModal();
+};
+$("#caseForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  const f = ev.target;
+  try {
+    const c = await api("/api/soc/cases", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      name: f.name.value.trim(), description: f.description.value, priority: f.priority.value, assignee: f.assignee.value || null,
+      tags: splitList(f.tags.value), hosts: splitList(f.hosts.value), custom_fields: cfValues($("#caseCf")) }) });
+    $("#caseDlg").close(); loadCases(); location.hash = "#inc-" + c.id;
+  } catch (e) { $("#caseErr").textContent = e.message; }
+});
+function cfRow(f = { key: "", label: "", type: "text", options: [] }) {
+  return `<div class="cf-row"><input placeholder="key" value="${esc(f.key)}" data-k="key"><input placeholder="ชื่อที่แสดง" value="${esc(f.label)}" data-k="label">
+    <select data-k="type">${["text", "number", "select"].map((t) => `<option ${t === f.type ? "selected" : ""}>${t}</option>`).join("")}</select>
+    <input placeholder="ตัวเลือก (select)" value="${esc(f.options.join(", "))}" data-k="options"><button type="button" class="ghost sm cf-del">ลบ</button></div>`;
+}
+$("#cfEdit").onclick = async () => {
+  await loadCaseMeta();
+  $("#cfRows").innerHTML = CS.fields.map(cfRow).join("") || cfRow();
+  $("#cfErr").textContent = ""; $("#cfDlg").showModal();
+};
+$("#cfAdd").onclick = () => $("#cfRows").insertAdjacentHTML("beforeend", cfRow());
+$("#cfRows").addEventListener("click", (ev) => { if (ev.target.closest(".cf-del")) ev.target.closest(".cf-row").remove(); });
+$("#cfForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  const rows = [...$("#cfRows").querySelectorAll(".cf-row")].map((r) => {
+    const g = (k) => r.querySelector(`[data-k=${k}]`).value.trim();
+    return { key: g("key"), label: g("label"), type: g("type"), options: splitList(g("options")) };
+  }).filter((x) => x.key);
+  try { await api("/api/soc/case-fields", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rows) });
+    $("#cfDlg").close(); await loadCaseMeta(); loadCases(); } catch (e) { $("#cfErr").textContent = e.message; }
+});
+
+// case header + tabs inside the incident detail
+const CRIT_TH = ["—", "1 ต่ำ", "2", "3 กลาง", "4", "5 สำคัญที่สุด"];
+function renderCase(inc) {
+  const sev = inc.severity;
+  $("#cbType").innerHTML = `<span class="dt">${inc.type === "manual" ? "Manual" : "✦ Automatic"}</span>
+    <span class="muted small">เห็นครั้งแรก ${esc(t2(inc.first_ts))} · ล่าสุด ${esc(t2(inc.last_ts))}${inc.created_by ? " · สร้างโดย " + esc(inc.created_by) : ""}</span>`;
+  if (state.caseFor !== inc.id) {
+    state.caseFor = inc.id;
+    $("#cbPrio").value = inc.priority || (CPRIO[sev] ? sev : "low");
+    $("#cbTags").value = (inc.tags || []).join(", ");
+    $("#cbMsg").textContent = "";
+    cfInputs($("#cbFields"), inc.custom_fields || {});
+    document.querySelectorAll("#caseTabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === "details"));
+    document.querySelectorAll("#detailCard .tabpane").forEach((p) => { p.hidden = p.dataset.pane !== "details"; });
+    $("#ctEvents").textContent = "–";
+    loadCaseNotebooks(inc.id);
+  }
+  const ro = !can("incident.write");
+  document.querySelectorAll("#caseBar [data-perm-dis], #cbFields [data-cf]").forEach((el) => { el.disabled = ro; });
+  $("#cbImpact").innerHTML = '<b class="small">Impact</b> ' + (inc.hosts || []).filter(Boolean).map((h) => {
+    const lv = CS.crit[h] || 0;
+    return `<span class="asset l${lv}"><span class="mono">${esc(h)}</span><select data-host="${esc(h)}" ${can("agents.manage") ? "" : "disabled"} aria-label="ความสำคัญของ ${esc(h)}" title="Asset criticality">${CRIT_TH.map((t, i) => `<option value="${i}" ${i === lv ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
+  }).join("") + (inc.description ? `<p class="case-desc">${esc(inc.description)}</p>` : "");
+  $("#ctAlerts").textContent = (inc.alerts || []).length;
+  $("#ctTasks").textContent = TS.tasks.filter((t) => t.incident_id === inc.id).length;
+  $("#caseAlerts tbody").innerHTML = [...(inc.alerts || [])].reverse().map((a) => `<tr><td class="mono">${esc(t2(a.ts))}</td>
+    <td class="a-title"><span class="sev" style="--sevc:var(--${esc(a.severity)})">${esc(a.severity)}</span> ${esc(a.title)}<div class="sub">${esc(a.technique || "")}</div></td>
+    <td class="mono">${esc(a.host || "-")}</td><td>${esc(a.user || "-")}</td><td>${esc(a.rule || "-")}</td><td class="c-cti">${esc(a.cti_match || "")}</td></tr>`).join("")
+    || '<tr><td colspan="6" class="muted">case นี้ยังไม่มี alert (สร้างด้วยมือ)</td></tr>';
+  const tasks = TS.tasks.filter((t) => t.incident_id === inc.id);
+  $("#caseTasks tbody").innerHTML = tasks.map((t) => `<tr class="clk" data-task="${t.id}"><td>${t.id}</td><td class="a-title">${esc(t.name)}</td>
+    <td>${esc(t.assignee || "—")}</td><td><span class="tstat ${t.status}">${TASK_TH[t.status]}</span></td><td>${t.due ? esc(t2(t.due)) : "—"}</td></tr>`).join("")
+    || '<tr><td colspan="5" class="muted">ยังไม่มีงานใน case นี้</td></tr>';
+}
+$("#cbImpact").addEventListener("change", async (ev) => {
+  const sel = ev.target.closest("select[data-host]"); if (!sel) return;
+  try {
+    await api("/api/soc/assets/criticality", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host: sel.dataset.host, level: Number(sel.value) }) });
+    CS.crit[sel.dataset.host] = Number(sel.value);
+    sel.closest(".asset").className = "asset l" + sel.value;
+  } catch (e) { alert(e.message); }
+});
+$("#cbSave").onclick = async () => {
+  const id = state.selected, analyst = analystName(); if (!id || !analyst) return;
+  try {
+    const inc = await api(`/api/soc/incidents/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      analyst, priority: $("#cbPrio").value, tags: splitList($("#cbTags").value), custom_fields: cfValues($("#cbFields")) }) });
+    const i = state.incidents.findIndex((x) => x.id === id); if (i >= 0) state.incidents[i] = inc;
+    $("#cbMsg").textContent = "บันทึกแล้ว"; loadCases();
+  } catch (e) { $("#cbMsg").textContent = "ไม่สำเร็จ: " + e.message; }
+};
+$("#caseTabs").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-tab]"); if (!b) return;
+  document.querySelectorAll("#caseTabs button").forEach((x) => x.classList.toggle("on", x === b));
+  document.querySelectorAll("#detailCard .tabpane").forEach((p) => { p.hidden = p.dataset.pane !== b.dataset.tab; });
+  if (b.dataset.tab === "events") loadCaseEvents(state.selected);
+  if (b.dataset.tab === "tasks") loadTasks();
+});
+async function loadCaseEvents(id) {
+  $("#caseEvMeta").textContent = "กำลังโหลด…";
+  try {
+    const r = await api(`/api/soc/cases/${id}/events`);
+    $("#ctEvents").textContent = r.total;
+    $("#caseEvMeta").textContent = `log ดิบของ host ${r.hosts.join(", ") || "-"} และผู้ใช้ ${r.users.join(", ") || "-"} ระหว่าง ${t2(r.start)} – ${t2(r.end)} · ${r.total} events`;
+    $("#caseEvents tbody").innerHTML = r.rows.map((x) => `<tr><td class="mono">${esc(t2(x.ts))}</td><td><span class="kindtag">${esc(x.kind)}</span></td>
+      <td class="mono">${esc(x.host || "-")}</td><td class="ev-desc">${esc(x.description)}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">ไม่พบ log ดิบที่เกี่ยวข้อง</td></tr>';
+  } catch (e) { $("#caseEvMeta").textContent = e.message; }
+}
+$("#caseTasks").addEventListener("click", (ev) => { const tr = ev.target.closest("tr[data-task]"); if (tr) openTask(TS.tasks.find((t) => t.id === Number(tr.dataset.task))); });
+$("#caseTaskNew").onclick = () => openTask(null, { incident_id: state.selected });
+async function loadCaseNotebooks(id) {
+  try {
+    const r = await api(`/api/soc/notebooks?case_id=${id}`);
+    $("#ctNb").textContent = r.notebooks.length;
+    $("#caseNbs").innerHTML = r.notebooks.map((n) => `<li><a href="#nb-${n.id}">${esc(n.title)}</a> <small class="muted">แก้ไขโดย ${esc(n.updated_by)} · ${ago(n.updated_at)}ที่แล้ว</small></li>`).join("")
+      || '<li class="muted">ยังไม่มี notebook ของ case นี้</li>';
+  } catch {}
+}
+$("#caseNbNew").onclick = () => createNotebook(state.selected);
+
+// ---------- query builder ----------
+const QB = { last: null };
+async function runQuery() {
+  $("#qbErr").textContent = ""; $("#qbMeta").textContent = "กำลังรัน…";
+  try {
+    const r = await api("/api/soc/query", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: $("#qbText").value, minutes: Number($("#qbRange").value) }) });
+    QB.last = r;
+    const cols = r.columns || (r.source === "alerts" ? ["ts", "severity", "title", "host", "user", "rule", "technique"] : ["ts", "kind", "host", "description"]);
+    $("#qbTbl thead").innerHTML = "<tr>" + cols.map((c) => `<th>${esc(c)}</th>`).join("") + "</tr>";
+    const cell = (c, v) => c === "ts" && typeof v === "number" ? esc(t2(v)) : esc(typeof v === "object" && v !== null ? JSON.stringify(v) : v ?? "");
+    $("#qbTbl tbody").innerHTML = r.rows.map((row) => "<tr>" + cols.map((c) => `<td class="${c === "description" || c === "title" ? "ev-desc" : ""}">${cell(c, c.split(".").reduce((o, k) => o?.[k], row))}</td>`).join("") + "</tr>").join("")
+      || `<tr><td colspan="${cols.length}" class="muted">ไม่มีผลลัพธ์</td></tr>`;
+    $("#qbMeta").textContent = `${r.total.toLocaleString()} แถว${r.rows.length < r.total ? ` (แสดง ${r.rows.length})` : ""} · สแกน ${r.scanned.toLocaleString()} ${r.source} · ${r.duration_ms} ms`;
+  } catch (e) { $("#qbErr").textContent = e.message; $("#qbMeta").textContent = ""; }
+}
+$("#qbRun").onclick = runQuery;
+$("#qbText").addEventListener("keydown", (ev) => { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") runQuery(); });
+$("#qbHelp").onclick = () => { $("#qbDoc").hidden = !$("#qbDoc").hidden; };
+$("#qbCsv").onclick = () => {
+  if (!QB.last?.rows.length) return;
+  const cols = QB.last.columns || Object.keys(QB.last.rows[0]).filter((k) => typeof QB.last.rows[0][k] !== "object");
+  const q = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
+  const csv = [cols.map(q).join(","), ...QB.last.rows.map((r) => cols.map((c) => q(r[c])).join(","))].join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv" })); a.download = "query-results.csv"; a.click();
+};
+async function loadSavedQueries() {
+  try {
+    const r = await api("/api/soc/queries");
+    QB.saved = r.queries;
+    $("#qbSaved").innerHTML = r.queries.map((x) => `<li data-id="${x.id}"><a href="#queryCard" class="qb-load">${esc(x.name)}</a>
+      ${can("incident.write") ? '<button class="ghost sm qb-del" title="ลบ">×</button>' : ""}<div class="mono small muted">${esc(x.query.replace(/\s+/g, " ").slice(0, 90))}</div></li>`).join("")
+      || '<li class="muted">ยังไม่มี — กด “บันทึก query”</li>';
+  } catch {}
+}
+$("#qbSaved").addEventListener("click", async (ev) => {
+  const li = ev.target.closest("li[data-id]"); if (!li) return;
+  const item = QB.saved.find((x) => x.id === Number(li.dataset.id));
+  if (ev.target.closest(".qb-del")) { if (confirm(`ลบ “${item.name}”?`)) { await api(`/api/soc/queries/${item.id}`, { method: "DELETE" }).catch((e) => alert(e.message)); loadSavedQueries(); } return; }
+  $("#qbText").value = item.query; $("#qbRange").value = String(item.minutes); runQuery();
+});
+$("#qbSave").onclick = async () => {
+  const name = prompt("ตั้งชื่อ query"); if (!name) return;
+  try { await api("/api/soc/queries", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, query: $("#qbText").value, minutes: Number($("#qbRange").value) }) }); loadSavedQueries(); }
+  catch (e) { $("#qbErr").textContent = e.message; }
+};
+
+// ---------- notebooks ----------
+const NB = { trash: false, items: [], cur: null, preview: true };
+function md(src) {  // small, safe Markdown subset: everything is escaped first, then formatted
+  const blocks = String(src || "").split(/```/);
+  return blocks.map((b, i) => {
+    if (i % 2) return `<pre class="nb-code">${esc(b.replace(/^\w*\n/, ""))}</pre>`;
+    const lines = esc(b).split("\n");
+    let html = "", list = null;
+    const inline = (t) => t.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/\*([^*]+)\*/g, "<i>$1</i>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    const close = () => { if (list) { html += `</${list}>`; list = null; } };
+    for (const l of lines) {
+      let m;
+      if ((m = /^(#{1,3})\s+(.*)$/.exec(l))) { close(); html += `<h${m[1].length + 2}>${inline(m[2])}</h${m[1].length + 2}>`; }
+      else if ((m = /^\s*[-*]\s+(.*)$/.exec(l))) { if (list !== "ul") { close(); html += "<ul>"; list = "ul"; } html += `<li>${inline(m[1])}</li>`; }
+      else if ((m = /^\s*\d+\.\s+(.*)$/.exec(l))) { if (list !== "ol") { close(); html += "<ol>"; list = "ol"; } html += `<li>${inline(m[1])}</li>`; }
+      else if (!l.trim()) close();
+      else { close(); html += `<p>${inline(l)}</p>`; }
+    }
+    close();
+    return html;
+  }).join("");
+}
+async function loadNotebooks() {
+  try {
+    const p = new URLSearchParams({ trash: NB.trash });
+    if ($("#nbQ").value.trim()) p.set("q", $("#nbQ").value.trim());
+    NB.items = (await api("/api/soc/notebooks?" + p)).notebooks;
+    $("#nbList").innerHTML = NB.items.map((n) => `<li data-id="${n.id}" class="${NB.cur?.id === n.id ? "on" : ""}"><b>${esc(n.title)}</b>
+      <small class="muted">${n.case_id ? `INC-${n.case_id} · ` : ""}${esc(n.updated_by)} · ${ago(n.updated_at)}ที่แล้ว</small></li>`).join("")
+      || `<li class="muted">${NB.trash ? "ถังขยะว่าง" : "ยังไม่มี notebook"}</li>`;
+  } catch (e) { $("#nbList").innerHTML = `<li class="err">${esc(e.message)}</li>`; }
+}
+function openNotebook(n) {
+  NB.cur = n;
+  const ro = !can("incident.write") || n.deleted;
+  $("#nbMain").innerHTML = `<div class="nb-head"><input id="nbTitle" value="${esc(n.title)}" maxlength="200" ${ro ? "disabled" : ""} aria-label="ชื่อ notebook">
+    <span class="muted small">${n.case_id ? `<a href="#inc-${n.case_id}">INC-${n.case_id}</a> · ` : ""}แก้ไขล่าสุดโดย ${esc(n.updated_by)} · ${esc(t2(n.updated_at))}</span></div>
+    <div class="seg nb-mode"><button data-m="edit" class="${NB.preview ? "" : "on"}" ${ro ? "disabled" : ""}>แก้ไข</button><button data-m="view" class="${NB.preview ? "on" : ""}">แสดงผล</button></div>
+    <textarea id="nbBody" class="code" rows="16" ${ro ? "disabled" : ""} ${NB.preview ? "hidden" : ""} aria-label="เนื้อหา">${esc(n.content)}</textarea>
+    <div id="nbView" class="nb-view" ${NB.preview ? "" : "hidden"}>${md(n.content) || '<p class="muted">ว่าง — กด “แก้ไข”</p>'}</div>
+    <div class="task-bar">${n.deleted ? `<button id="nbRestore" data-perm="incident.write">กู้คืน</button>` : `${ro ? "" : '<button id="nbSaveBtn">บันทึก</button><button id="nbTrash" class="ghost">ย้ายไปถังขยะ</button>'}`}
+    <span id="nbMsg" class="muted small"></span></div>`;
+  document.querySelectorAll("#nbList li").forEach((li) => li.classList.toggle("on", Number(li.dataset.id) === n.id));
+}
+async function createNotebook(caseId) {
+  try {
+    const n = await api("/api/soc/notebooks", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: caseId ? `บันทึกการสืบสวน INC-${caseId}` : "Untitled", content: caseId ? `# INC-${caseId}\n\n## สิ่งที่พบ\n- \n\n## ขั้นตอนต่อไป\n1. ` : "", ...(caseId ? { case_id: caseId } : {}) }) });
+    NB.trash = false; NB.preview = false; await loadNotebooks(); openNotebook(n);
+    if (caseId) loadCaseNotebooks(caseId);
+    $("#nbCard").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { alert(e.message); }
+}
+async function saveNotebook(patch) {
+  try {
+    const n = await api(`/api/soc/notebooks/${NB.cur.id}`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...patch, base_updated_at: NB.cur.updated_at }) });
+    NB.cur = n; await loadNotebooks();
+    if (patch.deleted !== undefined) { $("#nbMain").innerHTML = '<p class="muted">เลือกหรือสร้าง notebook</p>'; NB.cur = null; } else { openNotebook(n); $("#nbMsg").textContent = "บันทึกแล้ว"; }
+  } catch (e) { $("#nbMsg").textContent = e.message; }
+}
+$("#nbNew").onclick = () => createNotebook(null);
+$("#nbList").addEventListener("click", (ev) => { const li = ev.target.closest("li[data-id]"); if (li) openNotebook(NB.items.find((n) => n.id === Number(li.dataset.id))); });
+document.querySelector("#nbCard .nb-side .seg").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button"); if (!b) return;
+  NB.trash = b.dataset.trash === "1";
+  b.parentElement.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+  loadNotebooks();
+});
+let nbT;
+$("#nbQ").addEventListener("input", () => { clearTimeout(nbT); nbT = setTimeout(loadNotebooks, 250); });
+$("#nbMain").addEventListener("click", (ev) => {
+  const m = ev.target.closest(".nb-mode button");
+  if (m) { NB.preview = m.dataset.m === "view"; if (NB.cur) { NB.cur = { ...NB.cur, content: $("#nbBody").value, title: $("#nbTitle").value }; openNotebook(NB.cur); } return; }
+  if (ev.target.id === "nbSaveBtn") saveNotebook({ title: $("#nbTitle").value.trim() || "Untitled", content: $("#nbBody").value });
+  if (ev.target.id === "nbTrash" && confirm("ย้าย notebook นี้ไปถังขยะ?")) saveNotebook({ deleted: true });
+  if (ev.target.id === "nbRestore") saveNotebook({ deleted: false });
+});
+window.addEventListener("hashchange", async () => {
+  const m = /^#nb-(\d+)$/.exec(location.hash); if (!m) return;
+  NB.trash = false; await loadNotebooks();
+  const n = NB.items.find((x) => x.id === Number(m[1])); if (n) { NB.preview = true; openNotebook(n); }
+  $("#nbCard").scrollIntoView({ behavior: "smooth" });
+});
+
+// ---------- rules catalog ----------
+const CAT = { data: null };
+async function loadCatalog() {
+  try { CAT.data = await api("/api/soc/rules/catalog"); renderCatalog(); }
+  catch (e) { $("#catList").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+function renderCatalog() {
+  const d = CAT.data; if (!d) return;
+  setKpi("#catTotal", d.summary.total); setKpi("#catEnabled", d.summary.enabled); setKpi("#catCustom", d.summary.custom);
+  setKpi("#catAlerts", d.summary.alerts_7d); setKpi("#catRejected", d.summary.rejected_7d);
+  const max = Math.max(1, ...d.mitre.flatMap((m) => m.techniques.map((t) => t.alerts_7d)));
+  const order = (t) => { const i = TACTIC_ORDER.indexOf(t); return i < 0 ? 99 : i; };
+  $("#catHeat").innerHTML = [...d.mitre].sort((a, b) => order(a.tactic) - order(b.tactic)).map((m) => `<div class="heat-col"><div class="heat-h" title="${esc(m.tactic)}">${esc(m.tactic)}</div>
+    ${m.techniques.map((t) => `<div class="heat-c" style="--a:${(0.12 + 0.88 * t.alerts_7d / max).toFixed(2)}" title="${esc(t.id)} ${esc(t.name)} · ${t.alerts_7d} alerts 7 วัน">${esc(t.id)}</div>`).join("")}</div>`).join("");
+  const q = $("#catQ").value.trim().toLowerCase(), cat = $("#catCat").value, en = $("#catEn").value;
+  let rows = d.rules.filter((r) => (!q || `${r.id} ${r.title} ${r.technique} ${r.technique_name}`.toLowerCase().includes(q))
+    && (!cat || r.category === cat) && (en === "" || String(Number(r.enabled)) === en));
+  const s = $("#catSort").value;
+  rows.sort(s === "id" ? (a, b) => a.id.localeCompare(b.id) : s === "quality" ? (a, b) => (a.quality ?? 101) - (b.quality ?? 101) : (a, b) => b.alerts_7d - a.alerts_7d);
+  const edit = can("rules.manage");
+  $("#catList").innerHTML = rows.map((r) => `<div class="cat-rule ${r.enabled ? "" : "off"}">
+    <div class="cr-main"><div class="cr-t"><span class="mono">${esc(r.id)}</span> ${esc(r.title)}</div>
+      <div class="cr-m"><span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span> <span class="dt">${esc(r.category)}</span>
+        <span class="muted small">${esc(r.technique || "")} ${esc(r.technique_name && r.technique_name !== r.technique ? r.technique_name : "")} · ${esc(r.tactic || "")}</span>
+        ${r.exports.map((x) => `<span class="thr" title="${esc(x.file)}">${esc(x.format.split(" ")[0])}</span>`).join(" ")}</div></div>
+    <div class="cr-stats"><div><b>${r.alerts_7d}</b><small>alerts 7 วัน</small></div><div><b>${r.rejected_7d}</b><small>ถูกปฏิเสธ</small></div>
+      <div class="cr-q">${r.quality === null ? '<small class="muted">ยังไม่มีข้อมูลคุณภาพ</small>' : `<small>Quality ${r.quality}</small><span class="qbar"><i style="width:${r.quality}%" class="${r.quality >= 80 ? "good" : r.quality >= 50 ? "mid" : "bad"}"></i></span>`}</div></div>
+    <label class="switch" title="${r.source === "custom" && r.status !== "enabled" ? "custom rule นี้ยังไม่ได้เปิดใน AI Rule Assistant" : ""}"><input type="checkbox" data-rule="${esc(r.id)}" ${r.enabled ? "checked" : ""} ${edit && !(r.source === "custom" && r.status !== "enabled") ? "" : "disabled"} aria-label="เปิดใช้ ${esc(r.id)}"><span></span></label>
+  </div>`).join("") || '<p class="muted">ไม่พบ rule</p>';
+}
+["#catCat", "#catEn", "#catSort"].forEach((x) => { $(x).onchange = renderCatalog; });
+$("#catQ").addEventListener("input", renderCatalog);
+$("#catList").addEventListener("change", async (ev) => {
+  const cb = ev.target.closest("input[data-rule]"); if (!cb) return;
+  try { await api(`/api/soc/rules/${cb.dataset.rule}/enabled`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: cb.checked }) }); loadCatalog(); }
+  catch (e) { alert(e.message); cb.checked = !cb.checked; }
+});
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadCases(); }, 30000);

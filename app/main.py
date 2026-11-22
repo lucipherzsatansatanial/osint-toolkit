@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, explorer, ingest, landscape, notify_rules, phase3, phase4, soc_report, soc_store, workspace
+from app import ai, catalog, explorer, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -57,6 +57,7 @@ async def lifespan(_: FastAPI):
     def setup_engine(e):  # runs once per tenant engine: restore its data, rules and alert hook
         e.restore(soc_store.load(e.tenant))
         e.custom.load(soc_store.list_rules(e.tenant))
+        e.disabled_rules = set(soc_store.get_setting("disabled_rules", [], e.tenant))
         e.sources.update({k[4:]: n for k, n in soc_store.counts(e.tenant).items() if k.startswith("src:")})
         e.persist = True
         e.on_incident = lambda inc, t=e.tenant: _on_incident(t, inc)
@@ -768,21 +769,353 @@ class IncidentUpdate(BaseModel):
     assignee: str | None = Field(default=None, max_length=80)
     note: str | None = Field(default=None, max_length=4000)
     verdict: Literal["true_positive", "false_positive", "benign", "undetermined", ""] | None = None
+    priority: Literal["low", "medium", "high", "critical"] | None = None
+    tags: list[str] | None = Field(default=None, max_length=30)
+    custom_fields: dict[str, str | int | float | None] | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=8000)
+
+
+CASE_EXTRA = ("priority", "tags", "custom_fields", "name", "description")
+
+
+def _clean_tags(tags: list[str] | None) -> list[str] | None:
+    if tags is None:
+        return None
+    out = []
+    for t in tags:
+        t = re.sub(r"\s+", " ", str(t)).strip()[:40]
+        if t and t.lower() not in (x.lower() for x in out):
+            out.append(t)
+    return out
 
 
 @app.patch("/api/soc/incidents/{inc_id}")
 async def soc_update_incident(inc_id: int, req: IncidentUpdate, who: rbac.Principal = Depends(require("incident.write"))):
     """Analyst workflow: status, assignee and notes. Every change is written to the audit log."""
-    if not (req.status or req.assignee is not None or req.note or req.verdict is not None):
+    extra = {k: getattr(req, k) for k in CASE_EXTRA if getattr(req, k) is not None}
+    if "tags" in extra:
+        extra["tags"] = _clean_tags(extra["tags"])
+    if "custom_fields" in extra:
+        extra["custom_fields"] = _check_custom_fields(who, extra["custom_fields"])
+    if not (req.status or req.assignee is not None or req.note or req.verdict is not None or extra):
         raise HTTPException(422, "nothing to update")
     name = actor(who, req.analyst)
-    inc = E(who).update_incident(inc_id, name, req.status, req.assignee, req.note, verdict=req.verdict)
+    inc = E(who).update_incident(inc_id, name, req.status, req.assignee, req.note, verdict=req.verdict, **extra)
     if inc is None:
         raise HTTPException(404, "incident not found")
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=name, module="soc.incident", target=f"incident:{inc_id}",
                  purpose=req.note or f"status={req.status} assignee={req.assignee}", legal_basis="own_asset",
                  case_ref=f"INC-{inc_id}", result={k: v for k, v in req.model_dump().items() if v is not None})
     return inc
+
+
+# ---------- cases (incidents as cases: list, manual creation, custom fields, assets) ----------
+PRIO = ["low", "medium", "high", "critical"]
+
+
+def _case_row(i: dict) -> dict:
+    upd = max([h.get("ts", 0) for h in i.get("history", [])] + [n.get("ts", 0) for n in i.get("notes", [])] + [i.get("last_ts", 0)])
+    sev = i.get("severity", "info")
+    return {"id": i["id"], "name": i.get("name") or i.get("title"), "status": i.get("status"),
+            "priority": i.get("priority") or (sev if sev in PRIO else "low"), "verdict": i.get("verdict"),
+            "tags": i.get("tags", []), "custom_fields": i.get("custom_fields", {}), "assignee": i.get("assignee"),
+            "type": i.get("type", "automatic"), "real": bool(i.get("real")), "alerts": len(i.get("alerts", [])),
+            "hosts": i.get("hosts", [])[:8], "first_ts": i.get("first_ts"), "last_ts": i.get("last_ts"),
+            "updated_ts": upd, "severity": sev, "coordinated": i.get("coordinated", False)}
+
+
+@app.get("/api/soc/cases")
+async def soc_cases(status: str = "", priority: str = "", q: str = "", tag: str = "", assignee: str = "",
+                    type: str = "", real_only: bool = False, sort: str = "updated", page: int = 1, size: int = 25,
+                    who: rbac.Principal = Depends(require("soc.read"))):
+    merged = {i["id"]: i for i in soc_store.incidents(None, 2000, who.tenant)}
+    merged.update(E(who).incidents)
+    rows = [_case_row(i) for i in merged.values()]
+    if status:
+        rows = [r for r in rows if r["status"] in status.split(",")]
+    if priority:
+        rows = [r for r in rows if r["priority"] in priority.split(",")]
+    if tag:
+        rows = [r for r in rows if tag.lower() in (t.lower() for t in r["tags"])]
+    if assignee:
+        rows = [r for r in rows if (r["assignee"] or "") == (who.name if assignee == "me" else assignee)]
+    if type:
+        rows = [r for r in rows if r["type"] == type]
+    if real_only:
+        rows = [r for r in rows if r["real"]]
+    if q:
+        ql = q.lower()
+        rows = [r for r in rows if ql in f"{r['name']} {' '.join(r['hosts'])} {' '.join(r['tags'])} {r['id']}".lower()]
+    keys = {"updated": lambda r: -r["updated_ts"], "created": lambda r: -(r["first_ts"] or 0),
+            "priority": lambda r: (-PRIO.index(r["priority"]), -r["updated_ts"])}
+    rows.sort(key=keys.get(sort, keys["updated"]))
+    size = max(5, min(size, 100))
+    pages = max(1, -(-len(rows) // size))
+    page = max(1, min(page, pages))
+    tags = sorted({t for r in rows for t in r["tags"]})
+    return {"total": len(rows), "page": page, "pages": pages, "items": rows[(page - 1) * size: page * size],
+            "tags": tags, "fields": soc_store.get_setting("case_fields", [], who.tenant)}
+
+
+class CaseIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=8000)
+    priority: Literal["low", "medium", "high", "critical"] = "medium"
+    assignee: str | None = Field(default=None, max_length=80)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    hosts: list[str] = Field(default_factory=list, max_length=50)
+    custom_fields: dict[str, str | int | float | None] = Field(default_factory=dict)
+
+
+@app.post("/api/soc/cases")
+async def soc_case_create(req: CaseIn, who: rbac.Principal = Depends(require("incident.write"))):
+    inc = E(who).create_case(who.name, req.name.strip(), req.description, req.priority, _check_assignee(who, req.assignee),
+                             _clean_tags(req.tags), [h.strip()[:255] for h in req.hosts if h.strip()],
+                             _check_custom_fields(who, req.custom_fields))
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.case", target=f"incident:{inc['id']}",
+                 purpose=f"create case: {inc['name'][:120]}", legal_basis="own_asset", case_ref=f"INC-{inc['id']}",
+                 result={"priority": req.priority})
+    return inc
+
+
+class CaseField(BaseModel):
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    label: str = Field(min_length=1, max_length=60)
+    type: Literal["text", "number", "select"] = "text"
+    options: list[str] = Field(default_factory=list, max_length=30)
+
+
+def _check_custom_fields(who: rbac.Principal, values: dict | None) -> dict | None:
+    if values is None:
+        return None
+    defs = {f["key"]: f for f in soc_store.get_setting("case_fields", [], who.tenant)}
+    out = {}
+    for k, v in values.items():
+        f = defs.get(k)
+        if f is None:
+            raise HTTPException(422, f"unknown custom field '{k}'")
+        if v in (None, ""):
+            continue
+        if f["type"] == "number":
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(422, f"'{f['label']}' must be a number") from None
+        elif f["type"] == "select" and str(v) not in f["options"]:
+            raise HTTPException(422, f"'{f['label']}' must be one of {', '.join(f['options'])}")
+        out[k] = v if f["type"] == "number" else str(v)[:500]
+    return out
+
+
+@app.get("/api/soc/case-fields")
+async def soc_case_fields(who: rbac.Principal = Depends(require("soc.read"))):
+    return {"fields": soc_store.get_setting("case_fields", [], who.tenant)}
+
+
+@app.put("/api/soc/case-fields")
+async def soc_case_fields_set(fields: list[CaseField], who: rbac.Principal = Depends(require("rules.manage"))):
+    if len(fields) > 20 or len({f.key for f in fields}) != len(fields):
+        raise HTTPException(422, "at most 20 fields with unique keys")
+    data = [f.model_dump() for f in fields]
+    soc_store.set_setting("case_fields", data, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.case_fields", target="case_fields",
+                 purpose=", ".join(f["key"] for f in data) or "cleared", legal_basis="own_asset", case_ref=None, result={})
+    return {"fields": data}
+
+
+@app.get("/api/soc/assets/criticality")
+async def soc_assets(who: rbac.Principal = Depends(require("soc.read"))):
+    return {"criticality": soc_store.get_setting("asset_criticality", {}, who.tenant)}
+
+
+class Criticality(BaseModel):
+    host: str = Field(min_length=1, max_length=255)
+    level: int = Field(ge=0, le=5)
+
+
+@app.put("/api/soc/assets/criticality")
+async def soc_asset_set(req: Criticality, who: rbac.Principal = Depends(require("agents.manage"))):
+    cur = soc_store.get_setting("asset_criticality", {}, who.tenant)
+    if req.level == 0:
+        cur.pop(req.host, None)
+    else:
+        cur[req.host] = req.level
+    if len(cur) > 5000:
+        raise HTTPException(413, "too many assets")
+    soc_store.set_setting("asset_criticality", cur, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.asset", target=f"host:{req.host}",
+                 purpose=f"criticality={req.level}", legal_basis="own_asset", case_ref=None, result={})
+    return {"host": req.host, "level": req.level}
+
+
+@app.get("/api/soc/cases/{inc_id}/events")
+async def soc_case_events(inc_id: int, q: str = "", who: rbac.Principal = Depends(require("soc.read"))):
+    """Raw telemetry for the case's hosts and users, from 1 h before first seen to 1 h after last seen."""
+    inc = _find_incident(inc_id, who)
+    start, end = (inc.get("first_ts") or time.time()) - 3600, min(time.time(), (inc.get("last_ts") or time.time()) + 3600)
+    hosts = {h.lower() for h in inc.get("hosts", []) if h}
+    users = {u.lower() for u in inc.get("users", []) if u and u not in ("unknown", "-")}
+    eng = E(who)
+    recs = [r for r in eng.raw if start <= (r.get("ts") or 0) <= end and not (eng.persist and r.get("simulated") is False)]
+    if eng.persist:
+        recs += soc_store.raw_between(start, end, who.tenant)
+
+    def related(r):
+        vals = {str(r.get(k) or "").lower() for k in ("host", "dest_host", "src_host", "dst_host", "client_host", "user")}
+        return bool(vals & (hosts | users))
+    out = explorer.explore([r for r in recs if related(r)], q[:300], start, end, limit=300)
+    return {**out, "start": start, "end": end, "hosts": sorted(hosts), "users": sorted(users)}
+
+
+# ---------- rules catalog ----------
+@app.get("/api/soc/rules/catalog")
+async def soc_rules_catalog(who: rbac.Principal = Depends(require("soc.read"))):
+    now = time.time()
+    events = _tenant_events(who, now - 7 * 86400, now)
+    incs = dict(E(who).incidents)
+    for i in soc_store.incidents(None, 2000, who.tenant):
+        incs.setdefault(i["id"], i)
+    out = catalog.catalog(soc_store.list_rules(who.tenant), E(who).disabled_rules, events, incs, now)
+    out["suppressed_since_start"] = dict(E(who).suppressed)
+    return out
+
+
+class RuleToggle(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/soc/rules/{rule_id}/enabled")
+async def soc_rule_toggle(rule_id: str, req: RuleToggle, who: rbac.Principal = Depends(require("rules.manage"))):
+    known = {r["id"] for r in catalog.builtin_rules()} | {r["id"] for r in soc_store.list_rules(who.tenant)}
+    if rule_id not in known:
+        raise HTTPException(404, "rule not found")
+    eng = E(who)
+    (eng.disabled_rules.discard if req.enabled else eng.disabled_rules.add)(rule_id)
+    soc_store.set_setting("disabled_rules", sorted(eng.disabled_rules), who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_toggle", target=f"rule:{rule_id}",
+                 purpose=f"enabled={req.enabled}", legal_basis="own_asset", case_ref=None, result={})
+    return {"id": rule_id, "enabled": req.enabled}
+
+
+# ---------- query builder ----------
+class QueryIn(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    minutes: int = Field(default=60, ge=1, le=7 * 24 * 60)
+
+
+@app.post("/api/soc/query")
+async def soc_query(req: QueryIn, who: rbac.Principal = Depends(require("soc.read"))):
+    try:
+        plan = query.parse(req.query)
+    except query.QueryError as e:
+        raise HTTPException(422, str(e)) from e
+    end = time.time()
+    start = end - req.minutes * 60
+    t0 = time.perf_counter()
+    if plan["source"] == "alerts":
+        rows = sorted(_tenant_events(who, start, end), key=lambda e: -e["ts"])
+    else:
+        eng = E(who)
+        rows = [r for r in eng.raw if start <= (r.get("ts") or 0) <= end and not (eng.persist and r.get("simulated") is False)]
+        if eng.persist:
+            rows += soc_store.raw_between(start, end, who.tenant)
+        rows = sorted(({**{k: v for k, v in r.items() if not k.startswith("_")}, "source": r.get("_source"),
+                        "description": explorer.describe(r)} for r in rows), key=lambda r: -(r.get("ts") or 0))
+    out = query.run(plan, rows)
+    return {**out, "scanned": len(rows), "start": start, "end": end, "source": plan["source"],
+            "duration_ms": round((time.perf_counter() - t0) * 1000, 1)}
+
+
+class SavedQuery(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    query: str = Field(min_length=1, max_length=4000)
+    minutes: int = Field(default=60, ge=1, le=7 * 24 * 60)
+
+
+@app.get("/api/soc/queries")
+async def soc_saved_queries(who: rbac.Principal = Depends(require("soc.read"))):
+    return {"queries": soc_store.get_setting("saved_queries", [], who.tenant)}
+
+
+@app.post("/api/soc/queries")
+async def soc_save_query(req: SavedQuery, who: rbac.Principal = Depends(require("incident.write"))):
+    try:
+        query.parse(req.query)
+    except query.QueryError as e:
+        raise HTTPException(422, str(e)) from e
+    cur = soc_store.get_setting("saved_queries", [], who.tenant)
+    if len(cur) >= 200:
+        raise HTTPException(413, "too many saved queries")
+    item = {**req.model_dump(), "id": max([q["id"] for q in cur] + [0]) + 1, "by": who.name, "ts": time.time()}
+    soc_store.set_setting("saved_queries", cur + [item], who.tenant)
+    return item
+
+
+@app.delete("/api/soc/queries/{qid}")
+async def soc_delete_query(qid: int, who: rbac.Principal = Depends(require("incident.write"))):
+    cur = soc_store.get_setting("saved_queries", [], who.tenant)
+    new = [q for q in cur if q["id"] != qid]
+    if len(new) == len(cur):
+        raise HTTPException(404, "query not found")
+    soc_store.set_setting("saved_queries", new, who.tenant)
+    return {"deleted": qid}
+
+
+# ---------- notebooks ----------
+class NotebookIn(BaseModel):
+    title: str = Field(default="Untitled", min_length=1, max_length=200)
+    content: str = Field(default="", max_length=200_000)
+    case_id: int | None = None
+
+
+@app.get("/api/soc/notebooks")
+async def soc_notebooks(trash: bool = False, q: str = "", case_id: int | None = None,
+                        who: rbac.Principal = Depends(require("soc.read"))):
+    items = soc_store.notebooks(who.tenant, deleted=trash)
+    if case_id is not None:
+        items = [n for n in items if n.get("case_id") == case_id]
+    if q:
+        items = [n for n in items if q.lower() in (n["title"] + " " + n["content"]).lower()]
+    return {"notebooks": items}
+
+
+@app.post("/api/soc/notebooks")
+async def soc_notebook_create(req: NotebookIn, who: rbac.Principal = Depends(require("incident.write"))):
+    if req.case_id is not None:
+        _find_incident(req.case_id, who)
+    now = time.time()
+    nb = soc_store.save_notebook({"id": None, **req.model_dump(), "created_by": who.name, "created_at": now,
+                                  "updated_by": who.name, "updated_at": now, "deleted": False}, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.notebook", target=f"notebook:{nb['id']}",
+                 purpose=f"create: {nb['title'][:120]}", legal_basis="own_asset",
+                 case_ref=f"INC-{req.case_id}" if req.case_id else None, result={})
+    return nb
+
+
+class NotebookPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, max_length=200_000)
+    deleted: bool | None = None
+    base_updated_at: float | None = None  # optimistic concurrency: reject if someone saved in between
+
+
+@app.put("/api/soc/notebooks/{nb_id}")
+async def soc_notebook_update(nb_id: int, req: NotebookPatch, who: rbac.Principal = Depends(require("incident.write"))):
+    nb = soc_store.notebook(nb_id, who.tenant)
+    if nb is None:
+        raise HTTPException(404, "notebook not found")
+    if req.base_updated_at is not None and abs(req.base_updated_at - nb["updated_at"]) > 1e-6:
+        raise HTTPException(409, f"notebook was changed by {nb['updated_by']} — reload before saving")
+    for k in ("title", "content", "deleted"):
+        if getattr(req, k) is not None:
+            nb[k] = getattr(req, k)
+    nb.update(updated_by=who.name, updated_at=time.time())
+    soc_store.save_notebook(nb, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.notebook", target=f"notebook:{nb_id}",
+                 purpose="trash" if req.deleted else "restore" if req.deleted is False else "edit", legal_basis="own_asset",
+                 case_ref=f"INC-{nb['case_id']}" if nb.get("case_id") else None, result={})
+    return nb
 
 
 # ---------- analyst workspace: overview widgets, tasks, notifications ----------
