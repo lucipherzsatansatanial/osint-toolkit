@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app import audit
 from app import ingest, soc_report, soc_store
+from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
 from app.modules import brand, domain, email, ip, threatintel, username
@@ -36,10 +37,14 @@ async def lifespan(_: FastAPI):
     soc_store.purge_expired()
     hub.engine.restore(soc_store.load())
     hub.engine.persist = True
+    notifier.reload()
+    notifier.start()
+    hub.engine.on_incident = notifier.offer
     if settings.soc_autostart:
         hub.ensure_running()  # CTI feeds + correlation ticker run even before anyone opens the dashboard
     yield
     hub.stop()
+    notifier.stop()
 
 
 app = FastAPI(title="OSINT Toolkit", version="0.1.0", lifespan=lifespan)
@@ -229,6 +234,33 @@ class ContainRequest(BaseModel):
     contain: bool = True
     analyst: str = Field(min_length=2, max_length=80)
     reason: str = Field(min_length=5, max_length=500)
+
+
+@app.get("/api/soc/notify")
+async def soc_notify_status(_: str = Depends(guard)):
+    """Which alert channels are configured (never returns URLs or tokens) and recent delivery results."""
+    return notifier.status()
+
+
+class NotifyTest(BaseModel):
+    analyst: str = Field(min_length=2, max_length=80)
+
+
+@app.post("/api/soc/notify/test")
+async def soc_notify_test(req: NotifyTest, client: str = Depends(guard)):
+    if not notifier.channels():
+        raise HTTPException(409, "no alert channel configured (set SOC_NOTIFY_* environment variables)")
+    now = time.time()
+    sample = {"id": 0, "title": f"ทดสอบการแจ้งเตือน — ส่งโดย {req.analyst}", "severity": "high", "status": "open",
+              "coordinated": False, "real": True, "hosts": ["TEST-HOST"], "users": [req.analyst], "domains": ["test"],
+              "tactics": [], "rules": ["TEST"], "alerts": 0, "first_seen": now, "last_seen": now,
+              "latest": "ข้อความทดสอบ ไม่ใช่เหตุการณ์จริง",
+              "url": f"{notifier.public_url}/soc" if notifier.public_url else None}
+    results = await notifier.deliver(sample)
+    audit.record(client_ip=client, analyst=req.analyst, module="soc.notify_test", target=",".join(notifier.channels()),
+                 purpose="test alert channels", legal_basis="own_asset", case_ref=None,
+                 result={n: ok for n, ok, _ in results})
+    return {"results": {n: {"ok": ok, "detail": str(d)} for n, ok, d in results}}
 
 
 class IncidentUpdate(BaseModel):

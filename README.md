@@ -125,6 +125,27 @@ API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/in
 | `SOC_RETENTION_DAYS` | `90` | ลบ alert / agent record / incident ที่ปิดแล้วเก่ากว่านี้ |
 | `SOC_AUTOSTART` | `on` | ดึง CTI feed และเริ่ม correlation ตั้งแต่เปิดเซิร์ฟเวอร์ (ไม่ต้องรอคนเปิด dashboard) |
 
+### แจ้งเตือน incident ออกนอกระบบ (Teams / LINE / Slack / Email / Webhook)
+
+ตั้งค่าผ่าน environment variables (บน Render: service → **Environment**) — ไม่ต้องแก้โค้ด, secret ไม่ถูกเก็บใน repo
+
+| ตัวแปร | ช่องทาง |
+|---|---|
+| `SOC_NOTIFY_TEAMS_URL` | Microsoft Teams — URL จาก Workflows "When a Teams webhook request is received" (ส่งเป็น Adaptive Card) |
+| `SOC_NOTIFY_LINE_TOKEN` + `SOC_NOTIFY_LINE_TO` | LINE Messaging API — channel access token + userId/groupId ปลายทาง (LINE Notify ปิดบริการแล้ว) |
+| `SOC_NOTIFY_SLACK_URL` | Slack incoming webhook |
+| `SOC_NOTIFY_WEBHOOK_URL` | HTTPS endpoint ใดๆ (รับ JSON `{"event":"soc.incident","incident":{...}}`) เช่น SOAR / ระบบ ticket |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SOC_NOTIFY_EMAIL_TO` | Email (STARTTLS) |
+| `SOC_NOTIFY_MIN_SEVERITY` | `high` (ค่าเริ่มต้น) / `critical` / `medium` |
+| `SOC_NOTIFY_SIMULATED` | `off` (ค่าเริ่มต้น) — แจ้งเฉพาะ incident จาก log จริง |
+| `SOC_NOTIFY_REDACT` | `on` = ปิดบังชื่อผู้ใช้ในข้อความ (ลดข้อมูลส่วนบุคคลที่ส่งไปแพลตฟอร์มแชตภายนอก) |
+| `SOC_PUBLIC_URL` | เช่น `https://osint-toolkit-fepe.onrender.com` — ใส่ลิงก์เปิด incident ในข้อความ |
+| `SOC_NOTIFY_MAX_PER_10MIN`, `SOC_NOTIFY_DEBOUNCE` | เพดานข้อความ (20 / 10 นาที) และช่วงรวบการเปลี่ยนแปลงของ incident เดียว (10 วินาที) |
+
+- ส่งเมื่อ incident ถึงระดับขั้นต่ำครั้งแรก และส่งอีกครั้งเฉพาะเมื่อ**ยกระดับความรุนแรง**; จำสถานะไว้ใน DB จึงไม่ส่งซ้ำหลัง restart
+- ปุ่ม "แจ้งเตือน: …" บนแถบด้านบนของ `/soc` = ส่งข้อความทดสอบ (บันทึกใน audit log); `GET /api/soc/notify` แสดงช่องทางและผลส่งล่าสุด (ไม่แสดง URL/token)
+- ลิงก์ `…/soc#inc-<id>` เปิดหน้ารายละเอียด incident นั้นโดยตรง
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -146,7 +167,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (86 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (93 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

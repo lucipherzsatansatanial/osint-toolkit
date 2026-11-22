@@ -25,7 +25,7 @@ async function connect() {
     if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
     $("#keyBar").hidden = true;
     setLive(true);
-    loadCti(); loadQueries();
+    loadCti(); loadQueries(); loadNotify();
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
     for (;;) {
@@ -55,6 +55,7 @@ function handle(chunk) {
     msg.events.forEach((e) => addEvent(e, false));
     state.buckets = []; pushBucket(msg.events);
     renderIncidents(msg.incidents); renderEndpoints(msg.endpoints); renderStats(msg.stats);
+    openIncidentFromHash();
     $("#agentLog").innerHTML = ""; msg.agent_records.forEach((r) => addAgentRecord(r, false));
     renderAgents(msg.agents); renderRules(msg.rules);
     $("#offaiLive").innerHTML = ""; msg.events.filter((e) => e.detector === "offensive-ai").forEach((e) => addOffai(e, false));
@@ -245,6 +246,34 @@ function renderDetail(inc) {
     <span class="mono muted">${hhmmss(a.ts)}</span> <span class="sev" style="--sevc:var(--${esc(a.severity)})">${esc(a.severity)}</span>
     ${esc(a.title)}<div class="muted">${esc(a.domain)} · ${esc(a.host)} · ${esc(a.technique)}${a.session ? ` · <a href="#" class="slink" data-s="${esc(a.session)}">${esc(a.agent)} / ${esc(a.session)}</a>` : ""}${a.cti_match ? ` · <span style="color:var(--cti)">CTI: ${esc(a.cti_match)}</span>` : ""}</div></li>`).join("");
 }
+
+// ---------- alert channels + deep links ----------
+async function loadNotify() {
+  const el = $("#notifyPill");
+  try {
+    const n = await api("/api/soc/notify");
+    el.textContent = n.channels.length ? `แจ้งเตือน: ${n.channels.join(", ")} · ≥ ${n.min_severity}` : "แจ้งเตือน: ยังไม่ตั้งค่า";
+    el.className = "pill " + (n.channels.length ? "ok" : "");
+    el.dataset.ready = n.channels.length ? "1" : "";
+  } catch { el.textContent = "แจ้งเตือน: ?"; }
+}
+$("#notifyPill").onclick = async () => {
+  if (!$("#notifyPill").dataset.ready) { alert("ยังไม่ได้ตั้งค่าช่องทางแจ้งเตือน — ตั้ง SOC_NOTIFY_TEAMS_URL / SOC_NOTIFY_LINE_TOKEN ฯลฯ ใน environment ของเซิร์ฟเวอร์"); return; }
+  const analyst = analystName(); if (!analyst || !confirm("ส่งข้อความทดสอบไปทุกช่องทางแจ้งเตือน?")) return;
+  try {
+    const r = await api("/api/soc/notify/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ analyst }) });
+    alert(Object.entries(r.results).map(([k, v]) => `${k}: ${v.ok ? "สำเร็จ" : "ล้มเหลว (" + v.detail + ")"}`).join("\n"));
+  } catch (e) { alert("ไม่สำเร็จ: " + e.message); }
+};
+async function openIncidentFromHash() {
+  const m = /^#inc-(\d+)$/.exec(location.hash); if (!m) return;
+  const id = Number(m[1]);
+  let inc = state.incidents.find((i) => i.id === id);
+  if (!inc) { try { inc = await api(`/api/soc/incidents/${id}`); } catch { return; } }
+  state.selected = id; renderDetail(inc);
+  $("#detailCard").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+window.addEventListener("hashchange", openIncidentFromHash);
 
 // ---------- incident workflow ----------
 function analystName() {

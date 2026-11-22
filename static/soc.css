@@ -149,3 +149,5 @@
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 520px) { .fw-grid { grid-template-columns: minmax(0, 1fr); } .tac { grid-template-columns: 110px 1fr 30px; } }
+button.pill { font: inherit; font-size: 12px; font-weight: 400; cursor: pointer; }
+button.pill:hover { filter: none; background: var(--hover); }

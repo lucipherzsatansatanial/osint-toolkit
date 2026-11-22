@@ -25,7 +25,8 @@ from app.modules import threatintel
 DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "data", "agent"]
 SEV = ["info", "low", "medium", "high", "critical"]
 INCIDENT_STATUSES = ("open", "investigating", "resolved", "false_positive", "closed")
-ACTIVE = ("open", "investigating")  # new alerts still correlate into these
+ACTIVE = ("open", "investigating")
+PLACEHOLDER_USERS = {"", "unknown", "-", "n/a", "none", "system", "SYSTEM", None}  # new alerts still correlate into these
 CORR_WINDOW = 1800
 
 HOSTS = [("FIN-WS-014", "Windows 11", "finance.ops"), ("FIN-WS-022", "Windows 11", "ap.clerk"),
@@ -78,6 +79,7 @@ class Engine:
     def __init__(self, seed: int | None = None, max_events: int = 300, simulate: bool = True):
         self.simulate = simulate
         self.persist = False  # switched on by the app after restore(); tests use in-memory engines
+        self.on_incident = None  # optional callback(incident) — the app wires the notifier here
         self._dirty: set[int] = set()
         self.ingested: Counter = Counter()
         self._outbox: deque[dict] = deque(maxlen=500)
@@ -290,6 +292,10 @@ class Engine:
                 ep["status"] = "at_risk"
         if SEV.index(ev["severity"]) >= 2:
             ev["incident_id"] = self._correlate(ev)
+            if self.on_incident:
+                inc = self.incidents.get(ev["incident_id"])
+                if inc and self.on_incident(inc) and inc.get("real"):
+                    self._dirty.add(inc["id"])  # persist notified_sev so a restart does not re-send
 
     def _correlate(self, ev: dict) -> int:
         for inc in self.incidents.values():
@@ -297,7 +303,9 @@ class Engine:
                 continue
             if inc.get("real", False) != (ev.get("simulated") is False):
                 continue
-            if ev["user"] in inc["users"] or ev["host"] in inc["hosts"]:
+            # placeholder accounts (no user in the log) must not glue unrelated hosts together
+            user_match = ev["user"] not in PLACEHOLDER_USERS and ev["user"] in inc["users"]
+            if user_match or (ev["host"] and ev["host"] in inc["hosts"]):
                 break
         else:
             inc = {"id": next(self.inc_ids), "first_ts": ev["ts"], "status": "open", "users": [],

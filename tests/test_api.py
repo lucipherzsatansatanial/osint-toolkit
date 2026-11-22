@@ -118,3 +118,9 @@ def test_soc_incident_workflow_api(client):
     csv_r = client.get("/api/soc/incidents.csv", headers=H)
     assert csv_r.status_code == 200 and str(inc_id) in csv_r.text
     assert client.get("/api/history", headers=H).json()[0]["module"] == "soc.incident"
+
+
+def test_soc_notify_api(client):
+    st = client.get("/api/soc/notify", headers=H).json()
+    assert st["channels"] == [] and st["min_severity"] == "high"
+    assert client.post("/api/soc/notify/test", headers=H, json={"analyst": "tester"}).status_code == 409

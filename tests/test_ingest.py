@@ -140,3 +140,11 @@ def test_new_kinds_and_mappings():
     assert kinds == ["logon", "db", "dlp", "tool_call", "logon", "logon"]
     assert recs[0]["event_id"] == 4624 and recs[2]["dest"] == "share.example" and recs[3]["mcp_server"] == "hexstrike-ai"
     assert recs[4]["logon_type"] == 3 and recs[4]["src_host"] == "WS-4" and recs[5]["logon_type"] == 3
+
+
+def test_unknown_users_do_not_merge_hosts():
+    e = telemetry.Engine(seed=1, simulate=False)
+    recs, _ = ingest.parse(json.dumps([{"kind": "net", "host": h, "dest": "api.deepseek.com", "ts": NOW}
+                                       for h in ("SRV-A", "SRV-B")]).encode(), "native", now=NOW)
+    e.ingest_external(recs)
+    assert len(e.incidents) == 2
