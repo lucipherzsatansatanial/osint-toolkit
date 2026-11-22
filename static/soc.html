@@ -28,6 +28,8 @@
     <a href="#queryCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg><span>Query builder</span></a>
     <a href="#nbCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h11a2 2 0 012 2v14a2 2 0 01-2 2H6z"/><path d="M6 3v18M10 8h6M10 12h6"/></svg><span>Notebooks</span></a>
     <a href="#intelCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M11 8v3l2 2"/></svg><span>Intelligence</span><em id="nb-intel">0</em></a>
+    <a href="#colCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 13h8M8 16h5"/></svg><span>IOC Collections</span></a>
+    <a href="#graphCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="7" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.3 8.2l2.6 7.5M16.5 8l-3.2 7.8M8.5 6.8l7-.6"/></svg><span>Graph explorations</span></a>
     <a href="#feedsCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19a1 1 0 100-2 1 1 0 000 2zM4 11a9 9 0 019 9M4 4a16 16 0 0116 16"/></svg><span>Feeds (out)</span></a>
     <a href="#integCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 01-10 0zM12 16v5"/></svg><span>Integrations</span></a>
     <a href="#intakesCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v6H4zM4 14h16v6H4z"/><path d="M8 7h.01M8 17h.01"/></svg><span>Intakes</span><em id="nb-intake">0</em></a>
@@ -46,6 +48,7 @@
     <a href="#sec-cti"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg><span>Threat Intelligence</span></a>
     <div class="nav-h">Workspace</div>
     <a href="#hunting"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span>Threat hunting</span></a>
+    <a href="#wsCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>Workspace settings</span><em id="nb-ws" hidden>!</em></a>
     <a href="#usersCard" id="navUsers" data-perm="users.manage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14c2.2.6 3.5 2.6 3.5 6"/></svg><span>ผู้ใช้และสิทธิ์</span></a>
     <a href="#govCard" data-perm="users.manage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-6 9 6"/><path d="M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18"/></svg><span>Governance & AI Eval</span></a>
     <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l6-6M14 4h6v6M20 4l-9 9"/></svg><span>OSINT Toolkit</span></a>
@@ -62,6 +65,7 @@
     <span id="live" class="pill off"><i></i><span>offline</span></span>
     <span id="modePill" class="pill warn" title="SIMULATED = demo generator · LIVE = only real logs sent to /api/soc/ingest">Telemetry: SIMULATED</span>
     <span id="ctiStatus" class="pill">CTI: …</span>
+    <button id="aiBtn" class="pill ai-btn" type="button" data-perm="ai.use">✦ ถาม AI</button>
     <span class="bell-wrap"><button id="bellBtn" class="pill bell" type="button" title="งานและ incident ที่ต้องดำเนินการ" aria-expanded="false" aria-controls="bellPanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/></svg><span>ต้องดำเนินการ</span><b id="bellN" hidden>0</b></button>
       <div id="bellPanel" class="bell-panel" hidden>
         <h3>การแจ้งเตือนจากกฎ <button id="inboxRead" type="button" class="link">อ่านทั้งหมด</button></h3><ul id="inboxList"></ul>
@@ -95,8 +99,9 @@
 
   <section class="card span2" id="alertsCard">
     <div class="ov-head">
-      <div class="ov-stat"><span>Pending alerts</span><b id="ov-pending">–</b></div>
-      <div class="ov-stat"><span>Opened cases</span><b id="ov-cases">–</b></div>
+      <div class="ov-stat"><span>Pending alerts</span><b id="ov-pending">–</b><small id="ov-at" class="trend"></small></div>
+      <div class="ov-stat"><span>Ongoing alerts</span><b id="ov-ongoing">–</b></div>
+      <div class="ov-stat"><span>Opened cases</span><b id="ov-cases">–</b><small id="ov-ct" class="trend"></small></div>
       <div class="ov-title"><h2>Alerts <small class="muted">จัดกลุ่มตาม alert + host · เรียงตาม urgency</small></h2>
         <small class="muted" id="ov-formula" title=""></small></div>
     </div>
@@ -128,6 +133,16 @@
     <div class="tbl-wrap"><table class="tbl tasks-tbl" id="tasksTbl">
       <thead><tr><th>#</th><th>ชื่องาน</th><th>ผู้รับผิดชอบ</th><th>สถานะ</th><th>กำหนดส่ง</th><th>Incident</th></tr></thead><tbody></tbody>
     </table></div>
+  </section>
+
+  <section class="card" id="commentsCard">
+    <h2>ความเห็นล่าสุด <small class="muted">บันทึกของ analyst ในทุก case</small></h2>
+    <ul class="list" id="lastComments"></ul>
+  </section>
+
+  <section class="card span2" id="recentCasesCard">
+    <h2>Cases ล่าสุด <a href="#casesCard" class="link small">ดูทั้งหมด →</a></h2>
+    <div class="tbl-wrap"><table class="tbl" id="recentCases"><thead><tr><th>ชื่อ case</th><th>Priority</th><th>สร้างโดย</th><th>สร้างเมื่อ</th><th>ประเภท</th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section class="card span2 chart-card">
@@ -501,6 +516,64 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
     <div class="pager"><button id="ciPrev" class="ghost sm">‹ ก่อนหน้า</button><span id="ciPage" class="muted"></span><button id="ciNext" class="ghost sm">ถัดไป ›</button></div>
   </section>
 
+  <section class="card span3" id="colCard">
+    <h2>IOC Collections <small class="muted">ชุด IOC ของเรา (เช่น ตามแคมเปญ / incident) · ใช้ตรวจ log ด้วย rule IOC-001</small>
+      <button id="colNew" class="sm" data-perm="rules.manage">+ New collection</button></h2>
+    <div class="nb">
+      <aside class="nb-side"><ul id="colList" class="nb-list"></ul></aside>
+      <div class="nb-main" id="colMain"><p class="muted">เลือกหรือสร้าง collection</p></div>
+    </div>
+  </section>
+
+  <section class="card span3" id="graphCard">
+    <h2>Graph explorations <small class="muted">ไล่ความเชื่อมโยง host ↔ บัญชี ↔ IOC ↔ case ↔ rule จาก alert และ log จริงของ tenant · ดับเบิลคลิก node เพื่อขยาย</small></h2>
+    <div class="graph-ui">
+      <aside class="nb-side">
+        <button id="grNew" class="sm" data-perm="incident.write">+ New graph</button>
+        <ul id="grList" class="nb-list"></ul>
+      </aside>
+      <div class="graph-main">
+        <div class="task-bar">
+          <input id="grName" placeholder="ชื่อ graph" maxlength="120" aria-label="ชื่อ graph">
+          <select id="grType" aria-label="ชนิด node"><option value="host">Host</option><option value="account">Account</option><option value="indicator">Indicator (IP/domain/hash)</option>
+            <option value="incident">Case (เลข)</option><option value="threat">Threat / malware</option><option value="rule">Rule ID</option></select>
+          <input id="grValue" placeholder="ค่า เช่น SRV-WEB-01" aria-label="ค่า node">
+          <button id="grAdd" class="ghost">เพิ่ม + ขยาย</button>
+          <button id="grSave" data-perm="incident.write">บันทึก</button>
+          <span id="grMsg" class="muted small"></span>
+        </div>
+        <svg id="grSvg" class="gr-svg" role="img" aria-label="Investigation graph"></svg>
+        <div class="gr-legend" id="grLegend"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card span3" id="wsCard">
+    <h2>Workspace settings <small class="muted" id="wsTenant"></small> <span id="wsMissing" class="vd" hidden>ข้อมูลยังไม่ครบ</span></h2>
+    <div class="ws">
+      <form id="wsForm" class="ws-form">
+        <h3>ข้อมูลองค์กร</h3>
+        <div class="row2"><label>ชื่อที่แสดง * <input name="display_name" required maxlength="120"></label>
+          <label>ชื่อนิติบุคคล * <input name="legal_name" maxlength="200" placeholder="บริษัท … จำกัด"></label></div>
+        <label>รายละเอียด <textarea name="description" rows="2" maxlength="1000"></textarea></label>
+        <div class="row2"><label>โดเมนหลัก * <input name="domain" maxlength="253" placeholder="example.co.th"></label>
+          <label>ที่ตั้ง * <input name="location" maxlength="80" placeholder="Thailand"></label></div>
+        <div class="row2"><label>อุตสาหกรรม * <select name="sector"><option value="">— เลือก —</option></select></label>
+          <label>ขนาดองค์กร * <select name="size"><option value="">— เลือก —</option><option>1-50</option><option>51-200</option><option>201-1000</option><option>1001-5000</option><option>5000+</option></select></label></div>
+        <label>ขนาดทีม security *</label>
+        <div class="seg" id="wsTeam"><button type="button" data-v="0">0</button><button type="button" data-v="1-10">1-10</button><button type="button" data-v="11-50">11-50</button><button type="button" data-v="51-200">51-200</button><button type="button" data-v="200+">200+</button></div>
+        <label>ผู้ติดต่อ DPO (PDPA) <input name="dpo_contact" maxlength="200" placeholder="ชื่อ / อีเมล เจ้าหน้าที่คุ้มครองข้อมูลส่วนบุคคล"></label>
+        <div><button id="wsSave" data-perm="users.manage">บันทึก</button> <span id="wsMsg" class="muted small"></span></div>
+      </form>
+      <div class="ws-tpl">
+        <h3>Case templates <small class="muted">ใช้ตอนสร้าง case ด้วยมือ — เติม priority, tag และสร้างงาน (Tasks) ให้อัตโนมัติ</small></h3>
+        <div id="tplList"></div>
+        <p><button id="tplAdd" type="button" class="ghost sm" data-perm="rules.manage">+ เพิ่ม template</button>
+          <button id="tplSave" type="button" class="sm" data-perm="rules.manage">บันทึก templates</button> <span id="tplMsg" class="muted small"></span></p>
+      </div>
+    </div>
+  </section>
+
   <section class="card span3" id="feedsCard">
     <h2>Feeds (ส่งออก) <small class="muted">ให้ไฟร์วอลล์ / CTI platform อื่นดึง IOC ไปใช้ — STIX 2.1, ข้อความบรรทัดละรายการ, CSV</small>
       <button id="fdNew" class="sm" data-perm="rules.manage">+ New feed</button></h2>
@@ -598,6 +671,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
 <dialog id="caseDlg" class="dlg">
   <form method="dialog" id="caseForm">
     <h2>New case</h2>
+    <label>Template <select name="template_id"><option value="">— ไม่ใช้ template —</option></select></label>
     <label>ชื่อ case <input name="name" required maxlength="200" placeholder="เช่น CFO ได้รับอีเมล phishing"></label>
     <label>รายละเอียด <textarea name="description" rows="4" maxlength="8000"></textarea></label>
     <div class="row3">
@@ -623,6 +697,13 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
   </form>
 </dialog>
 
+<aside id="aiPanel" class="ai-panel" hidden aria-label="AI assistant">
+  <div class="ai-head"><b>✦ SOC Assistant</b> <small class="muted" id="aiPanelStatus"></small><button id="aiClose" class="ghost sm" type="button">ปิด</button></div>
+  <div class="ai-body" id="aiBody"><div class="ai-hello"><p>ถามเกี่ยวกับ alert, case, log, IOC, rule หรือ asset ของ tenant นี้ — AI อ่านได้อย่างเดียว ไม่แก้ไขอะไร</p><div id="aiSugg" class="ai-sugg"></div></div></div>
+  <form id="aiForm" class="ai-form"><textarea id="aiQ" rows="2" maxlength="4000" placeholder="ถามอะไรก็ได้… (Enter เพื่อส่ง, Shift+Enter ขึ้นบรรทัด)"></textarea><button>ส่ง</button></form>
+  <p class="small muted ai-foot">AI อาจผิดพลาด — ตรวจหลักฐานก่อนใช้ · ชื่อผู้ใช้/อีเมล/IP ภายในถูกแทนด้วยนามแฝงก่อนส่งให้โมเดล</p>
+</aside>
+
 <dialog id="iocDlg" class="dlg">
   <form method="dialog" id="iocForm">
     <h2>เพิ่ม IOC ของเรา</h2>
@@ -639,6 +720,12 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
       <label>Tags <input name="tags" placeholder="incident-1015, partner"></label>
     </div>
     <label>รายละเอียด <input name="description" maxlength="1000"></label>
+    <div class="row3">
+      <label>Collection <select name="collection_id"><option value="">— ไม่ระบุ —</option></select></label>
+      <label>Kill chain phase <select name="kill_chain_phase"><option value="">—</option><option>reconnaissance</option><option>weaponization</option><option>delivery</option>
+        <option>exploitation</option><option>installation</option><option>command-and-control</option><option>actions-on-objectives</option></select></label>
+      <label>นำเข้าจากไฟล์ (.txt / .csv) <input type="file" id="iocFile" accept=".txt,.csv,text/plain,text/csv"></label>
+    </div>
     <p class="small muted">IOC เหล่านี้จะถูกจับคู่กับ log ที่เข้ามา (rule IOC-001) และส่งออกผ่าน Feeds ได้ตาม TLP</p>
     <p id="iocErr" class="err"></p>
     <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button value="save">เพิ่ม</button></div>

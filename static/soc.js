@@ -1001,7 +1001,16 @@ function renderDonut(srcs, total) {
 async function loadOverview() {
   try {
     const o = await api("/api/soc/overview");
-    setKpi("#ov-pending", o.pending_alerts); setKpi("#ov-cases", o.opened_cases);
+    setKpi("#ov-pending", o.pending_alerts); setKpi("#ov-cases", o.opened_cases); setKpi("#ov-ongoing", o.ongoing_alerts ?? 0);
+    const tr = (el, pct, cur, prev, what) => { const e = $(el); if (!e || !o.trend) return;
+      e.textContent = pct === null ? `${cur} ${what} ใน 24 ชม.` : `${pct > 0 ? "▲" : pct < 0 ? "▼" : "•"} ${Math.abs(pct)}% (${cur} vs ${prev})`;
+      e.className = "trend " + (pct > 0 ? "up" : pct < 0 ? "down" : ""); e.title = `24 ชม. ล่าสุด ${cur} · 24 ชม. ก่อนหน้า ${prev}`; };
+    if (o.trend) { tr("#ov-at", o.trend.alerts_pct, o.trend.alerts_24h, o.trend.alerts_prev_24h, "alerts"); tr("#ov-ct", o.trend.cases_pct, o.trend.cases_24h, o.trend.cases_prev_24h, "cases"); }
+    $("#lastComments").innerHTML = (o.last_comments || []).map((c) => `<li><a href="#inc-${c.incident_id}">INC-${c.incident_id}</a> <b>${esc(c.analyst)}</b>
+      <small class="muted">${ago(c.ts)}ที่แล้ว</small><div>${esc(c.text.slice(0, 160))}</div></li>`).join("") || '<li class="muted">ยังไม่มีความเห็น</li>';
+    $("#recentCases tbody").innerHTML = (o.recent_cases || []).map((c) => `<tr class="clk" data-inc="${c.id}"><td class="a-title">${c.real ? '<span class="real">REAL</span>' : ""}${esc(c.name)}</td>
+      <td><span class="prio ${esc(c.priority)}">${esc(c.priority)}</span></td><td>${c.type === "manual" ? "analyst" : "✦ ระบบ"}</td>
+      <td>${ago(c.first_ts)}ที่แล้ว</td><td><span class="dt">${c.type === "manual" ? "Manual" : "Automatic"}</span></td></tr>`).join("") || '<tr><td colspan="5" class="muted">ยังไม่มี case</td></tr>';
     $("#ov-formula").textContent = "urgency คืออะไร?"; $("#ov-formula").title = o.urgency_formula;
     $("#srcNote").textContent = o.simulated ? "รวมข้อมูลจำลอง" : "log จริง";
     $("#alertsTbl tbody").innerHTML = o.alerts.slice(0, 25).map((a) => `<tr data-inc="${a.incident_id ?? ""}" class="${a.incident_id ? "clk" : ""}">
@@ -1142,7 +1151,7 @@ window.addEventListener("hashchange", () => {
 });
 function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); loadAlertsList(); loadEvents(); loadLandscape(); loadNotifyRules();
   loadCases(); loadSavedQueries(); loadNotebooks(); loadCatalog(); loadCaseMeta(); loadIntakes(); loadEntities(); loadAssets();
-  loadIntel(); loadFeeds(); loadIntegrations(); }
+  loadIntel(); loadFeeds(); loadIntegrations(); loadCollections(); loadGraphs(); loadWsSettings(); }
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);
 
@@ -1425,6 +1434,7 @@ $("#csNew").onclick = async () => {
   await loadCaseMeta();
   const f = $("#caseForm"); f.reset();
   f.assignee.innerHTML = '<option value="">— ยังไม่มอบหมาย —</option>' + TS.users.map((u) => `<option>${esc(u)}</option>`).join("");
+  f.template_id.innerHTML = '<option value="">— ไม่ใช้ template —</option>' + (WS.templates || []).map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("");
   cfInputs($("#caseCf")); $("#caseErr").textContent = "";
   $("#caseDlg").showModal();
 };
@@ -1435,7 +1445,8 @@ $("#caseForm").addEventListener("submit", async (ev) => {
   try {
     const c = await api("/api/soc/cases", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       name: f.name.value.trim(), description: f.description.value, priority: f.priority.value, assignee: f.assignee.value || null,
-      tags: splitList(f.tags.value), hosts: splitList(f.hosts.value), custom_fields: cfValues($("#caseCf")) }) });
+      tags: splitList(f.tags.value), hosts: splitList(f.hosts.value), custom_fields: cfValues($("#caseCf")),
+      ...(f.template_id.value ? { template_id: Number(f.template_id.value) } : {}) }) });
     $("#caseDlg").close(); loadCases(); location.hash = "#inc-" + c.id;
   } catch (e) { $("#caseErr").textContent = e.message; }
 });
@@ -1945,7 +1956,22 @@ $("#ciQ").addEventListener("keydown", (ev) => { if ((ev.ctrlKey || ev.metaKey) &
 ["#ciType", "#ciSrc", "#ciConf"].forEach((x) => { $(x).onchange = () => { CI.page = 1; loadIntel(); }; });
 $("#ciPrev").onclick = () => { CI.page--; loadIntel(); };
 $("#ciNext").onclick = () => { CI.page++; loadIntel(); };
-$("#iocAdd").onclick = () => { $("#iocForm").reset(); $("#iocErr").textContent = ""; $("#iocDlg").showModal(); };
+function openIocDlg(collectionId) {
+  const f = $("#iocForm"); f.reset(); $("#iocErr").textContent = "";
+  f.collection_id.innerHTML = '<option value="">— ไม่ระบุ —</option>' + (COL.items || []).map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  if (collectionId) f.collection_id.value = String(collectionId);
+  $("#iocDlg").showModal();
+}
+$("#iocAdd").onclick = () => openIocDlg(null);
+$("#iocFile").onchange = async (ev) => {
+  const file = ev.target.files[0]; if (!file) return;
+  if (file.size > 2_000_000) { $("#iocErr").textContent = "ไฟล์ใหญ่เกิน 2 MB"; return; }
+  const text = await file.text();
+  // CSV: take the first column of each row (skip a header named value/indicator/ioc)
+  const vals = text.split(/\r?\n/).map((l) => l.split(",")[0].replace(/^"|"$/g, "").trim()).filter((v) => v && !/^(value|indicator|ioc|observable)$/i.test(v));
+  const f = $("#iocForm"); f.values.value = (f.values.value ? f.values.value + "\n" : "") + vals.join("\n");
+  $("#iocErr").textContent = `อ่านจากไฟล์ ${vals.length} บรรทัด`;
+};
 $("#iocForm").addEventListener("submit", async (ev) => {
   if (ev.submitter?.value !== "save") return;
   ev.preventDefault();
@@ -1954,9 +1980,10 @@ $("#iocForm").addEventListener("submit", async (ev) => {
     const r = await api("/api/soc/iocs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       values: f.values.value, tlp: f.tlp.value, confidence: Number(f.confidence.value || 80), threat: f.threat.value.trim(),
       description: f.description.value.trim(), tags: splitList(f.tags.value), severity: f.severity.value || null,
-      expires_days: f.expires_days.value ? Number(f.expires_days.value) : null }) });
+      expires_days: f.expires_days.value ? Number(f.expires_days.value) : null,
+      collection_id: f.collection_id.value ? Number(f.collection_id.value) : null, kill_chain_phase: f.kill_chain_phase.value }) });
     if (r.invalid.length && !confirm(`เพิ่มแล้ว ${r.added} รายการ\nไม่ใช่ IOC ที่รองรับ ${r.invalid.length} รายการ: ${r.invalid.slice(0, 5).join(", ")}\nปิดหน้าต่าง?`)) return;
-    $("#iocDlg").close(); $("#ciSrc").value = "tenant"; CI.page = 1; loadIntel(); loadFeeds();
+    $("#iocDlg").close(); $("#ciSrc").value = "tenant"; CI.page = 1; loadIntel(); loadFeeds(); loadCollections(true);
   } catch (e) { $("#iocErr").textContent = e.message; }
 });
 
@@ -2067,3 +2094,250 @@ function renderIntegrations() {
 }
 $("#igQ").addEventListener("input", renderIntegrations);
 ["#igStatus", "#igCat", "#igType"].forEach((x) => $(x).addEventListener("change", renderIntegrations));
+
+
+// ---------- AI assistant ----------
+const AIA = { log: [], busy: false };
+function aiRender() {
+  const body = $("#aiBody");
+  if (!AIA.log.length) return;
+  body.innerHTML = AIA.log.map((m) => m.role === "user" ? `<div class="ai-msg u">${esc(m.content)}</div>`
+    : `<div class="ai-msg a">${m.pending ? '<span class="muted">กำลังค้นข้อมูล…</span>' : md(m.content)}
+      ${(m.calls || []).length ? `<div class="ai-calls">${m.calls.map((c) => `<span class="thr ${c.ok ? "" : "off"}" title="${esc(JSON.stringify(c.input || {}))}">🔧 ${esc(c.tool)}</span>`).join(" ")}</div>` : ""}
+      ${m.data ? aiData(m.data) : ""}
+      ${m.meta ? `<div class="small muted">${esc(m.meta)}</div>` : ""}</div>`).join("");
+  body.scrollTop = body.scrollHeight;
+}
+function aiData(d) {
+  const rows = d.items || d.rows || [];
+  if (!rows.length) return `<p class="muted small">ไม่พบข้อมูล${d.not_found?.length ? ": " + esc(d.not_found.join(", ")) : ""}</p>`;
+  const cols = Object.keys(rows[0]).filter((k) => typeof rows[0][k] !== "object" || rows[0][k] === null).slice(0, 6);
+  return `<div class="tbl-wrap"><table class="tbl small"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${rows.slice(0, 15).map((r) =>
+    `<tr>${cols.map((c) => `<td>${esc(c.endsWith("ts") || c.endsWith("_seen") ? (r[c] ? t2(r[c]) : "") : r[c])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+async function aiAsk(q) {
+  if (AIA.busy || !q.trim()) return;
+  AIA.busy = true;
+  const hist = AIA.log.filter((m) => !m.pending && m.content).map((m) => ({ role: m.role, content: m.content })).slice(-8);
+  AIA.log.push({ role: "user", content: q }, { role: "assistant", pending: true });
+  aiRender();
+  try {
+    const r = await api("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, history: hist }) });
+    AIA.log[AIA.log.length - 1] = { role: "assistant", content: r.answer, calls: r.calls, data: r.source === "fallback" ? r.data : null,
+      meta: r.source === "claude" ? `${r.model} · ${r.usage ? r.usage.input_tokens + "/" + r.usage.output_tokens + " tokens" : ""}${r.redacted ? " · ใช้นามแฝง" : ""}` : "" };
+  } catch (e) { AIA.log[AIA.log.length - 1] = { role: "assistant", content: "ไม่สำเร็จ: " + e.message }; }
+  AIA.busy = false; aiRender();
+}
+$("#aiBtn").onclick = async () => {
+  const p = $("#aiPanel"); p.hidden = !p.hidden;
+  if (!p.hidden && !$("#aiSugg").childElementCount) {
+    try {
+      const r = await api("/api/assistant/suggestions");
+      $("#aiPanelStatus").textContent = r.ai.enabled ? `Claude ${r.ai.model}` : "โหมดคำสั่งพื้นฐาน (ยังไม่ตั้ง API key)";
+      $("#aiSugg").innerHTML = r.suggestions.map((x) => `<button type="button" class="ghost">${esc(x)}</button>`).join("");
+    } catch {}
+  }
+  if (!p.hidden) $("#aiQ").focus();
+};
+$("#aiClose").onclick = () => { $("#aiPanel").hidden = true; };
+$("#aiSugg").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) aiAsk(b.textContent); });
+$("#aiForm").addEventListener("submit", (ev) => { ev.preventDefault(); const q = $("#aiQ").value; $("#aiQ").value = ""; aiAsk(q); });
+$("#aiQ").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); $("#aiForm").requestSubmit(); } });
+
+// ---------- IOC collections ----------
+const COL = { items: [], cur: null, page: 1, q: "" };
+const KC_TH = { reconnaissance: "Recon", weaponization: "Weaponize", delivery: "Delivery", exploitation: "Exploit", installation: "Install", "command-and-control": "C2", "actions-on-objectives": "Actions" };
+async function loadCollections(refreshCurrent) {
+  try {
+    const r = await api("/api/soc/ioc-collections");
+    COL.items = r.collections;
+    $("#colList").innerHTML = r.collections.map((c) => `<li data-id="${c.id}" class="${COL.cur?.id === c.id ? "on" : ""}"><b>${esc(c.name)}</b>
+      <small class="muted">${c.iocs} IOC · ${esc(c.created_by)}</small></li>`).join("") || '<li class="muted">ยังไม่มี collection</li>';
+    if (refreshCurrent && COL.cur) openCollection(COL.items.find((c) => c.id === COL.cur.id));
+  } catch (e) { $("#colList").innerHTML = `<li class="err">${esc(e.message)}</li>`; }
+}
+async function openCollection(c) {
+  if (!c) return;
+  COL.cur = c;
+  document.querySelectorAll("#colList li").forEach((li) => li.classList.toggle("on", Number(li.dataset.id) === c.id));
+  const p = new URLSearchParams({ collection_id: c.id, page: COL.page, size: 50 });
+  if (COL.q) p.set("q", COL.q);
+  let r;
+  try { r = await api("/api/soc/iocs?" + p); } catch (e) { $("#colMain").innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const edit = can("rules.manage");
+  $("#colMain").innerHTML = `<div class="col-head"><div><h3>${esc(c.name)}</h3><p class="muted small">${esc(c.description || "")}</p></div>
+    <div class="task-bar">${edit ? '<button id="colImport" class="ghost sm">นำเข้า / เพิ่ม IOC</button>' : ""}
+      <select id="colDays" aria-label="ช่วงเวลา"><option value="7">7 วัน</option><option value="30" selected>30 วัน</option><option value="90">90 วัน</option></select>
+      <button id="colReport" class="sm">สร้าง telemetry report</button></div></div>
+    <div id="colRep"></div>
+    <input id="colQ" type="search" placeholder="ค้นหาใน collection" value="${esc(COL.q)}" aria-label="ค้นหา IOC">
+    <div class="tbl-wrap tall"><table class="tbl"><thead><tr><th>ชนิด</th><th>Observable</th><th>Threat</th><th>Valid from</th><th>Valid until</th><th>Kill chain</th><th>รายละเอียด</th><th>TLP</th><th></th></tr></thead><tbody>
+    ${r.iocs.map((i) => `<tr class="${i.revoked ? "revoked" : ""}"><td><span class="kindtag">${esc(i.type)}</span></td><td class="mono">${esc(i.value)}</td>
+      <td>${esc(i.threat || "")}</td><td>${i.valid_from ? esc(t2(i.valid_from).split(" ")[0]) : esc(i.first_seen || "")}</td>
+      <td>${i.expires ? esc(t2(i.expires).split(" ")[0]) : "—"}</td><td>${i.kill_chain_phase ? `<span class="thr">${esc(KC_TH[i.kill_chain_phase] || i.kill_chain_phase)}</span>` : "—"}</td>
+      <td class="a-title small">${esc(i.description || "")}</td><td><span class="tlp ${TLP_CLS[i.tlp] || ""}">${esc(i.tlp.toUpperCase())}</span></td>
+      <td>${edit ? `<button class="ghost sm ioc-rev" data-v="${esc(i.value)}" data-r="${i.revoked ? 0 : 1}">${i.revoked ? "เปิดใช้อีกครั้ง" : "Revoke"}</button>` : ""}</td></tr>`).join("")
+      || '<tr><td colspan="9" class="muted">ยังไม่มี IOC ใน collection นี้</td></tr>'}</tbody></table></div>
+    <div class="pager"><button id="colPrev" class="ghost sm" ${r.page <= 1 ? "disabled" : ""}>‹</button><span class="muted">หน้า ${r.page}/${r.pages} · ${r.total} IOC</span><button id="colNext" class="ghost sm" ${r.page >= r.pages ? "disabled" : ""}>›</button></div>`;
+}
+$("#colList").addEventListener("click", (ev) => { const li = ev.target.closest("li[data-id]"); if (li) { COL.page = 1; COL.q = ""; openCollection(COL.items.find((c) => c.id === Number(li.dataset.id))); } });
+$("#colNew").onclick = async () => {
+  const name = prompt("ชื่อ collection (เช่น ชื่อแคมเปญ / incident)"); if (!name) return;
+  const description = prompt("รายละเอียด (ไม่บังคับ)") || "";
+  try { const c = await api("/api/soc/ioc-collections", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, description }) });
+    await loadCollections(); openCollection(COL.items.find((x) => x.id === c.id)); } catch (e) { alert(e.message); }
+};
+let colT;
+$("#colMain").addEventListener("input", (ev) => { if (ev.target.id === "colQ") { clearTimeout(colT); colT = setTimeout(() => { COL.q = ev.target.value.trim(); COL.page = 1; openCollection(COL.cur).then(() => $("#colQ")?.focus()); }, 350); } });
+$("#colMain").addEventListener("click", async (ev) => {
+  const t = ev.target;
+  if (t.id === "colImport") openIocDlg(COL.cur.id);
+  if (t.id === "colPrev") { COL.page--; openCollection(COL.cur); }
+  if (t.id === "colNext") { COL.page++; openCollection(COL.cur); }
+  if (t.closest(".ioc-rev")) {
+    try { await api("/api/soc/iocs/revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: [t.dataset.v], revoked: t.dataset.r === "1" }) }); openCollection(COL.cur); }
+    catch (e) { alert(e.message); }
+  }
+  if (t.id === "colReport") {
+    const days = $("#colDays").value;
+    $("#colRep").innerHTML = '<p class="muted">กำลังตรวจกับ log…</p>';
+    try {
+      const r = await api(`/api/soc/ioc-collections/${COL.cur.id}/report?days=${days}`);
+      $("#colRep").innerHTML = `<div class="rep-box"><b>Telemetry report · ${days} วัน</b> — พบ ${r.seen} จาก ${r.iocs} IOC ใน log/alert ของ tenant
+        ${r.hosts.length ? `· เครื่องที่เกี่ยวข้อง: <span class="mono">${r.hosts.map(esc).join(", ")}</span>` : ""}
+        <button class="ghost sm" id="colCsv">ดาวน์โหลด CSV</button><div class="small muted">${esc(r.note)}</div>
+        ${r.items.filter((x) => x.logs || x.alerts).slice(0, 10).map((x) => `<div class="small"><span class="mono">${esc(x.value)}</span> — ${x.logs} logs · ${x.alerts} alerts · ${esc(x.hosts.join(", "))}</div>`).join("")}</div>`;
+    } catch (e) { $("#colRep").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  }
+  if (t.id === "colCsv") download(`/api/soc/ioc-collections/${COL.cur.id}/report?days=${$("#colDays").value}&format=csv`, `ioc-telemetry-${COL.cur.id}.csv`, false).catch((e) => alert(e.message));
+});
+
+// ---------- graph explorations ----------
+const GR = { id: null, nodes: new Map(), edges: [], drag: null };
+const GR_COL = { host: "--endpoint", account: "--identity", indicator: "--critical", incident: "--xdr", threat: "--off", rule: "--cti" };
+const GR_TH = { host: "Host", account: "Account", indicator: "Indicator", incident: "Case", threat: "Threat", rule: "Rule" };
+$("#grLegend").innerHTML = Object.entries(GR_TH).map(([k, v]) => `<span><i style="background:var(${GR_COL[k]})"></i>${v}</span>`).join("");
+function grLayout(iter = 220) {
+  const ns = [...GR.nodes.values()];
+  for (let it = 0; it < iter; it++) {
+    for (const a of ns) { a.vx = 0; a.vy = 0; }
+    for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+      const a = ns[i], b = ns[j]; let dx = a.x - b.x, dy = a.y - b.y; let d2 = dx * dx + dy * dy || 0.01;
+      const f = 12000 / d2, d = Math.sqrt(d2); dx /= d; dy /= d;
+      a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+    }
+    for (const e of GR.edges) {
+      const a = GR.nodes.get(e.from), b = GR.nodes.get(e.to); if (!a || !b) continue;
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = (d - 110) * 0.02;
+      a.vx += dx / d * f * 10; a.vy += dy / d * f * 10; b.vx -= dx / d * f * 10; b.vy -= dy / d * f * 10;
+    }
+    for (const a of ns) if (!a.fixed) { a.x += Math.max(-8, Math.min(8, a.vx)); a.y += Math.max(-8, Math.min(8, a.vy)); }
+  }
+}
+function grDraw() {
+  const svg = $("#grSvg"), ns = [...GR.nodes.values()];
+  if (!ns.length) { svg.innerHTML = '<text x="20" y="40" class="tk">เพิ่ม node ด้วยช่องด้านบน หรือเปิด graph ที่บันทึกไว้</text>'; svg.setAttribute("viewBox", "0 0 800 420"); return; }
+  const xs = ns.map((n) => n.x), ys = ns.map((n) => n.y), pad = 80;
+  const minX = Math.min(...xs) - pad, minY = Math.min(...ys) - pad, w = Math.max(400, Math.max(...xs) - minX + pad), h = Math.max(300, Math.max(...ys) - minY + pad);
+  svg.setAttribute("viewBox", `${minX} ${minY} ${w} ${h}`);
+  svg.innerHTML = GR.edges.map((e) => { const a = GR.nodes.get(e.from), b = GR.nodes.get(e.to); if (!a || !b) return "";
+      return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="gr-e"/><text x="${(a.x + b.x) / 2}" y="${(a.y + b.y) / 2 - 3}" class="gr-el">${esc(e.label || "")}</text>`; }).join("")
+    + ns.map((n) => `<g class="gr-n" data-id="${esc(n.id)}" transform="translate(${n.x},${n.y})"><circle r="${n.expanded ? 15 : 12}" style="fill:var(${GR_COL[n.type] || "--muted"})"/>
+      <text y="${n.expanded ? 30 : 27}" text-anchor="middle">${esc(String(n.label).slice(0, 34))}</text><title>${esc(GR_TH[n.type] || n.type)}: ${esc(n.value)} — ดับเบิลคลิกเพื่อขยาย</title></g>`).join("");
+}
+async function grExpand(type, value) {
+  $("#grMsg").textContent = "กำลังขยาย…";
+  try {
+    const r = await api(`/api/soc/graph/expand?type=${encodeURIComponent(type)}&value=${encodeURIComponent(value)}`);
+    let root = GR.nodes.get(r.node.id);
+    if (!root) { root = { ...r.node, x: GR.nodes.size ? 0 : 0, y: 0 }; GR.nodes.set(root.id, root); }
+    root.expanded = true;
+    r.nodes.forEach((n, i) => { if (!GR.nodes.has(n.id)) { const ang = (2 * Math.PI * i) / Math.max(1, r.nodes.length); GR.nodes.set(n.id, { ...n, x: root.x + 140 * Math.cos(ang), y: root.y + 140 * Math.sin(ang) }); } });
+    const have = new Set(GR.edges.map((e) => e.from + ">" + e.to));
+    r.edges.forEach((e) => { if (!have.has(e.from + ">" + e.to) && !have.has(e.to + ">" + e.from)) GR.edges.push(e); });
+    grLayout(); grDraw();
+    $("#grMsg").textContent = `${r.nodes.length} ความเชื่อมโยง${r.truncated ? " (ตัดที่ 25)" : ""}${r.nodes.length ? "" : " — ไม่พบใน alert/log 7 วัน"}`;
+  } catch (e) { $("#grMsg").textContent = e.message; }
+}
+$("#grAdd").onclick = () => { const v = $("#grValue").value.trim(); if (v) grExpand($("#grType").value, v); };
+$("#grValue").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("#grAdd").click(); });
+$("#grSvg").addEventListener("dblclick", (ev) => { const g = ev.target.closest(".gr-n"); if (g) { const n = GR.nodes.get(g.dataset.id); grExpand(n.type, n.value); } });
+function svgPoint(ev) { const svg = $("#grSvg"), pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; return pt.matrixTransform(svg.getScreenCTM().inverse()); }
+$("#grSvg").addEventListener("pointerdown", (ev) => { const g = ev.target.closest(".gr-n"); if (!g) return; GR.drag = GR.nodes.get(g.dataset.id); GR.moved = false; ev.preventDefault(); });
+window.addEventListener("pointermove", (ev) => {
+  if (!GR.drag) return; const p = svgPoint(ev); GR.drag.x = p.x; GR.drag.y = p.y; GR.drag.fixed = true; GR.moved = true;
+  const g = $(`#grSvg .gr-n[data-id="${CSS.escape(GR.drag.id)}"]`); if (g) g.setAttribute("transform", `translate(${p.x},${p.y})`);
+});
+window.addEventListener("pointerup", () => { if (GR.drag) { const moved = GR.moved; GR.drag = null; if (moved) grDraw(); } });
+async function loadGraphs() {
+  try {
+    const r = await api("/api/soc/graphs");
+    $("#grList").innerHTML = r.graphs.map((g) => `<li data-id="${g.id}" class="${GR.id === g.id ? "on" : ""}"><b>${esc(g.name)}</b><small class="muted">${g.nodes} nodes · ${esc(g.created_by)} · ${ago(g.updated_at)}ที่แล้ว</small></li>`).join("")
+      || '<li class="muted">ยังไม่มี graph ที่บันทึก</li>';
+  } catch {}
+  if (!GR.nodes.size) grDraw();
+}
+$("#grList").addEventListener("click", async (ev) => {
+  const li = ev.target.closest("li[data-id]"); if (!li) return;
+  const g = await api(`/api/soc/graphs/${li.dataset.id}`);
+  GR.id = g.id; GR.nodes = new Map(g.nodes.map((n) => [n.id, { ...n, fixed: true }])); GR.edges = g.edges; $("#grName").value = g.name;
+  grDraw(); loadGraphs(); $("#grMsg").textContent = `เปิด ${g.name} — แก้ไขล่าสุดโดย ${g.updated_by}`;
+});
+$("#grNew").onclick = () => { GR.id = null; GR.nodes = new Map(); GR.edges = []; $("#grName").value = ""; $("#grMsg").textContent = ""; grDraw(); loadGraphs(); };
+$("#grSave").onclick = async () => {
+  const name = $("#grName").value.trim() || prompt("ชื่อ graph") || ""; if (!name) return;
+  const body = JSON.stringify({ name, nodes: [...GR.nodes.values()].map(({ id, type, value, label, x, y }) => ({ id, type, value, label, x, y })), edges: GR.edges });
+  try { const g = await api(GR.id ? `/api/soc/graphs/${GR.id}` : "/api/soc/graphs", { method: GR.id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body });
+    GR.id = g.id; $("#grName").value = g.name; $("#grMsg").textContent = "บันทึกแล้ว"; loadGraphs(); } catch (e) { $("#grMsg").textContent = e.message; }
+};
+
+// ---------- workspace settings ----------
+const WS = { templates: [] };
+async function loadWsSettings() {
+  try {
+    const r = await api("/api/soc/workspace");
+    WS.templates = r.templates;
+    const f = $("#wsForm");
+    if (f.sector.options.length === 1) f.sector.insertAdjacentHTML("beforeend", r.sectors.map((x) => `<option>${esc(x)}</option>`).join(""));
+    for (const k of ["display_name", "legal_name", "description", "domain", "location", "sector", "size", "dpo_contact"]) f[k].value = r.profile[k] || "";
+    WS.team = r.profile.security_team_size || "";
+    document.querySelectorAll("#wsTeam button").forEach((b) => b.classList.toggle("on", b.dataset.v === WS.team));
+    $("#wsTenant").textContent = `tenant: ${r.tenant}`;
+    $("#wsMissing").hidden = !r.missing.length; $("#nb-ws").hidden = !r.missing.length;
+    $("#wsMissing").title = "ยังไม่ได้กรอก: " + r.missing.join(", ");
+    const ro = !can("users.manage");
+    f.querySelectorAll("input,select,textarea,button").forEach((el) => { el.disabled = ro; });
+    renderTemplates();
+  } catch (e) { $("#wsMsg").textContent = e.message; }
+}
+$("#wsTeam").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (!b || b.disabled) return; WS.team = b.dataset.v; document.querySelectorAll("#wsTeam button").forEach((x) => x.classList.toggle("on", x === b)); });
+$("#wsForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target, body = Object.fromEntries(["display_name", "legal_name", "description", "domain", "location", "sector", "size", "dpo_contact"].map((k) => [k, f[k].value.trim()]));
+  body.security_team_size = WS.team || "";
+  try { await api("/api/soc/workspace", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); $("#wsMsg").textContent = "บันทึกแล้ว"; loadWsSettings(); }
+  catch (e) { $("#wsMsg").textContent = e.message; }
+});
+function tplRow(t = { name: "", title: "", priority: "medium", tags: [], tasks: [], description: "" }) {
+  return `<div class="tpl" data-id="${t.id ?? ""}"><div class="row3"><label>ชื่อ template <input data-k="name" value="${esc(t.name)}" maxlength="120"></label>
+    <label>Priority <select data-k="priority">${["low", "medium", "high", "critical"].map((p) => `<option ${p === t.priority ? "selected" : ""}>${p}</option>`).join("")}</select></label>
+    <label>Tags <input data-k="tags" value="${esc(t.tags.join(", "))}"></label></div>
+    <label>งานที่สร้างอัตโนมัติ (บรรทัดละงาน) <textarea data-k="tasks" rows="3">${esc(t.tasks.join("\n"))}</textarea></label>
+    <button type="button" class="ghost sm tpl-del">ลบ template</button></div>`;
+}
+function renderTemplates() {
+  $("#tplList").innerHTML = WS.templates.map(tplRow).join("") || '<p class="muted small">ยังไม่มี — เช่น "Phishing": เก็บ header อีเมล, ค้นผู้รับรายอื่น, บล็อกโดเมนผู้ส่ง, รีเซ็ตรหัสผ่าน</p>';
+  const ro = !can("rules.manage"); $("#tplList").querySelectorAll("input,select,textarea,button").forEach((el) => { el.disabled = ro; });
+}
+$("#tplAdd").onclick = () => { if (!$("#tplList .tpl")) $("#tplList").innerHTML = ""; $("#tplList").insertAdjacentHTML("beforeend", tplRow()); };
+$("#tplList").addEventListener("click", (ev) => { if (ev.target.closest(".tpl-del")) ev.target.closest(".tpl").remove(); });
+$("#tplSave").onclick = async () => {
+  const rows = [...document.querySelectorAll("#tplList .tpl")].map((el) => {
+    const g = (k) => el.querySelector(`[data-k=${k}]`).value;
+    return { ...(el.dataset.id ? { id: Number(el.dataset.id) } : {}), name: g("name").trim(), priority: g("priority"), tags: splitList(g("tags")),
+      tasks: g("tasks").split("\n").map((x) => x.trim()).filter(Boolean) };
+  }).filter((t) => t.name);
+  try { const r = await api("/api/soc/case-templates", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(rows) });
+    WS.templates = r.templates; renderTemplates(); $("#tplMsg").textContent = "บันทึกแล้ว"; } catch (e) { $("#tplMsg").textContent = e.message; }
+};
+$("#recentCases").addEventListener("click", (ev) => { const tr = ev.target.closest("tr[data-inc]"); if (tr) location.hash = "#inc-" + tr.dataset.inc; });

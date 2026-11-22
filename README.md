@@ -203,6 +203,23 @@ poll ได้ ส่วน POST/PATCH และการสแกน OSINT ย�
 - **Integrations** (`GET /api/soc/integrations`): รายการสิ่งที่ระบบเชื่อมได้จริง (intake formats, CTI feeds, feeds ส่งออก,
   ช่องทางแจ้งเตือน, AI, enrichment, ไฟล์ KQL/SPL/Sigma) พร้อมสถานะที่คำนวณจากการตั้งค่าบนเซิร์ฟเวอร์และวิธีตั้งค่า
 
+### SOC Assistant, IOC Collections, Graph explorations, Workspace settings
+
+- **SOC Assistant** (ปุ่ม "✦ ถาม AI", `POST /api/assistant`, สิทธิ์ `ai.use`): Claude ตอบคำถามเกี่ยวกับข้อมูลของ tenant ผ่าน
+  tool แบบอ่านอย่างเดียว 7 ตัว (alerts, cases, case detail, pipe query บน log ดิบ, intelligence, rules catalog, assets) ใน
+  manual tool-use loop บน Messages API (`claude-opus-5-5`, server-side refusal fallback `fallbacks="default"`, สูงสุด 6 รอบ);
+  ผลของ tool ถูกแทนชื่อผู้ใช้/อีเมล/IP ภายในด้วยนามแฝงก่อนส่งให้โมเดล และแปลงกลับในคำตอบ; ทุกคำถามบันทึก audit (`ai.assistant`)
+  พร้อม tool ที่ใช้, token และค่าใช้จ่ายโดยประมาณ; ไม่มี API key → โหมดคำสั่งพื้นฐาน (เรียก tool ตรง ๆ ไม่ใช้ AI)
+- **IOC Collections** (`/api/soc/ioc-collections`): ชุด IOC ตามแคมเปญ/incident, valid from / until, kill chain phase, นำเข้าไฟล์
+  .txt/.csv, revoke รายตัว (`POST /api/soc/iocs/revoke` — IOC ที่ revoke จะไม่ถูกจับคู่ใน log), **telemetry report** ว่า IOC
+  ใดใน collection เคยปรากฏใน log/alert ของ tenant (7/30/90 วัน) ดาวน์โหลด CSV ได้ — หนึ่ง IOC อยู่ได้หนึ่ง collection
+- **Graph explorations** (`/api/soc/graph/expand`, `/api/soc/graphs`): เริ่มจาก host / account / indicator / case / threat / rule
+  แล้วดับเบิลคลิกเพื่อขยายความเชื่อมโยงจาก alert, log ดิบ 7 วัน, case และ intelligence ของ tenant; ลากจัดตำแหน่งและบันทึกได้
+- **Workspace settings** (`/api/soc/workspace`, แก้ไขต้องมีสิทธิ์ `users.manage`): ข้อมูลองค์กร (ชื่อนิติบุคคล, โดเมน, ที่ตั้ง,
+  อุตสาหกรรม, ขนาด, ขนาดทีม security, ผู้ติดต่อ DPO) พร้อมป้าย "ข้อมูลยังไม่ครบ"; **Case templates** (`PUT /api/soc/case-templates`)
+  เติม priority/tag และสร้าง Tasks ให้อัตโนมัติเมื่อสร้าง case จาก template
+- หน้าแรกเพิ่ม: Ongoing alerts, แนวโน้ม % เทียบ 24 ชม. ก่อนหน้า, ความเห็นล่าสุดของ analyst, Cases ล่าสุด
+
 ### แจ้งเตือน incident ออกนอกระบบ (Teams / LINE / Slack / Email / Webhook)
 
 ตั้งค่าผ่าน environment variables (บน Render: service → **Environment**) — ไม่ต้องแก้โค้ด, secret ไม่ถูกเก็บใน repo

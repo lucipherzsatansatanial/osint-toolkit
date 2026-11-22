@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS soc2_assets (tenant TEXT NOT NULL, type TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS soc2_iocs (tenant TEXT NOT NULL, value TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, value));
 CREATE TABLE IF NOT EXISTS soc2_feeds (tenant TEXT NOT NULL, id INTEGER NOT NULL, key_hash TEXT NOT NULL UNIQUE, doc TEXT NOT NULL,
     PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_graphs (tenant TEXT NOT NULL, id INTEGER NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, id));
 CREATE TABLE IF NOT EXISTS soc2_counters (tenant TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (tenant, k));
 """
 LEGACY = {  # old single-tenant table -> (new table, column list)
@@ -376,6 +377,24 @@ def feed_by_key(key_hash: str) -> tuple[str, dict] | None:
     with _lock, _conn() as c:
         r = c.execute("SELECT tenant, doc FROM soc2_feeds WHERE key_hash = ?", (key_hash,)).fetchone()
     return (r["tenant"], json.loads(r["doc"])) if r else None
+
+
+def save_graph(g: dict, tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        if g.get("id") is None:
+            g = {**g, "id": _next_id(c, "soc2_graphs", tenant)}
+        c.execute("INSERT OR REPLACE INTO soc2_graphs (tenant, id, doc) VALUES (?,?,?)", (tenant, g["id"], _dump(g)))
+    return g
+
+
+def graphs(tenant: str = DEFAULT) -> list[dict]:
+    with _lock, _conn() as c:
+        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_graphs WHERE tenant = ? ORDER BY id DESC", (tenant,))]
+
+
+def delete_graph(gid: int, tenant: str = DEFAULT) -> bool:
+    with _lock, _conn() as c:
+        return c.execute("DELETE FROM soc2_graphs WHERE tenant = ? AND id = ?", (tenant, gid)).rowcount > 0
 
 
 def counts_prefix(prefix: str, tenant: str = DEFAULT) -> dict:

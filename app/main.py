@@ -22,7 +22,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, catalog, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, assistant, catalog, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import query as query_mod
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -493,12 +494,25 @@ class IocIn(BaseModel):
     description: str = Field(default="", max_length=1000)
     tags: list[str] = Field(default_factory=list, max_length=20)
     expires_days: int | None = Field(default=None, ge=1, le=3650)
+    collection_id: int | None = None
+    kill_chain_phase: Literal["reconnaissance", "weaponization", "delivery", "exploitation", "installation",
+                              "command-and-control", "actions-on-objectives", ""] = ""
+
+
+KILL_CHAIN = ("reconnaissance", "weaponization", "delivery", "exploitation", "installation", "command-and-control",
+              "actions-on-objectives")
+
+
+def _collections(tenant: str) -> list[dict]:
+    return soc_store.get_setting("ioc_collections", [], tenant)
 
 
 @app.post("/api/soc/iocs")
 async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("rules.manage"))):
     """Add the tenant's own IOCs (bulk). They are searched with the CTI feeds, matched in logs (IOC-001) and can be
     published through outgoing feeds."""
+    if req.collection_id is not None and not any(c["id"] == req.collection_id for c in _collections(who.tenant)):
+        raise HTTPException(422, "unknown collection")
     now = time.time()
     good, bad = [], []
     for raw in re.split(r"[\n,]", req.values):
@@ -512,7 +526,8 @@ async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("rules.
         good.append({**intel._ind(v, typ, "tenant", req.confidence, req.tlp, req.threat or None, time.strftime("%Y-%m-%d"),
                                   None, _clean_tags(req.tags), req.description or None),
                      "severity": req.severity, "added_by": who.name, "added_at": now,
-                     "expires": now + req.expires_days * 86400 if req.expires_days else None, "revoked": False})
+                     "expires": now + req.expires_days * 86400 if req.expires_days else None, "revoked": False,
+                     "valid_from": now, "collection_id": req.collection_id, "kill_chain_phase": req.kill_chain_phase or None})
     if len(good) > 10000:
         raise HTTPException(413, "max 10,000 IOCs per request")
     soc_store.save_iocs(good, who.tenant)
@@ -524,9 +539,99 @@ async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("rules.
 
 
 @app.get("/api/soc/iocs")
-async def soc_iocs_list(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_iocs_list(collection_id: int | None = None, q: str = "", page: int = 1, size: int = 50,
+                        who: rbac.Principal = Depends(require("soc.read"))):
     rows = sorted(soc_store.iocs(who.tenant), key=lambda i: -(i.get("added_at") or 0))
-    return {"iocs": rows[:2000], "total": len(rows)}
+    if collection_id is not None:
+        rows = [i for i in rows if i.get("collection_id") == collection_id]
+    if q:
+        ql = q.lower()
+        rows = [i for i in rows if ql in f"{i['value']} {i.get('threat') or ''} {i.get('description') or ''}".lower()]
+    size = max(10, min(size, 200))
+    pages = max(1, -(-len(rows) // size))
+    page = max(1, min(page, pages))
+    return {"iocs": rows[(page - 1) * size: page * size], "total": len(rows), "page": page, "pages": pages}
+
+
+class CollectionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+
+
+@app.get("/api/soc/ioc-collections")
+async def soc_collections(who: rbac.Principal = Depends(require("soc.read"))):
+    counts = Counter(i.get("collection_id") for i in soc_store.iocs(who.tenant))
+    return {"collections": [{**c, "iocs": counts.get(c["id"], 0)} for c in _collections(who.tenant)],
+            "unassigned": counts.get(None, 0), "kill_chain": list(KILL_CHAIN)}
+
+
+@app.post("/api/soc/ioc-collections")
+async def soc_collection_create(req: CollectionIn, who: rbac.Principal = Depends(require("rules.manage"))):
+    cur = _collections(who.tenant)
+    item = {"id": max([c["id"] for c in cur] + [0]) + 1, **req.model_dump(), "created_by": who.name, "created_at": time.time()}
+    soc_store.set_setting("ioc_collections", cur + [item], who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ioc_collection", target=f"collection:{item['id']}",
+                 purpose=f"create: {item['name']}", legal_basis="own_asset", case_ref=None, result={})
+    return item
+
+
+@app.put("/api/soc/ioc-collections/{cid}")
+async def soc_collection_update(cid: int, req: CollectionIn, who: rbac.Principal = Depends(require("rules.manage"))):
+    cur = _collections(who.tenant)
+    c = next((x for x in cur if x["id"] == cid), None)
+    if c is None:
+        raise HTTPException(404, "collection not found")
+    c.update(req.model_dump(), updated_by=who.name, updated_at=time.time())
+    soc_store.set_setting("ioc_collections", cur, who.tenant)
+    return c
+
+
+class IocRevoke(BaseModel):
+    values: list[str] = Field(min_length=1, max_length=5000)
+    revoked: bool = True
+
+
+@app.post("/api/soc/iocs/revoke")
+async def soc_iocs_revoke(req: IocRevoke, who: rbac.Principal = Depends(require("rules.manage"))):
+    want = {intel.classify(v)[1].lower() for v in req.values}
+    rows = [i for i in soc_store.iocs(who.tenant) if i["value"].lower() in want]
+    for i in rows:
+        i["revoked"] = req.revoked
+        i["revoked_by"] = who.name if req.revoked else None
+    soc_store.save_iocs(rows, who.tenant)
+    _INTEL_CACHE.pop(who.tenant, None)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ioc", target=f"{len(rows)} IOCs",
+                 purpose=f"revoked={req.revoked}", legal_basis="own_asset", case_ref=None, result={})
+    return {"updated": len(rows)}
+
+
+@app.get("/api/soc/ioc-collections/{cid}/report")
+async def soc_collection_report(cid: int, days: int = 30, format: str = "json", who: rbac.Principal = Depends(require("soc.read"))):
+    """Telemetry report: for every IOC in the collection, how often it appeared in this tenant's logs and alerts."""
+    col = next((c for c in _collections(who.tenant) if c["id"] == cid), None)
+    if col is None:
+        raise HTTPException(404, "collection not found")
+    days = max(1, min(days, 90))
+    rows = [i for i in soc_store.iocs(who.tenant) if i.get("collection_id") == cid][:5000]
+    sight = _sightings(who, [i["value"] for i in rows], days)
+    items = [{"value": i["value"], "type": i["type"], "revoked": i.get("revoked", False), "threat": i.get("threat"),
+              **(sight.get(i["value"].lower()) or {"logs": 0, "alerts": 0, "last_seen": None, "hosts": []})} for i in rows]
+    items.sort(key=lambda x: (-(x["logs"] + x["alerts"]), x["value"]))
+    seen = [x for x in items if x["logs"] or x["alerts"]]
+    out = {"collection": col, "days": days, "generated_at": time.time(), "iocs": len(items), "seen": len(seen),
+           "hosts": sorted({h for x in seen for h in x["hosts"]}), "items": items,
+           "note": f"นับจาก log ดิบ (เก็บ {soc_store.RAW_RETENTION_DAYS} วัน) และ alert ของ tenant นี้เท่านั้น"}
+    if format == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["value", "type", "threat", "logs", "alerts", "last_seen", "hosts", "revoked"])
+        for x in items:
+            w.writerow([soc_report._cell(x["value"]), x["type"], soc_report._cell(x["threat"] or ""), x["logs"], x["alerts"],
+                        time.strftime("%Y-%m-%d %H:%M", time.gmtime(x["last_seen"])) if x["last_seen"] else "",
+                        soc_report._cell(" ".join(x["hosts"])), x["revoked"]])
+        return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="ioc-telemetry-{cid}.csv"'})
+    return out
 
 
 class IocDelete(BaseModel):
@@ -646,6 +751,328 @@ async def soc_integrations(who: rbac.Principal = Depends(require("soc.read"))):
              "feeds_out": dict(Counter(f["format"] for f in fds if f.get("enabled", True)))}
     return {"integrations": integrations.catalog(state), "categories": list(integrations.CATEGORIES),
             "content_types": integrations.CONTENT_TYPES}
+
+
+# ---------- global assistant ----------
+def _assistant_tools(who: rbac.Principal) -> dict:
+    eng = E(who)
+
+    def search_alerts(q: str = "", severity: str = "", hours: int = 24):
+        now = time.time()
+        r = explorer.alerts_page(_tenant_events(who, now - max(1, min(int(hours), 720)) * 3600, now), dict(eng.incidents),
+                                 "", severity, q, False, "urgency", 1, 30)
+        keep = ("title", "host", "severity", "rule", "technique", "occurrences", "urgency", "status", "assignee",
+                "incident_id", "last_ts", "threats", "real")
+        return {"total": r["total"], "items": [{k: a.get(k) for k in keep} for a in r["items"]]}
+
+    def search_cases(q: str = "", status: str = ""):
+        merged = {i["id"]: i for i in soc_store.incidents(None, 500, who.tenant)}
+        merged.update(eng.incidents)
+        rows = [_case_row(i) for i in merged.values()]
+        if status:
+            rows = [r for r in rows if r["status"] in status.split(",")]
+        if q:
+            rows = [r for r in rows if q.lower() in f"{r['name']} {' '.join(r['hosts'])} {' '.join(r['tags'])}".lower()]
+        rows.sort(key=lambda r: -r["updated_ts"])
+        return {"total": len(rows), "items": rows[:25]}
+
+    def get_case(case_id: int):
+        inc = _find_incident(int(case_id), who)
+        return {k: inc.get(k) for k in ("id", "title", "status", "severity", "priority", "verdict", "assignee", "hosts",
+                                        "users", "domains", "tactics", "first_ts", "last_ts", "notes", "history")} | {
+            "alerts": [{k: a.get(k) for k in ("ts", "title", "severity", "host", "user", "rule", "technique", "cti_match")}
+                       for a in inc.get("alerts", [])[-40:]]}
+
+    def run_query(query: str, minutes: int = 1440):
+        try:
+            plan = query_mod.parse(query)
+        except query_mod.QueryError as e:
+            raise ValueError(f"query error: {e}") from e
+        end = time.time()
+        start = end - max(1, min(int(minutes), 7 * 1440)) * 60
+        if plan["source"] == "alerts":
+            rows = sorted(_tenant_events(who, start, end), key=lambda e: -e["ts"])
+        else:
+            rows = [r for r in eng.raw if start <= (r.get("ts") or 0) <= end and not (eng.persist and r.get("simulated") is False)]
+            if eng.persist:
+                rows += soc_store.raw_between(start, end, who.tenant)
+            rows = [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]
+        out = query_mod.run(plan, rows, default_limit=50)
+        return {"total": out["total"], "rows": out["rows"][:50], "scanned": len(rows)}
+
+    def search_intel(values: str):
+        res = intel.search(_indicators(who.tenant), values, limit=20)
+        sight = _sightings(who, [i["value"] for i in res["items"]])
+        return {"total": res["total"], "not_found": res["not_found"],
+                "items": [{k: i.get(k) for k in ("value", "type", "source_name", "confidence", "tlp", "threat", "first_seen")}
+                          | {"sightings": sight.get(i["value"].lower())} for i in res["items"]]}
+
+    def search_rules(q: str = ""):
+        now = time.time()
+        cat = catalog.catalog(soc_store.list_rules(who.tenant), eng.disabled_rules, _tenant_events(who, now - 7 * 86400, now),
+                              dict(eng.incidents), now)
+        ql = q.lower()
+        rows = [r for r in cat["rules"] if not ql or ql in f"{r['id']} {r['title']} {r.get('technique')} {r.get('technique_name')} {r['category']}".lower()]
+        return {"total": len(rows), "items": [{k: r.get(k) for k in ("id", "title", "severity", "technique", "tactic", "category",
+                                                                     "enabled", "alerts_7d", "rejected_7d", "quality", "log_sources")}
+                                              for r in rows[:30]]}
+
+    def search_assets(q: str = "", type: str = ""):
+        crit = soc_store.get_setting("asset_criticality", {}, who.tenant)
+        rows = [a for a in _all_assets(who).values() if (not type or a["type"] == type) and (not q or q.lower() in a["name"].lower())]
+        rows.sort(key=lambda a: (-a.get("alerts", 0), -(a.get("last_seen") or 0)))
+        return {"total": len(rows), "items": [{k: a.get(k) for k in ("type", "name", "first_seen", "last_seen", "events", "alerts",
+                                                                     "sources", "tags", "real")} | {"criticality": crit.get(a["name"], 0)}
+                                              for a in rows[:30]]}
+
+    return {"search_alerts": search_alerts, "search_cases": search_cases, "get_case": get_case, "run_query": run_query,
+            "search_intel": search_intel, "search_rules": search_rules, "search_assets": search_assets}
+
+
+class AssistantIn(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    history: list[dict] = Field(default_factory=list, max_length=20)
+
+
+@app.get("/api/assistant/suggestions")
+async def assistant_suggestions(who: rbac.Principal = Depends(require("soc.read"))):
+    return {"suggestions": assistant.SUGGESTIONS, "ai": ai.status()}
+
+
+@app.post("/api/assistant")
+async def assistant_ask(req: AssistantIn, who: rbac.Principal = Depends(require("ai.use"))):
+    out = await assistant.run(req.question, req.history, _assistant_tools(who))
+    cost = ai.cost_usd(out.get("model"), out.get("usage"))
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="ai.assistant", target="assistant",
+                 purpose=req.question[:200], legal_basis="own_asset", case_ref=None,
+                 result={"source": out.get("source"), "model": out.get("model"), "tools": [c["tool"] for c in out.get("calls", [])],
+                         **(out.get("usage") or {}), "cost_usd": cost})
+    return out
+
+
+# ---------- graph explorations ----------
+def _graph_neighbors(who: rbac.Principal, typ: str, value: str, limit: int = 25) -> dict:
+    """Neighbours of one node, built only from this tenant's alerts, raw logs (last 7 days), cases and intelligence."""
+    v = value.strip()
+    vl = v.lower()
+    now = time.time()
+    events = _tenant_events(who, now - 7 * 86400, now)
+    eng = E(who)
+    recs = [r for r in eng.raw if not (eng.persist and r.get("simulated") is False)]
+    if eng.persist:
+        recs += soc_store.raw_between(now - 7 * 86400, now, who.tenant, limit=30000)
+    nodes, edges = {}, []
+
+    def add(t, val, label=None, rel=""):
+        if not val or len(nodes) >= limit:
+            return
+        nid = f"{t}:{val}"
+        if nid == f"{typ}:{v}":
+            return
+        nodes.setdefault(nid, {"id": nid, "type": t, "value": str(val), "label": label or str(val)})
+        edges.append({"from": f"{typ}:{v}", "to": nid, "label": rel})
+
+    idx = _intel_index(who.tenant)
+    if typ == "host":
+        for e in events:
+            if str(e.get("host", "")).lower() == vl:
+                add("incident", e.get("incident_id"), f"INC-{e.get('incident_id')}", "alert") if e.get("incident_id") else None
+                add("account", e.get("user") if e.get("user") not in telemetry_placeholders() else None, rel="alert")
+                add("rule", e.get("rule"), rel="triggered")
+                add("indicator", e.get("indicator") or e.get("remote_ip"), rel="contacted")
+        for r in recs:
+            if vl in {str(r.get(f) or "").lower() for f in ("host", "dest_host", "src_host")}:
+                add("account", r.get("user") if r.get("user") not in telemetry_placeholders() else None, rel="logon/process")
+                for o in intel.observables(r):
+                    if o in idx:
+                        add("indicator", idx[o]["value"], rel="contacted (CTI)")
+    elif typ == "account":
+        for e in events:
+            if str(e.get("user", "")).lower() == vl:
+                add("host", e.get("host"), rel="alert")
+                add("incident", e.get("incident_id"), f"INC-{e.get('incident_id')}", "alert") if e.get("incident_id") else None
+        for r in recs:
+            if str(r.get("user") or "").lower() == vl:
+                add("host", r.get("dest_host") or r.get("host"), rel=r.get("kind") or "")
+                add("host", r.get("src_host"), rel="from")
+    elif typ == "indicator":
+        hit = idx.get(vl)
+        if hit and hit.get("threat"):
+            add("threat", hit["threat"], rel=hit["source_name"])
+        for e in events:
+            if str(e.get("indicator") or e.get("remote_ip") or "").lower() == vl:
+                add("host", e.get("host"), rel="alert")
+                add("incident", e.get("incident_id"), f"INC-{e.get('incident_id')}", "alert") if e.get("incident_id") else None
+        for r in recs:
+            if vl in intel.observables(r):
+                add("host", r.get("host") or r.get("dest_host"), rel="seen in log")
+    elif typ == "threat":
+        for i in _indicators(who.tenant):
+            if (i.get("threat") or "").lower() == vl:
+                add("indicator", i["value"], rel=i["source_name"])
+        for e in events:
+            if (e.get("malware") or e.get("framework") or "").lower() == vl:
+                add("host", e.get("host"), rel="alert")
+    elif typ == "incident":
+        inc = _find_incident(int(v), who)
+        for h in inc.get("hosts", []):
+            add("host", h, rel="impacted")
+        for u in inc.get("users", []):
+            add("account", u if u not in telemetry_placeholders() else None, rel="involved")
+        for a in inc.get("alerts", []):
+            add("rule", a.get("rule"), rel="alert")
+            add("indicator", a.get("indicator"), rel="alert")
+            add("threat", a.get("malware") or a.get("framework"), rel="alert")
+    elif typ == "rule":
+        for e in events:
+            if e.get("rule") == v:
+                add("host", e.get("host"), rel="fired on")
+                add("incident", e.get("incident_id"), f"INC-{e.get('incident_id')}", "case") if e.get("incident_id") else None
+    else:
+        raise HTTPException(422, "type must be host, account, indicator, threat, incident or rule")
+    seen = set()
+    uniq = []
+    for ed in edges:
+        k = (ed["from"], ed["to"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(ed)
+    return {"node": {"id": f"{typ}:{v}", "type": typ, "value": v, "label": f"INC-{v}" if typ == "incident" else v},
+            "nodes": list(nodes.values()), "edges": uniq, "truncated": len(nodes) >= limit}
+
+
+def telemetry_placeholders() -> set:
+    from app.telemetry import PLACEHOLDER_USERS
+    return PLACEHOLDER_USERS
+
+
+@app.get("/api/soc/graph/expand")
+async def soc_graph_expand(type: str, value: str, limit: int = 25, who: rbac.Principal = Depends(require("soc.read"))):
+    return _graph_neighbors(who, type, value[:500], max(5, min(limit, 60)))
+
+
+class GraphIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    nodes: list[dict] = Field(default_factory=list, max_length=500)
+    edges: list[dict] = Field(default_factory=list, max_length=2000)
+
+
+def _clean_graph(req: GraphIn) -> tuple[list, list]:
+    nodes = [{"id": str(n.get("id"))[:300], "type": str(n.get("type"))[:20], "value": str(n.get("value"))[:300],
+              "label": str(n.get("label") or n.get("value"))[:300], "x": float(n.get("x") or 0), "y": float(n.get("y") or 0)}
+             for n in req.nodes if n.get("id")]
+    ids = {n["id"] for n in nodes}
+    edges = [{"from": str(e["from"])[:300], "to": str(e["to"])[:300], "label": str(e.get("label") or "")[:60]}
+             for e in req.edges if e.get("from") in ids and e.get("to") in ids]
+    return nodes, edges
+
+
+@app.get("/api/soc/graphs")
+async def soc_graphs(who: rbac.Principal = Depends(require("soc.read"))):
+    return {"graphs": [{k: g[k] for k in ("id", "name", "created_by", "created_at", "updated_at")} | {"nodes": len(g["nodes"])}
+                       for g in soc_store.graphs(who.tenant)]}
+
+
+@app.get("/api/soc/graphs/{gid}")
+async def soc_graph(gid: int, who: rbac.Principal = Depends(require("soc.read"))):
+    g = next((g for g in soc_store.graphs(who.tenant) if g["id"] == gid), None)
+    if g is None:
+        raise HTTPException(404, "graph not found")
+    return g
+
+
+@app.post("/api/soc/graphs")
+async def soc_graph_create(req: GraphIn, who: rbac.Principal = Depends(require("incident.write"))):
+    nodes, edges = _clean_graph(req)
+    now = time.time()
+    return soc_store.save_graph({"id": None, "name": req.name, "nodes": nodes, "edges": edges, "created_by": who.name,
+                                 "created_at": now, "updated_at": now, "updated_by": who.name}, who.tenant)
+
+
+@app.put("/api/soc/graphs/{gid}")
+async def soc_graph_update(gid: int, req: GraphIn, who: rbac.Principal = Depends(require("incident.write"))):
+    g = next((g for g in soc_store.graphs(who.tenant) if g["id"] == gid), None)
+    if g is None:
+        raise HTTPException(404, "graph not found")
+    g["nodes"], g["edges"] = _clean_graph(req)
+    g.update(name=req.name, updated_at=time.time(), updated_by=who.name)
+    return soc_store.save_graph(g, who.tenant)
+
+
+@app.delete("/api/soc/graphs/{gid}")
+async def soc_graph_delete(gid: int, who: rbac.Principal = Depends(require("incident.write"))):
+    if not soc_store.delete_graph(gid, who.tenant):
+        raise HTTPException(404, "graph not found")
+    return {"deleted": gid}
+
+
+# ---------- workspace settings: organisation profile, case templates ----------
+SECTORS = ("Banking / Finance", "Insurance", "Government", "Healthcare", "Education", "Energy / Utilities", "Telecom",
+           "Manufacturing", "Retail / E-commerce", "Transportation / Logistics", "Media", "Technology", "Other")
+
+
+class ProfileIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    legal_name: str = Field(default="", max_length=200)
+    domain: str = Field(default="", max_length=253)
+    location: str = Field(default="", max_length=80)
+    sector: str = Field(default="", max_length=60)
+    size: Literal["", "1-50", "51-200", "201-1000", "1001-5000", "5000+"] = ""
+    security_team_size: Literal["", "0", "1-10", "11-50", "51-200", "200+"] = ""
+    dpo_contact: str = Field(default="", max_length=200)  # PDPA data protection officer, used in breach-notice drafts
+
+
+PROFILE_REQUIRED = ("legal_name", "domain", "location", "sector", "size", "security_team_size")
+
+
+@app.get("/api/soc/workspace")
+async def soc_workspace(who: rbac.Principal = Depends(require("soc.read"))):
+    prof = soc_store.get_setting("profile", {"display_name": who.tenant}, who.tenant)
+    return {"profile": prof, "missing": [k for k in PROFILE_REQUIRED if not prof.get(k)], "sectors": list(SECTORS),
+            "tenant": who.tenant, "templates": soc_store.get_setting("case_templates", [], who.tenant)}
+
+
+@app.put("/api/soc/workspace")
+async def soc_workspace_set(req: ProfileIn, who: rbac.Principal = Depends(require("users.manage"))):
+    data = req.model_dump()
+    if data["domain"]:
+        try:
+            data["domain"] = normalize_domain(data["domain"])
+        except ValidationError as e:
+            raise HTTPException(422, f"domain: {e}") from e
+    soc_store.set_setting("profile", {**data, "updated_by": who.name, "updated_at": time.time()}, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.workspace", target="profile",
+                 purpose="update organisation profile", legal_basis="own_asset", case_ref=None, result={})
+    return await soc_workspace(who)
+
+
+class CaseTemplate(BaseModel):
+    id: int | None = None
+    name: str = Field(min_length=1, max_length=120)
+    title: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=8000)
+    priority: Literal["low", "medium", "high", "critical"] = "medium"
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    tasks: list[str] = Field(default_factory=list, max_length=50)
+
+
+@app.put("/api/soc/case-templates")
+async def soc_case_templates(templates: list[CaseTemplate], who: rbac.Principal = Depends(require("rules.manage"))):
+    if len(templates) > 50:
+        raise HTTPException(422, "at most 50 templates")
+    out, next_id = [], max([t.id or 0 for t in templates] + [0]) + 1
+    for t in templates:
+        d = t.model_dump()
+        if d["id"] is None:
+            d["id"], next_id = next_id, next_id + 1
+        d["tags"] = _clean_tags(d["tags"])
+        d["tasks"] = [x.strip()[:200] for x in d["tasks"] if x.strip()]
+        out.append(d)
+    soc_store.set_setting("case_templates", out, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.case_templates", target="case_templates",
+                 purpose=", ".join(t["name"] for t in out)[:200] or "cleared", legal_basis="own_asset", case_ref=None, result={})
+    return {"templates": out}
 
 
 # ---------- entities and intakes ----------
@@ -1343,6 +1770,7 @@ async def soc_cases(status: str = "", priority: str = "", q: str = "", tag: str 
 
 
 class CaseIn(BaseModel):
+    template_id: int | None = None
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=8000)
     priority: Literal["low", "medium", "high", "critical"] = "medium"
@@ -1354,9 +1782,21 @@ class CaseIn(BaseModel):
 
 @app.post("/api/soc/cases")
 async def soc_case_create(req: CaseIn, who: rbac.Principal = Depends(require("incident.write"))):
+    tpl = None
+    if req.template_id is not None:
+        tpl = next((t for t in soc_store.get_setting("case_templates", [], who.tenant) if t["id"] == req.template_id), None)
+        if tpl is None:
+            raise HTTPException(422, "unknown case template")
     inc = E(who).create_case(who.name, req.name.strip(), req.description, req.priority, _check_assignee(who, req.assignee),
-                             _clean_tags(req.tags), [h.strip()[:255] for h in req.hosts if h.strip()],
+                             _clean_tags(req.tags + (tpl["tags"] if tpl else [])), [h.strip()[:255] for h in req.hosts if h.strip()],
                              _check_custom_fields(who, req.custom_fields))
+    if tpl:
+        now = time.time()
+        inc["template"] = tpl["name"]
+        for name in tpl["tasks"]:
+            soc_store.save_task({"id": None, "name": name, "description": f"จาก template: {tpl['name']}", "assignee": inc.get("assignee"),
+                                 "status": "pending", "due": None, "incident_id": inc["id"], "created_by": who.name,
+                                 "created_at": now, "updated_at": now, "history": [], "notes": []}, who.tenant)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.case", target=f"incident:{inc['id']}",
                  purpose=f"create case: {inc['name'][:120]}", legal_basis="own_asset", case_ref=f"INC-{inc['id']}",
                  result={"priority": req.priority})
@@ -1616,7 +2056,22 @@ async def soc_overview(who: rbac.Principal = Depends(require("soc.read"))):
     events = list(eng.events)
     alerts = workspace.alert_summary(events, eng.incidents)
     tasks = soc_store.list_tasks(who.tenant)
+    hist = _tenant_events(who, now - 2 * 86400, now)
+    cur_a = sum(1 for e in hist if e["ts"] >= now - 86400 and e.get("severity") not in ("info", "low"))
+    prev_a = sum(1 for e in hist if e["ts"] < now - 86400 and e.get("severity") not in ("info", "low"))
+    merged = {i["id"]: i for i in soc_store.incidents(None, 500, who.tenant)}
+    merged.update(eng.incidents)
+    cur_c = sum(1 for i in merged.values() if (i.get("first_ts") or 0) >= now - 86400)
+    prev_c = sum(1 for i in merged.values() if now - 2 * 86400 <= (i.get("first_ts") or 0) < now - 86400)
+    trend = lambda c, p: None if p == 0 else round(100 * (c - p) / p)  # noqa: E731
+    comments = sorted(({"incident_id": i["id"], "title": i.get("name") or i.get("title"), **n}
+                       for i in merged.values() for n in i.get("notes", [])), key=lambda n: -n["ts"])[:8]
+    recent_cases = [_case_row(i) for i in sorted(merged.values(), key=lambda i: -(i.get("first_ts") or 0))[:6]]
     return {"pending_alerts": sum(1 for a in alerts if a["status"] in ("new", "open")),
+            "ongoing_alerts": sum(1 for a in alerts if a["status"] == "investigating"),
+            "trend": {"alerts_24h": cur_a, "alerts_prev_24h": prev_a, "alerts_pct": trend(cur_a, prev_a),
+                      "cases_24h": cur_c, "cases_prev_24h": prev_c, "cases_pct": trend(cur_c, prev_c)},
+            "last_comments": comments, "recent_cases": recent_cases,
             "opened_cases": sum(1 for i in eng.incidents.values() if i["status"] in ("open", "investigating")),
             "alerts": alerts, "data_sources": workspace.data_sources(eng.sources),
             "events_total": sum(eng.sources.values()), "top_threats": workspace.top_threats(events, now - 86400),
