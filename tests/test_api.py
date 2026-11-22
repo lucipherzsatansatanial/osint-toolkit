@@ -1,4 +1,5 @@
 import importlib
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -221,3 +222,63 @@ def test_phase4_endpoints(client, monkeypatch):
     assert after["steps"][0]["done"] and after["steps"][0]["done_by"] == "an.4"
     assert client.get(f"/api/soc/incidents/{inc_id}", headers=H).json()["response"][sid]["done"] is True
     assert client.post(f"/api/soc/incidents/{inc_id}/response/zz-9", headers=H, json={"done": True}).status_code == 404
+
+
+def test_multi_tenant_isolation(client):
+    acme = client.post("/api/users", headers=H, json={"username": "acme.lead", "role": "lead", "tenant": "acme"}).json()["token"]
+    beta = client.post("/api/users", headers=H, json={"username": "beta.admin", "role": "admin", "tenant": "beta"}).json()["token"]
+    A, B = {"X-API-Key": acme}, {"X-API-Key": beta}
+    assert client.get("/api/me", headers=A).json()["tenant"] == "acme"
+    client.post("/api/soc/ingest", headers=A, json=[{"kind": "net", "host": "SRV-ACME", "dest": "api.deepseek.com"}])
+    # acme sees its incident, beta and default do not
+    assert [i["hosts"] for i in client.get("/api/soc/incidents", headers=A).json()] == [["SRV-ACME"]]
+    assert client.get("/api/soc/incidents", headers=B).json() == []
+    assert all("SRV-ACME" not in i["hosts"] for i in client.get("/api/soc/incidents", headers=H).json())
+    acme_inc = client.get("/api/soc/incidents", headers=A).json()[0]["id"]
+    assert client.get(f"/api/soc/incidents/{acme_inc}", headers=B).status_code == 404 or \
+        "SRV-ACME" not in client.get(f"/api/soc/incidents/{acme_inc}", headers=B).json().get("hosts", [])
+    snap = client.get("/api/soc/snapshot", headers=B).json()
+    assert snap["simulated"] is False and snap["endpoints"] == []  # customer tenants never get demo data
+    # platform key can switch tenants with X-Tenant
+    assert [i["hosts"] for i in client.get("/api/soc/incidents", headers={**H, "X-Tenant": "acme"}).json()] == [["SRV-ACME"]]
+    assert "acme" in client.get("/api/tenants", headers=H).json()["tenants"]
+    assert client.get("/api/tenants", headers=B).json()["tenants"] == ["beta"]
+    # a tenant user cannot pick another tenant, see or manage other tenants' users
+    assert client.get("/api/soc/incidents", headers={**B, "X-Tenant": "acme"}).json() == []
+    assert {u["username"] for u in client.get("/api/users", headers=B).json()["users"]} == {"beta.admin"}
+    assert client.post("/api/users/acme.lead/rotate", headers=B).status_code == 404
+    created = client.post("/api/users", headers=B, json={"username": "beta.v", "role": "viewer", "tenant": "acme"}).json()
+    assert client.get("/api/me", headers={"X-API-Key": created["token"]}).json()["tenant"] == "beta"
+    # audit is tenant-scoped
+    assert all(r["tenant"] == "beta" for r in client.get("/api/audit", headers=B).json()["rows"])
+    assert client.get("/api/soc/incidents", headers={**H, "X-Tenant": "Bad Tenant!"}).status_code == 422
+
+
+def test_governance_health_backup_and_audit_chain(client, tmp_path):
+    import app.audit
+    assert client.get("/healthz").json() == {"ok": True}
+    assert client.get("/readyz").json()["database"] is True
+    client.post("/api/ai/feedback", headers=H, json={"feature": "summary", "ref": "1001", "rating": "down", "comment": "wrong host"})
+    client.post("/api/soc/ingest", headers=H, json=[{"kind": "net", "host": "SRV-G", "dest": "api.deepseek.com"}])
+    inc_id = client.get("/api/soc/incidents", headers=H).json()[0]["id"]
+    client.post(f"/api/soc/incidents/{inc_id}/ai/summary", headers=H, json={})
+    rep = client.get("/api/governance/ai-usage", headers=H).json()
+    assert rep["features"]["summary"]["down"] == 1 and rep["features"]["summary"]["calls"] == 1
+    assert rep["features"]["summary"]["fallback"] == 1
+    v = client.get("/api/audit/verify", headers=H).json()
+    assert v["ok"] and v["checked"] >= 2
+    # tamper with a row in the middle -> verification fails at that row
+    con = sqlite3.connect(app.audit.settings.db_path)
+    rid = con.execute("SELECT id FROM scans ORDER BY id LIMIT 1 OFFSET 1").fetchone()[0]
+    con.execute("UPDATE scans SET analyst = 'someone-else' WHERE id = ?", (rid,))
+    con.commit()
+    con.close()
+    v = client.get("/api/audit/verify", headers=H).json()
+    assert not v["ok"] and v["broken_at"] == rid
+    b = client.get("/api/admin/backup", headers=H)
+    assert b.status_code == 200 and b.content[:15] == b"SQLite format 3"
+    csv_r = client.get("/api/audit.csv", headers=H)
+    assert csv_r.status_code == 200 and "module" in csv_r.text.splitlines()[0]
+    t = client.post("/api/users", headers=H, json={"username": "ten.admin", "role": "admin", "tenant": "zz"}).json()["token"]
+    assert client.get("/api/admin/backup", headers={"X-API-Key": t}).status_code == 403
+    assert client.get("/api/audit/verify", headers={"X-API-Key": t}).status_code == 403

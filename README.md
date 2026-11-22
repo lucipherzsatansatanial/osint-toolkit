@@ -208,6 +208,18 @@ API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/in
 - API: `POST /api/soc/rules/draft`, `POST /api/soc/rules/test`, `GET/POST /api/soc/rules`, `PATCH /api/soc/rules/{id}`,
   `GET /api/soc/agents/risk`, `GET /api/soc/incidents/{id}/response`, `POST /api/soc/incidents/{id}/response/{step}`
 
+### เฟส 5: Multi-Tenant, Governance, AI Evaluation, HA/DR
+
+- **Multi-tenant (MSSP)**: ข้อมูลทุกประเภทแยกตาม tenant (engine แยก, ฐานข้อมูลกรองตาม tenant ทุกคำสั่ง); ผู้ใช้ผูกกับ tenant —
+  บัญชี `ingest` ของลูกค้าแต่ละรายส่ง log เข้า tenant ของตัวเองอัตโนมัติ; ทีมแพลตฟอร์ม (ผู้ใช้ tenant `*` หรือ bootstrap key) สลับ tenant ได้ด้วย
+  header `X-Tenant` หรือตัวเลือกในแถบซ้าย; tenant ลูกค้าไม่มีข้อมูลจำลอง; ข้อมูลเดิมย้ายเข้า tenant `default` อัตโนมัติ
+- **Governance**: audit log แบบ **hash chain** (ตรวจได้ว่ามีการแก้/ลบย้อนหลังหรือไม่), ดู/Export CSV audit log ตาม tenant,
+  รายงานการใช้ AI (จำนวนครั้ง, token, ต้นทุนโดยประมาณ, fallback, คะแนนจาก analyst)
+- **AI Evaluation**: ตรวจ **grounding** ทุกคำตอบ (host/IP/CVE/technique/rule ที่ AI พูดถึงแต่ไม่มีในข้อมูล → แสดงคำเตือน),
+  ปุ่ม 👍/👎 ให้ analyst ให้คะแนน, ชุดทดสอบ offline `python -m evals.ai_eval` กับ incident สังเคราะห์ (schema, การประเมิน, grounding,
+  privacy — ตรวจว่าไม่มีชื่อจริงหลุดออกไป, ความเร่งด่วน, ภาษาไทย) — ใช้ API จริง มีค่าใช้จ่าย
+- **HA/DR**: `/healthz`, `/readyz`, backup อัตโนมัติ (`SOC_BACKUP_DIR`), ดาวน์โหลด backup, คู่มือกู้คืนและตัวเลือกโครงสร้าง → [`docs/DR_RUNBOOK.md`](docs/DR_RUNBOOK.md)
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -229,7 +241,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (121 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (126 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

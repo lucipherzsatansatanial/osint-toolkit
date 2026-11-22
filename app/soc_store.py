@@ -1,11 +1,11 @@
-"""SQLite persistence for REAL SOC data (simulated telemetry is never stored).
+"""SQLite persistence for REAL SOC data (simulated telemetry is never stored), partitioned by tenant.
 
-Stores: alert events, incidents (with analyst workflow: status, assignee, notes), AI-agent audit
-records, the registered agent inventory and endpoints seen in EDR data. On start the engine is
-restored from here, so a restart keeps cases and history. Detector sliding windows (fan-out,
-rotating-proxy, chain state) are not persisted and start empty after a restart.
+Stores: alert events, incidents (with analyst workflow), AI-agent audit records, the agent inventory, endpoints and
+custom rules. Every row carries a tenant; every read is filtered by tenant, so one customer's data is never
+returned to another. Tables from the single-tenant version (soc_*) are migrated into tenant "default" once.
 
-Rows are JSON documents keyed by id; retention follows SOC_RETENTION_DAYS (default 90).
+Rows are JSON documents; retention follows SOC_RETENTION_DAYS (default 90). Detector sliding windows are not
+persisted and start empty after a restart.
 """
 import json
 import os
@@ -17,19 +17,31 @@ from app.config import settings
 
 _lock = threading.Lock()
 RETENTION_DAYS = int(os.getenv("SOC_RETENTION_DAYS", "90"))
+DEFAULT = "default"
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS soc_events (id INTEGER PRIMARY KEY, ts REAL NOT NULL, doc TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_soc_events_ts ON soc_events(ts);
-CREATE TABLE IF NOT EXISTS soc_incidents (id INTEGER PRIMARY KEY, last_ts REAL NOT NULL, status TEXT, doc TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_soc_incidents_ts ON soc_incidents(last_ts);
-CREATE TABLE IF NOT EXISTS soc_agent_records (rowid INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,
+CREATE TABLE IF NOT EXISTS soc2_events (tenant TEXT NOT NULL, id INTEGER NOT NULL, ts REAL NOT NULL, doc TEXT NOT NULL,
+    PRIMARY KEY (tenant, id));
+CREATE INDEX IF NOT EXISTS idx_soc2_events_ts ON soc2_events(tenant, ts);
+CREATE TABLE IF NOT EXISTS soc2_incidents (tenant TEXT NOT NULL, id INTEGER NOT NULL, last_ts REAL NOT NULL, status TEXT,
+    doc TEXT NOT NULL, PRIMARY KEY (tenant, id));
+CREATE INDEX IF NOT EXISTS idx_soc2_incidents_ts ON soc2_incidents(tenant, last_ts);
+CREATE TABLE IF NOT EXISTS soc2_agent_records (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, ts REAL NOT NULL,
     agent TEXT, session TEXT, doc TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_soc_agent_records_ts ON soc_agent_records(ts);
-CREATE TABLE IF NOT EXISTS soc_agents (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS soc_endpoints (host TEXT PRIMARY KEY, doc TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS soc_rules (id TEXT PRIMARY KEY, status TEXT NOT NULL, doc TEXT NOT NULL, updated_at REAL);
+CREATE INDEX IF NOT EXISTS idx_soc2_agent_records_ts ON soc2_agent_records(tenant, ts);
+CREATE TABLE IF NOT EXISTS soc2_agents (tenant TEXT NOT NULL, id TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_endpoints (tenant TEXT NOT NULL, host TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, host));
+CREATE TABLE IF NOT EXISTS soc2_rules (tenant TEXT NOT NULL, id TEXT NOT NULL, status TEXT NOT NULL, doc TEXT NOT NULL,
+    updated_at REAL, PRIMARY KEY (tenant, id));
 """
+LEGACY = {  # old single-tenant table -> (new table, column list)
+    "soc_events": ("soc2_events", "id, ts, doc"),
+    "soc_incidents": ("soc2_incidents", "id, last_ts, status, doc"),
+    "soc_agent_records": ("soc2_agent_records", "ts, agent, session, doc"),
+    "soc_agents": ("soc2_agents", "id, doc"),
+    "soc_endpoints": ("soc2_endpoints", "host, doc"),
+    "soc_rules": ("soc2_rules", "id, status, doc, updated_at"),
+}
 
 
 def _conn() -> sqlite3.Connection:
@@ -46,63 +58,65 @@ def _dump(d: dict) -> str:
 def init() -> None:
     with _lock, _conn() as c:
         c.executescript(SCHEMA)
+        have = {r["name"] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for old, (new, cols) in LEGACY.items():
+            if old in have and c.execute(f"SELECT COUNT(*) FROM {new}").fetchone()[0] == 0:
+                c.execute(f"INSERT INTO {new} (tenant, {cols}) SELECT ?, {cols} FROM {old}", (DEFAULT,))
 
 
-def save_events(events: list[dict]) -> None:
+def save_events(events: list[dict], tenant: str = DEFAULT) -> None:
     if events:
         with _lock, _conn() as c:
-            c.executemany("INSERT OR REPLACE INTO soc_events (id, ts, doc) VALUES (?,?,?)",
-                          [(e["id"], e["ts"], _dump(e)) for e in events])
+            c.executemany("INSERT OR REPLACE INTO soc2_events (tenant, id, ts, doc) VALUES (?,?,?,?)",
+                          [(tenant, e["id"], e["ts"], _dump(e)) for e in events])
 
 
-def save_incidents(incidents: list[dict]) -> None:
+def save_incidents(incidents: list[dict], tenant: str = DEFAULT) -> None:
     if incidents:
         with _lock, _conn() as c:
-            c.executemany("INSERT OR REPLACE INTO soc_incidents (id, last_ts, status, doc) VALUES (?,?,?,?)",
-                          [(i["id"], i["last_ts"], i["status"], _dump(i)) for i in incidents])
+            c.executemany("INSERT OR REPLACE INTO soc2_incidents (tenant, id, last_ts, status, doc) VALUES (?,?,?,?,?)",
+                          [(tenant, i["id"], i["last_ts"], i["status"], _dump(i)) for i in incidents])
 
 
-def save_agent_records(recs: list[dict]) -> None:
+def save_agent_records(recs: list[dict], tenant: str = DEFAULT) -> None:
     if recs:
         with _lock, _conn() as c:
-            c.executemany("INSERT INTO soc_agent_records (ts, agent, session, doc) VALUES (?,?,?,?)",
-                          [(r["ts"], r.get("agent"), r.get("session"), _dump(r)) for r in recs])
+            c.executemany("INSERT INTO soc2_agent_records (tenant, ts, agent, session, doc) VALUES (?,?,?,?,?)",
+                          [(tenant, r["ts"], r.get("agent"), r.get("session"), _dump(r)) for r in recs])
 
 
-def save_agents(agents: list[dict]) -> None:
+def save_agents(agents: list[dict], tenant: str = DEFAULT) -> None:
     if agents:
         with _lock, _conn() as c:
-            c.executemany("INSERT OR REPLACE INTO soc_agents (id, doc) VALUES (?,?)",
-                          [(a["id"], _dump({k: v for k, v in a.items() if k != "recent"})) for a in agents])
+            c.executemany("INSERT OR REPLACE INTO soc2_agents (tenant, id, doc) VALUES (?,?,?)",
+                          [(tenant, a["id"], _dump({k: v for k, v in a.items() if k != "recent"})) for a in agents])
 
 
-def save_endpoints(endpoints: list[dict]) -> None:
+def save_endpoints(endpoints: list[dict], tenant: str = DEFAULT) -> None:
     if endpoints:
         with _lock, _conn() as c:
-            c.executemany("INSERT OR REPLACE INTO soc_endpoints (host, doc) VALUES (?,?)",
-                          [(e["host"], _dump(e)) for e in endpoints])
+            c.executemany("INSERT OR REPLACE INTO soc2_endpoints (tenant, host, doc) VALUES (?,?,?)",
+                          [(tenant, e["host"], _dump(e)) for e in endpoints])
 
 
-def load(event_limit: int = 300, incident_limit: int = 200, record_limit: int = 2000) -> dict:
+def load(tenant: str = DEFAULT, event_limit: int = 300, incident_limit: int = 200, record_limit: int = 2000) -> dict:
     with _lock, _conn() as c:
-        ev = [json.loads(r["doc"]) for r in c.execute(
-            "SELECT doc FROM soc_events ORDER BY id DESC LIMIT ?", (event_limit,))]
-        inc = [json.loads(r["doc"]) for r in c.execute(
-            "SELECT doc FROM soc_incidents ORDER BY last_ts DESC LIMIT ?", (incident_limit,))]
-        recs = [json.loads(r["doc"]) for r in c.execute(
-            "SELECT doc FROM soc_agent_records ORDER BY rowid DESC LIMIT ?", (record_limit,))]
-        agents = [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc_agents")]
-        eps = [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc_endpoints")]
-        max_ev = c.execute("SELECT COALESCE(MAX(id), 0) FROM soc_events").fetchone()[0]
-        max_inc = c.execute("SELECT COALESCE(MAX(id), 0) FROM soc_incidents").fetchone()[0]
+        q = lambda sql, *a: [json.loads(r["doc"]) for r in c.execute(sql, (tenant, *a))]  # noqa: E731
+        ev = q("SELECT doc FROM soc2_events WHERE tenant = ? ORDER BY id DESC LIMIT ?", event_limit)
+        inc = q("SELECT doc FROM soc2_incidents WHERE tenant = ? ORDER BY last_ts DESC LIMIT ?", incident_limit)
+        recs = q("SELECT doc FROM soc2_agent_records WHERE tenant = ? ORDER BY rowid DESC LIMIT ?", record_limit)
+        agents = q("SELECT doc FROM soc2_agents WHERE tenant = ?")
+        eps = q("SELECT doc FROM soc2_endpoints WHERE tenant = ?")
+        max_ev = c.execute("SELECT COALESCE(MAX(id), 0) FROM soc2_events WHERE tenant = ?", (tenant,)).fetchone()[0]
+        max_inc = c.execute("SELECT COALESCE(MAX(id), 0) FROM soc2_incidents WHERE tenant = ?", (tenant,)).fetchone()[0]
     return {"events": ev[::-1], "incidents": inc, "agent_records": recs[::-1], "agents": agents,
             "endpoints": eps, "max_event_id": max_ev, "max_incident_id": max_inc}
 
 
-def incidents(status: str | None = None, limit: int = 500) -> list[dict]:
-    q, args = "SELECT doc FROM soc_incidents", []
+def incidents(status: str | None = None, limit: int = 500, tenant: str = DEFAULT) -> list[dict]:
+    q, args = "SELECT doc FROM soc2_incidents WHERE tenant = ?", [tenant]
     if status:
-        q += " WHERE status = ?"
+        q += " AND status = ?"
         args.append(status)
     q += " ORDER BY last_ts DESC LIMIT ?"
     args.append(limit)
@@ -110,28 +124,55 @@ def incidents(status: str | None = None, limit: int = 500) -> list[dict]:
         return [json.loads(r["doc"]) for r in c.execute(q, args)]
 
 
-def incident(inc_id: int) -> dict | None:
+def incident(inc_id: int, tenant: str = DEFAULT) -> dict | None:
     with _lock, _conn() as c:
-        row = c.execute("SELECT doc FROM soc_incidents WHERE id = ?", (inc_id,)).fetchone()
+        row = c.execute("SELECT doc FROM soc2_incidents WHERE tenant = ? AND id = ?", (tenant, inc_id)).fetchone()
     return json.loads(row["doc"]) if row else None
+
+
+def save_rule(rule: dict, tenant: str = DEFAULT) -> None:
+    with _lock, _conn() as c:
+        c.execute("INSERT OR REPLACE INTO soc2_rules (tenant, id, status, doc, updated_at) VALUES (?,?,?,?,?)",
+                  (tenant, rule["id"], rule.get("status", "disabled"), _dump(rule), time.time()))
+
+
+def list_rules(tenant: str = DEFAULT) -> list[dict]:
+    with _lock, _conn() as c:
+        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_rules WHERE tenant = ? ORDER BY id", (tenant,))]
+
+
+def tenants() -> list[str]:
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT tenant FROM soc2_incidents UNION SELECT tenant FROM soc2_events "
+                         "UNION SELECT tenant FROM soc2_agents UNION SELECT tenant FROM soc2_rules").fetchall()
+    return sorted({r[0] for r in rows})
 
 
 def purge_expired(now: float | None = None) -> int:
     cutoff = (now or time.time()) - RETENTION_DAYS * 86400
     with _lock, _conn() as c:
-        n = c.execute("DELETE FROM soc_events WHERE ts < ?", (cutoff,)).rowcount
-        n += c.execute("DELETE FROM soc_agent_records WHERE ts < ?", (cutoff,)).rowcount
-        n += c.execute("DELETE FROM soc_incidents WHERE last_ts < ? AND status NOT IN ('open', 'investigating')",
+        n = c.execute("DELETE FROM soc2_events WHERE ts < ?", (cutoff,)).rowcount
+        n += c.execute("DELETE FROM soc2_agent_records WHERE ts < ?", (cutoff,)).rowcount
+        n += c.execute("DELETE FROM soc2_incidents WHERE last_ts < ? AND status NOT IN ('open', 'investigating')",
                        (cutoff,)).rowcount
     return n
 
 
-def save_rule(rule: dict) -> None:
-    with _lock, _conn() as c:
-        c.execute("INSERT OR REPLACE INTO soc_rules (id, status, doc, updated_at) VALUES (?,?,?,?)",
-                  (rule["id"], rule.get("status", "disabled"), _dump(rule), time.time()))
+def backup(dest_path: str) -> None:
+    """Consistent online copy of the whole database (SQLite backup API)."""
+    with _lock, _conn() as src:
+        dst = sqlite3.connect(dest_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
 
 
-def list_rules() -> list[dict]:
-    with _lock, _conn() as c:
-        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc_rules ORDER BY id")]
+def writable() -> bool:
+    try:
+        with _lock, _conn() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS soc2_health (k TEXT PRIMARY KEY, v REAL)")
+            c.execute("INSERT OR REPLACE INTO soc2_health (k, v) VALUES ('probe', ?)", (time.time(),))
+        return True
+    except sqlite3.Error:
+        return False

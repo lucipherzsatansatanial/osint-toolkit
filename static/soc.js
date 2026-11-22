@@ -13,7 +13,12 @@ const state = { paused: false, filter: new Set(DOMAINS), incidents: [], selected
   buckets: [], lastStats: null, ctrl: null };
 const BUCKET_SEC = 5, BUCKETS = 60;
 
-function headers() { const k = store.get("apiKey"); return k ? { "X-API-Key": k } : {}; }
+function headers() {
+  const h = {}, k = store.get("apiKey"), t = store.get("tenant");
+  if (k) h["X-API-Key"] = k;
+  if (t) h["X-Tenant"] = t;  // honoured only for platform staff; others are pinned to their tenant
+  return h;
+}
 
 // ---------- connection (SSE over fetch so the API key header can be sent) ----------
 async function connect() {
@@ -257,7 +262,10 @@ async function loadMe() {
     state.me = await api("/api/me");
     $("#meBox").hidden = false;
     $("#meName").textContent = state.me.name;
-    $("#meRole").textContent = state.me.role_th + (state.me.named ? "" : " · shared key");
+    $("#meRole").textContent = `${state.me.role_th}${state.me.named ? "" : " · shared key"} · tenant: ${state.me.tenant}`;
+    document.querySelectorAll("[data-plat]").forEach((el) => { el.hidden = !state.me.platform; });
+    if (state.me.platform) loadTenants();
+    if (can("users.manage")) loadGov();
     document.querySelectorAll("[data-perm]").forEach((el) => { el.hidden = !can(el.dataset.perm); });
     if (can("users.manage")) loadUsers();
     if (state.agents) renderAgents(state.agents);
@@ -273,7 +281,7 @@ async function loadUsers() {
       $("#newRole").innerHTML = d.roles.map((r) => `<option value="${esc(r.id)}" ${r.id === "analyst" ? "selected" : ""}>${esc(r.th)} (${esc(r.id)})</option>`).join("");
     $("#rolesList").innerHTML = d.roles.map((r) => `<li><b>${esc(r.th)} (${esc(r.id)})</b>: ${esc(r.permissions.join(", "))}</li>`).join("");
     const t = (x) => x ? new Date(x * 1000).toLocaleString("th-TH", { hour12: false }) : "-";
-    $("#usersTbl tbody").innerHTML = d.users.map((u) => `<tr><td>${esc(u.username)}</td>
+    $("#usersTbl tbody").innerHTML = d.users.map((u) => `<tr><td>${esc(u.username)}${state.me?.platform && u.tenant ? `<div class="sub">${esc(u.tenant === "*" ? "platform" : u.tenant)}</div>` : ""}</td>
       <td><select data-u="${esc(u.username)}" class="roleSel">${d.roles.map((r) => `<option value="${esc(r.id)}" ${r.id === u.role ? "selected" : ""}>${esc(r.th)}</option>`).join("")}</select></td>
       <td><span class="st ${u.disabled ? "contained" : "healthy"}">${u.disabled ? "ปิดใช้งาน" : "ใช้งาน"}</span></td>
       <td class="muted">${t(u.last_seen)}</td><td class="muted">${esc(u.created_by || "")}</td>
@@ -341,8 +349,11 @@ function renderCopilot(inc) {
 function renderAi(a) { renderAiInto($("#aiOut"), a); }
 function renderAiInto(el, a) {
   const t = (x) => esc(x || "");
+  const fbRef = el.id === "chAi" ? `chain:${state.chainSel}` : `inc:${state.selected}`;
+  const fbFeat = el.id === "chAi" ? "chain" : "summary";
+  const ground = a.checks && !a.checks.grounded ? `<div class="ground">⚠ AI กล่าวถึงข้อมูลที่ไม่พบในเหตุการณ์ ควรตรวจสอบ: ${a.checks.unverified.map((u) => t(u.value)).join(", ")}</div>` : "";
   el.innerHTML = `
-    <div class="ai-head">${t(a.headline)}</div>
+    <div class="ai-head">${t(a.headline)}${a.source === "claude" ? fbButtons(fbFeat, fbRef) : ""}</div>${ground}
     <div class="ai-badges"><span class="${t(a.assessment)}">${t(ASSESS_TH[a.assessment] || a.assessment)}</span>
       <span>ความมั่นใจ: ${t(a.confidence)}</span>${(a.attack_stages || []).map((x) => `<span>${t(x)}</span>`).join("")}</div>
     <p>${t(a.summary)}</p>
@@ -382,7 +393,8 @@ async function askCopilot(q) {
   try {
     const r = await api(`/api/soc/incidents/${id}/ai/ask`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: q, history }) });
-    log[log.length - 1] = { role: "assistant", content: r.answer, meta: r.source === "claude" ? r.model : r.source };
+    log[log.length - 1] = { role: "assistant", content: r.answer, meta: (r.source === "claude" ? r.model : r.source)
+      + (r.checks && !r.checks.grounded ? ` · ⚠ ไม่พบในข้อมูล: ${r.checks.unverified.map((u) => u.value).join(", ")}` : "") };
   } catch (e) { log[log.length - 1] = { role: "assistant", content: "ไม่สำเร็จ: " + e.message }; }
   if (state.cpFor === id) renderChat();
 }
@@ -611,6 +623,57 @@ $("#respPlan").addEventListener("change", async (ev) => {
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: cb.checked }) })); }
   catch (e) { cb.checked = !cb.checked; alert("ไม่สำเร็จ: " + e.message); }
 });
+
+// ---------- phase 5: tenants, governance, AI feedback ----------
+function fbButtons(feature, ref) {
+  return `<span class="fb" data-feature="${esc(feature)}" data-ref="${esc(ref)}"><button type="button" data-r="up" title="คำตอบมีประโยชน์">👍</button><button type="button" data-r="down" title="คำตอบผิด/ไม่มีประโยชน์">👎</button></span>`;
+}
+document.addEventListener("click", async (ev) => {
+  const b = ev.target.closest(".fb button"); if (!b) return;
+  const box = b.closest(".fb");
+  let comment = null;
+  if (b.dataset.r === "down") comment = prompt("อะไรผิด? (ไม่บังคับ — ช่วยให้ปรับปรุง AI ได้)") || null;
+  try {
+    await api("/api/ai/feedback", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feature: box.dataset.feature, ref: box.dataset.ref, rating: b.dataset.r, comment }) });
+    box.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+  } catch (e) { alert("ส่งความเห็นไม่สำเร็จ: " + e.message); }
+});
+async function loadTenants() {
+  try {
+    const r = await api("/api/tenants");
+    $("#tenantPick").hidden = false;
+    $("#tenantSel").innerHTML = r.tenants.map((t) => `<option ${t === r.current ? "selected" : ""}>${esc(t)}</option>`).join("");
+  } catch {}
+}
+$("#tenantSel").onchange = () => {
+  store.set("tenant", $("#tenantSel").value === "default" ? "" : $("#tenantSel").value);
+  location.reload();  // reconnect the live stream to the chosen tenant
+};
+async function loadGov() {
+  try {
+    const u = await api("/api/governance/ai-usage?days=30");
+    $("#govTenant").textContent = `tenant: ${u.tenant}`;
+    const rows = Object.entries(u.features).sort((a, b) => b[1].calls - a[1].calls);
+    $("#aiUsage tbody").innerHTML = rows.map(([k, f]) => `<tr><td>${esc(k)}</td><td>${f.calls}</td><td>${f.claude}</td><td>${f.fallback}</td>
+      <td>${f.input_tokens.toLocaleString()} / ${f.output_tokens.toLocaleString()}</td><td>${f.cost_usd.toFixed(4)}</td><td>${f.up} / ${f.down}</td></tr>`).join("")
+      || '<tr><td colspan="7" class="muted">ยังไม่มีการใช้ AI ในช่วงนี้</td></tr>';
+    $("#aiUsageFoot").textContent = `รวมประมาณ $${u.total_cost_usd} · ${u.ai.enabled ? `Claude ${u.ai.model}` : "ยังไม่ตั้งค่า API key"} · ${u.note}`;
+    const a = await api("/api/audit?limit=40");
+    $("#auditRows").innerHTML = a.rows.map((r) => `<li><span class="mono muted">${esc(r.ts.slice(5, 16).replace("T", " "))}</span>
+      <span class="mono">${esc(r.analyst)}</span><span class="sum"><span class="kind">${esc(r.module)}</span>${esc(r.target)} <span class="muted">${esc((r.purpose || "").slice(0, 80))}</span></span><span></span></li>`).join("");
+  } catch (e) { $("#aiUsage tbody").innerHTML = `<tr><td colspan="7" class="err">${esc(e.message)}</td></tr>`; }
+}
+$("#govRefresh").onclick = loadGov;
+$("#auditCsv").onclick = () => download("/api/audit.csv", "audit-log.csv", false).catch((e) => alert(e.message));
+$("#dbBackup").onclick = () => download("/api/admin/backup", "soc-backup.db", false).catch((e) => alert(e.message));
+$("#auditVerify").onclick = async () => {
+  try {
+    const v = await api("/api/audit/verify");
+    $("#auditVerifyOut").innerHTML = v.ok ? `<span style="color:var(--ok-ink)">✓ ครบถ้วน ตรวจ ${v.checked} รายการ${v.legacy_rows ? ` (รายการเก่าก่อนเปิดใช้ hash ${v.legacy_rows})` : ""}${v.starts_after_purge ? " · เริ่มหลังการลบตามระยะเก็บข้อมูล" : ""}</span>`
+      : `<span class="err">✗ พบการแก้ไข/ลบ ที่รายการ #${v.broken_at}: ${esc(v.reason)}</span>`;
+  } catch (e) { $("#auditVerifyOut").textContent = e.message; }
+};
 
 // ---------- alert channels + deep links ----------
 async function loadNotify() {

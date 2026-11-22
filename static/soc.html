@@ -33,9 +33,11 @@
     <div class="nav-h">Workspace</div>
     <a href="#hunting"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span>Threat hunting</span></a>
     <a href="#usersCard" id="navUsers" data-perm="users.manage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14c2.2.6 3.5 2.6 3.5 6"/></svg><span>ผู้ใช้และสิทธิ์</span></a>
+    <a href="#govCard" data-perm="users.manage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-6 9 6"/><path d="M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18"/></svg><span>Governance & AI Eval</span></a>
     <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l6-6M14 4h6v6M20 4l-9 9"/></svg><span>OSINT Toolkit</span></a>
   </nav>
   <div class="me-box" id="meBox" hidden><b id="meName"></b><small id="meRole"></small>
+    <label class="tenant-pick" id="tenantPick" hidden>Tenant <select id="tenantSel"></select></label>
     <button id="logoutBtn" type="button" class="link">เปลี่ยนผู้ใช้</button></div>
   <button id="themeBtn" class="theme-btn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z"/></svg><span>Dark Mode</span></button>
 </aside>
@@ -248,6 +250,27 @@
         <form id="enForm" class="hunt" data-perm="ai.use"><input id="enQ" maxlength="500" autocomplete="off"
           placeholder="เช่น api.deepseek.com หรือ CVE-2025-7775"><button>วิเคราะห์</button></form>
         <div id="enOut" class="en-out"><p class="muted">ค้นในฟีด CTI ทุกแหล่ง และเหตุการณ์ในระบบ แล้วให้ AI อธิบายจากหลักฐานที่พบเท่านั้น</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card span3" id="govCard" data-perm="users.manage" hidden>
+    <h2>Governance &amp; AI Evaluation <small class="muted" id="govTenant"></small>
+      <button id="govRefresh" class="ghost sm" type="button">รีเฟรช</button></h2>
+    <div class="agent-grid">
+      <div>
+        <h3>การใช้ AI (30 วัน) <small class="muted">จำนวนครั้ง · token · ต้นทุนโดยประมาณ · fallback · ความเห็นของ analyst</small></h3>
+        <div class="tbl-wrap"><table class="tbl" id="aiUsage"><thead><tr><th>ฟีเจอร์</th><th>เรียก</th><th>Claude</th><th>Fallback</th>
+          <th>Token (in/out)</th><th>ต้นทุน ~USD</th><th>👍/👎</th></tr></thead><tbody></tbody></table></div>
+        <div id="aiUsageFoot" class="ai-foot"></div>
+      </div>
+      <div>
+        <h3>Audit log <small class="muted">กันการแก้ไขย้อนหลังด้วย hash chain</small></h3>
+        <div class="row-btns"><button id="auditVerify" type="button" class="ghost" data-plat="1">ตรวจความครบถ้วน (hash chain)</button>
+          <button id="auditCsv" type="button" class="ghost">Export CSV</button>
+          <button id="dbBackup" type="button" class="ghost" data-plat="1">ดาวน์โหลด backup</button></div>
+        <div id="auditVerifyOut" class="muted"></div>
+        <ul id="auditRows" class="alog small"></ul>
       </div>
     </div>
   </section>

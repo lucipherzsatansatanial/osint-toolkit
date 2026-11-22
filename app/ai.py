@@ -118,6 +118,20 @@ def redact_enabled() -> bool:
     return os.getenv("SOC_AI_REDACT", "on").strip().lower() not in ("off", "0", "false", "no")
 
 
+# list prices (USD per million tokens) for cost estimates in the governance report; verify against current pricing
+PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
+          "claude-opus-4-8": (5.0, 25.0), "claude-fable-5-2": (8.0, 40.0)}
+
+
+def cost_usd(model: str | None, usage: dict | None) -> float | None:
+    if not model or not usage:
+        return None
+    price = next((v for k, v in PRICES.items() if model.startswith(k)), None)
+    if price is None:
+        return None
+    return round(usage.get("input_tokens", 0) / 1e6 * price[0] + usage.get("output_tokens", 0) / 1e6 * price[1], 6)
+
+
 def status() -> dict:
     return {"enabled": enabled(), "model": MODEL if enabled() else None, "effort": EFFORT,
             "redact": redact_enabled(), "fallbacks": "default"}
@@ -238,6 +252,34 @@ def rule_based_summary(inc: dict, reason: str) -> dict:
     }
 
 
+# ---------- grounding checks (online AI evaluation) ----------
+ENTITY_RES = {
+    "ip": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    "cve": re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.I),
+    "technique": re.compile(r"\b(?:T\d{4}(?:\.\d{3})?|AML\.T\d{4}(?:\.\d{3})?)\b"),
+    "rule": re.compile(r"\b(?:OAI|AGT|CUS)-\d{3}\b"),
+    "host": re.compile(r"\b[A-Za-z]{2,}(?:-[A-Za-z0-9]+){1,4}\b"),
+}
+HOST_HINT = re.compile(r"(?i)^(srv|dev|fin|hr|it|exec|sales|ws|lt|pc|host|dc|db|web|sql|app)[-]")
+PSEUDO = re.compile(r"\b(?:USER|EMAIL|IP)_\d+\b")
+
+
+def ground_check(output, source_text: str) -> dict:
+    """Entities the model mentions that do not appear in the data it was given (possible hallucination),
+    plus pseudonyms that were not mapped back. Deterministic and run on every AI answer."""
+    text = json.dumps(output, ensure_ascii=False) if not isinstance(output, str) else output
+    src = source_text.lower()
+    unverified = []
+    for kind, rx in ENTITY_RES.items():
+        for m in sorted(set(rx.findall(text))):
+            if kind == "host" and not HOST_HINT.match(m):
+                continue  # only check things that look like host names
+            if m.lower() not in src:
+                unverified.append({"type": kind, "value": m})
+    return {"unverified": unverified[:20], "leaked_pseudonyms": sorted(set(PSEUDO.findall(text)))[:10],
+            "grounded": not unverified}
+
+
 # ---------- Claude calls ----------
 _client: anthropic.AsyncAnthropic | None = None
 
@@ -291,6 +333,8 @@ async def summarize(inc: dict) -> dict:
     except json.JSONDecodeError:
         return rule_based_summary(inc, "อ่านผลลัพธ์จากโมเดลไม่ได้ — ใช้สรุปแบบกฎแทน")
     out = ps.restore(out)
+    out["checks"] = ground_check({k: out[k] for k in ("headline", "summary", "timeline", "recommended_actions")
+                                  if k in out}, json.dumps(inc, ensure_ascii=False, default=str))
     out.update(source="claude", model=_served_by(resp), redacted=ps.active,
                pseudonyms=len(ps.fwd), usage={"input_tokens": resp.usage.input_tokens,
                                               "output_tokens": resp.usage.output_tokens})
@@ -324,5 +368,7 @@ async def ask(inc: dict, question: str, history: list[dict]) -> dict:
         return {"answer": f"Claude API ตอบกลับ HTTP {e.status_code}", "source": "error"}
     if resp.stop_reason == "refusal":
         return {"answer": "โมเดลปฏิเสธคำถามนี้ ลองถามใหม่โดยเน้นมุมการป้องกัน/ตรวจสอบ", "source": "refusal"}
-    return {"answer": ps.restore(_text(resp)), "source": "claude", "model": _served_by(resp), "redacted": ps.active,
+    answer = ps.restore(_text(resp))
+    return {"answer": answer, "checks": ground_check(answer, json.dumps(inc, ensure_ascii=False, default=str)),
+            "source": "claude", "model": _served_by(resp), "redacted": ps.active,
             "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}}

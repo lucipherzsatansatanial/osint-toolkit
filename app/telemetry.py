@@ -77,7 +77,8 @@ def sev_up(s: str) -> str:
 
 
 class Engine:
-    def __init__(self, seed: int | None = None, max_events: int = 300, simulate: bool = True):
+    def __init__(self, seed: int | None = None, max_events: int = 300, simulate: bool = True, tenant: str = "default"):
+        self.tenant = tenant
         self.simulate = simulate
         self.persist = False  # switched on by the app after restore(); tests use in-memory engines
         self.on_incident = None  # optional callback(incident) — the app wires the notifier here
@@ -182,12 +183,12 @@ class Engine:
             self._ingest(ev)
         self._outbox.extend(events)
         if self.persist:
-            soc_store.save_events(events)
-            soc_store.save_agent_records(agent_recs)
+            soc_store.save_events(events, self.tenant)
+            soc_store.save_agent_records(agent_recs, self.tenant)
             touched = {r.get("host") for r in telemetry} | {e["host"] for e in events}
-            soc_store.save_endpoints([self.endpoints[h] for h in touched if h in self.endpoints])
+            soc_store.save_endpoints([self.endpoints[h] for h in touched if h in self.endpoints], self.tenant)
             soc_store.save_agents([self.agents.agents[a] for a in {r["agent"] for r in agent_recs}
-                                   if a in self.agents.agents])
+                                   if a in self.agents.agents], self.tenant)
             self.flush()
         self.ingested.update(r["kind"] for r in records)
         self.ingested["total"] += len(records)
@@ -213,7 +214,7 @@ class Engine:
     def flush(self) -> None:
         """Persist incidents that changed (real ones only)."""
         if self.persist and self._dirty:
-            soc_store.save_incidents([self.incidents[i] for i in self._dirty if i in self.incidents])
+            soc_store.save_incidents([self.incidents[i] for i in self._dirty if i in self.incidents], self.tenant)
         self._dirty.clear()
 
     def restore(self, data: dict) -> None:
@@ -247,7 +248,7 @@ class Engine:
 
     def update_incident(self, inc_id: int, analyst: str, status: str | None = None, assignee: str | None = None,
                         note: str | None = None, now: float | None = None) -> dict | None:
-        inc = self.incidents.get(inc_id) or (soc_store.incident(inc_id) if self.persist else None)
+        inc = self.incidents.get(inc_id) or (soc_store.incident(inc_id, self.tenant) if self.persist else None)
         if inc is None:
             return None
         self.incidents.setdefault(inc_id, inc)
@@ -335,7 +336,8 @@ class Engine:
         else:
             inc = {"id": next(self.inc_ids), "first_ts": ev["ts"], "status": "open", "users": [],
                    "hosts": [], "domains": [], "tactics": [], "alerts": [], "severity": "info",
-                   "real": ev.get("simulated") is False, "assignee": None, "notes": [], "history": []}
+                   "real": ev.get("simulated") is False, "assignee": None, "notes": [], "history": [],
+                   "tenant": self.tenant}
             self.incidents[inc["id"]] = inc
         inc["last_ts"] = ev["ts"]
         for key, val in (("users", ev["user"]), ("hosts", ev["host"]), ("domains", ev["domain"]),
@@ -401,14 +403,29 @@ class Engine:
 
 
 class Hub:
-    """One shared engine ticking in the background, fanned out to every dashboard viewer."""
+    """One engine per tenant, ticking in the background and fanned out to that tenant's viewers only."""
 
     def __init__(self, interval: float = 1.0):
-        self.engine = Engine(simulate=settings.soc_simulation)
+        self.engines: dict[str, Engine] = {}
         self.interval = interval
-        self.subs: set[asyncio.Queue] = set()
+        self.subs: dict[str, set[asyncio.Queue]] = {}
         self.task: asyncio.Task | None = None
         self.cti_task: asyncio.Task | None = None
+        self.setup = None  # callback(engine) run once when a tenant's engine is created (restore, rules, hooks)
+
+    @property
+    def engine(self) -> Engine:  # the default tenant (single-tenant deployments, tests)
+        return self.engine_for(soc_store.DEFAULT)
+
+    def engine_for(self, tenant: str) -> Engine:
+        e = self.engines.get(tenant)
+        if e is None:
+            # only the default tenant runs the demo simulator; customer tenants see real data only
+            e = self.engines[tenant] = Engine(simulate=settings.soc_simulation and tenant == soc_store.DEFAULT,
+                                              tenant=tenant)
+            if self.setup:
+                self.setup(e)
+        return e
 
     def ensure_running(self) -> None:
         if self.task is None or self.task.done():
@@ -434,29 +451,38 @@ class Hub:
         tick = 0
         while True:
             now = time.time()
-            events = self.engine.step(now)
             tick += 1
-            if tick % 10 == 0:
-                self.engine.expire(now)
-            msg = {"events": events, "stats": self.engine.stats(now),
-                   "incidents": self.engine.incident_list() if any("incident_id" in e for e in events)
-                   or tick % 10 == 0 else None,
-                   "endpoints": list(self.engine.endpoints.values()) if events else None,
-                   "agent_records": self.engine.last_agent_records, "agents": self.engine.agents.inventory(),
-                   "rules": self.engine.agents.rules(), "offai": self.engine.offai.summary()}
-            for q in list(self.subs):
-                if q.qsize() < 50:
-                    q.put_nowait(msg)
+            for tenant, eng in list(self.engines.items()):
+                events = eng.step(now)
+                if tick % 10 == 0:
+                    eng.expire(now)
+                subs = self.subs.get(tenant)
+                if not subs:
+                    continue
+                msg = {"events": events, "stats": eng.stats(now),
+                       "incidents": eng.incident_list() if any("incident_id" in e for e in events)
+                       or tick % 10 == 0 else None,
+                       "endpoints": list(eng.endpoints.values()) if events else None,
+                       "agent_records": eng.last_agent_records, "agents": eng.agents.inventory(),
+                       "rules": eng.agents.rules(), "offai": eng.offai.summary()}
+                for q in list(subs):
+                    if q.qsize() < 50:
+                        q.put_nowait(msg)
             await asyncio.sleep(self.interval)
 
-    def subscribe(self) -> asyncio.Queue:
+    def has_subscribers(self, tenant: str) -> bool:
+        return bool(self.subs.get(tenant))
+
+    def subscribe(self, tenant: str = soc_store.DEFAULT) -> asyncio.Queue:
         self.ensure_running()
+        self.engine_for(tenant)
         q: asyncio.Queue = asyncio.Queue()
-        self.subs.add(q)
+        self.subs.setdefault(tenant, set()).add(q)
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
-        self.subs.discard(q)
+        for subs in self.subs.values():
+            subs.discard(q)
 
 
 hub = Hub()

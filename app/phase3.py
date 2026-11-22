@@ -313,6 +313,7 @@ async def enrich(ind: str, data: dict) -> dict:
         out = ps.restore(json.loads(ai._text(resp)))
     except json.JSONDecodeError:
         return {**local, "ai": None, "note": "อ่านผลจากโมเดลไม่ได้ — แสดงผลค้นจากระบบ"}
+    out["checks"] = ai.ground_check(out, json.dumps(local, ensure_ascii=False, default=str) + " " + ind)
     return {**local, "ai": {**out, "model": getattr(resp, "model", ai.MODEL),
                             "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}}}
 

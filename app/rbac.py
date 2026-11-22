@@ -38,6 +38,8 @@ ROLES: dict[str, set[str]] = {
 ROLE_TH = {"viewer": "ผู้ดู", "analyst": "นักวิเคราะห์", "lead": "หัวหน้าทีม SOC", "admin": "ผู้ดูแลระบบ",
            "ingest": "บัญชีส่ง log"}
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,62}$")
+TENANT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
+PLATFORM = "*"  # users of this tenant are platform (MSSP) staff and may act in any tenant via X-Tenant
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS soc_users (
@@ -54,6 +56,8 @@ class Principal:
     ip: str = "unknown"
     named: bool = True  # False for the bootstrap key / open dev mode (no personal identity)
     perms: set[str] = field(default_factory=set)
+    tenant: str = "default"     # tenant this request acts in
+    platform: bool = False      # may choose the tenant (MSSP staff / bootstrap key)
 
     def can(self, perm: str) -> bool:
         return perm in self.perms
@@ -69,6 +73,9 @@ def _conn() -> sqlite3.Connection:
 def init() -> None:
     with _lock, _conn() as c:
         c.executescript(SCHEMA)
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(soc_users)")}
+        if "tenant" not in cols:  # migrate single-tenant installs
+            c.execute("ALTER TABLE soc_users ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'")
 
 
 def _hash(token: str) -> str:
@@ -88,25 +95,29 @@ def authenticate(token: str, ip: str) -> Principal | None:
     if not token:
         return None
     with _lock, _conn() as c:
-        row = c.execute("SELECT username, role, disabled, last_seen FROM soc_users WHERE token_hash = ?",
+        row = c.execute("SELECT username, role, disabled, last_seen, tenant FROM soc_users WHERE token_hash = ?",
                         (_hash(token),)).fetchone()
         if row is None or row["disabled"]:
             return None
         if not row["last_seen"] or time.time() - row["last_seen"] > 60:  # avoid a write per request
             c.execute("UPDATE soc_users SET last_seen = ? WHERE username = ?", (time.time(), row["username"]))
-    return Principal(row["username"], row["role"], ip, True, set(ROLES.get(row["role"], set())))
+    platform = row["tenant"] == PLATFORM
+    return Principal(row["username"], row["role"], ip, True, set(ROLES.get(row["role"], set())),
+                     "default" if platform else row["tenant"], platform)
 
 
-def create_user(username: str, role: str, created_by: str) -> str:
+def create_user(username: str, role: str, created_by: str, tenant: str = "default") -> str:
     if not USERNAME_RE.match(username):
         raise ValueError("username: 2-63 chars, lowercase letters, digits, . _ -")
     if role not in ROLES:
         raise ValueError(f"role must be one of {', '.join(ROLES)}")
+    if tenant != PLATFORM and not TENANT_RE.match(tenant):
+        raise ValueError("tenant: 2-41 chars, lowercase letters, digits and -")
     token = new_token()
     with _lock, _conn() as c:
         try:
-            c.execute("INSERT INTO soc_users (username, role, token_hash, created_at, created_by) VALUES (?,?,?,?,?)",
-                      (username, role, _hash(token), time.time(), created_by))
+            c.execute("INSERT INTO soc_users (username, role, token_hash, created_at, created_by, tenant) VALUES (?,?,?,?,?,?)",
+                      (username, role, _hash(token), time.time(), created_by, tenant))
         except sqlite3.IntegrityError as e:
             raise ValueError("username already exists") from e
     return token
@@ -135,7 +146,22 @@ def update(username: str, role: str | None = None, disabled: bool | None = None)
         return c.execute(f"UPDATE soc_users SET {', '.join(sets)} WHERE username = ?", (*args, username)).rowcount > 0
 
 
-def list_users() -> list[dict]:
+def list_users(tenant: str | None = None) -> list[dict]:
+    q = "SELECT username, role, disabled, created_at, created_by, last_seen, tenant FROM soc_users"
+    args: tuple = ()
+    if tenant is not None:
+        q += " WHERE tenant = ?"
+        args = (tenant,)
     with _lock, _conn() as c:
-        return [dict(r) for r in c.execute(
-            "SELECT username, role, disabled, created_at, created_by, last_seen FROM soc_users ORDER BY username")]
+        return [dict(r) for r in c.execute(q + " ORDER BY tenant, username", args)]
+
+
+def user_tenant(username: str) -> str | None:
+    with _lock, _conn() as c:
+        r = c.execute("SELECT tenant FROM soc_users WHERE username = ?", (username,)).fetchone()
+    return r["tenant"] if r else None
+
+
+def tenants() -> list[str]:
+    with _lock, _conn() as c:
+        return sorted({r["tenant"] for r in c.execute("SELECT DISTINCT tenant FROM soc_users")} - {PLATFORM})
