@@ -5,6 +5,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY static ./static
+COPY detections ./detections
 RUN mkdir -p /app/data && chown osint /app/data
 USER osint
 ENV OSINT_DB_PATH=/app/data/osint.db
