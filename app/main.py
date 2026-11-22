@@ -121,14 +121,53 @@ def meta():
 
 
 # ---------- SOC dashboard: EDR / XDR / CTI ----------
+# Engine state is mutated by the background tick on the event loop, so these handlers are
+# async (run on the same loop) rather than sync (threadpool) to avoid concurrent mutation.
 @app.get("/api/soc/snapshot")
-def soc_snapshot(_: str = Depends(guard)):
+async def soc_snapshot(_: str = Depends(guard)):
     return hub.engine.snapshot()
 
 
 @app.get("/api/soc/cti")
 async def soc_cti(refresh: bool = False, _: str = Depends(guard)):
     return await threatintel.get_all(force=refresh)
+
+
+@app.get("/api/soc/agents")
+async def soc_agents(_: str = Depends(guard)):
+    m = hub.engine.agents
+    return {"agents": m.inventory(), "rules": m.rules()}
+
+
+@app.get("/api/soc/agents/sessions/{sid}")
+async def soc_agent_session(sid: str, _: str = Depends(guard)):
+    data = hub.engine.agents.session(sid[:20])
+    if not data:
+        raise HTTPException(404, "session not found")
+    return data
+
+
+@app.get("/api/soc/hunt")
+async def soc_hunt(q: str = "", limit: int = 100, _: str = Depends(guard)):
+    return {"query": q[:300], "results": hub.engine.agents.hunt(q[:300], min(max(limit, 1), 500))}
+
+
+class ContainRequest(BaseModel):
+    contain: bool = True
+    analyst: str = Field(min_length=2, max_length=80)
+    reason: str = Field(min_length=5, max_length=500)
+
+
+@app.post("/api/soc/agents/{agent_id}/contain")
+async def soc_contain(agent_id: str, req: ContainRequest, client: str = Depends(guard)):
+    """Response action: revoke the agent's token / suspend it (simulated). Logged in the audit log."""
+    if agent_id not in hub.engine.agents.agents:
+        raise HTTPException(404, "unknown agent")
+    result = hub.engine.agents.contain(agent_id, req.contain)
+    audit.record(client_ip=client, analyst=req.analyst, module="soc.contain" if req.contain else "soc.release",
+                 target=agent_id, purpose=req.reason, legal_basis="own_asset", case_ref=None,
+                 result={"contained": req.contain, "simulated": True})
+    return result
 
 
 def sse(event: str, data) -> str:

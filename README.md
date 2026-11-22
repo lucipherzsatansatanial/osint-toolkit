@@ -36,6 +36,30 @@ Web application สำหรับรวบรวมข้อมูลจาก�
 
 API: `GET /api/soc/snapshot`, `GET /api/soc/cti?refresh=true`, `GET /api/soc/stream` (SSE; ส่ง `X-API-Key` ผ่าน header — หน้าเว็บใช้ `fetch` แทน `EventSource` เพื่อไม่ให้ key ไปอยู่ใน URL)
 
+### Agentic AI Threat Detection & Hunting
+
+ตรวจจับภัยที่มาจาก/ผ่าน AI Agent โดยอ่าน **AI Agent Audit Logs** (prompt provenance, tool invocation, process launch, network connection, การขอสิทธิ์) แล้ว correlate กับ EDR / NDR / identity / email ใน XDR incident เดียวกัน (เชื่อมด้วย host ของ agent และผู้ใช้ที่ agent ทำงานแทน `on_behalf_of`)
+
+| Rule | ตรวจอะไร | Mapping |
+|---|---|---|
+| AGT-001 | เรียก tool นอก permission scope (policy gateway ปฏิเสธ = denied) | T1078 |
+| AGT-002 | Agent ขอเพิ่มสิทธิ์ / role | T1098 |
+| AGT-003 | Agent ที่ไม่มีสิทธิ์ shell แต่ spawn shell (process tree) | T1059 |
+| AGT-004 | เข้าถึง secrets (.env, id_rsa, vault, api key) | T1552.001 |
+| AGT-005 / 006 | Egress ไปปลายทางนอก allowlist / ไป C2 ที่ตรงกับ CTI | T1071.001 |
+| AGT-007 | เนื้อหาที่ดึงมา (email/เอกสาร) มีสัญญาณ prompt injection | ATLAS AML.T0051.001 |
+| AGT-008 | ทำ action อ่อนไหวหลังเจอ prompt injection ใน session เดียวกัน | ATLAS AML.T0051.001 |
+| AGT-009 | อ่านข้อมูลจำนวนมาก แล้วส่งออกนอกองค์กร | T1567 |
+| AGT-010 | อัตราการเรียก tool ผิดปกติ (>25 ครั้ง/นาที) | T1119 |
+
+- **Hunting**: ภาษา query แบบ `field:value` เช่น `agent:support kind:tool_call -decision:allowed`, `rule:*`, `kind:process`
+- **Session drill-down**: process tree, network connections, execution log ต่อ session
+- **Response**: ปุ่ม Contain/Release (จำลองการ revoke token / suspend agent) บังคับใส่ชื่อผู้ปฏิบัติงานและเหตุผล บันทึกลง audit log
+- กฎใน `app/agent_detect.py` ใช้กับ log จริงได้ถ้าแปลงให้อยู่ใน record shape เดียวกัน (เช่น จาก agent gateway / MCP proxy, EDR process events, NDR/firewall ผ่าน SIEM) — ตอนนี้ข้อมูล agent เป็น**ข้อมูลจำลอง**
+- Mapping ATT&CK/ATLAS เป็นการจับคู่เชิงแนวทาง ควรทบทวนกับเวอร์ชันล่าสุดของ framework ก่อนใช้ในรายงานลูกค้า
+
+API: `GET /api/soc/agents`, `GET /api/soc/agents/sessions/{sid}`, `GET /api/soc/hunt?q=`, `POST /api/soc/agents/{id}/contain`
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -57,7 +81,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (49 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (56 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

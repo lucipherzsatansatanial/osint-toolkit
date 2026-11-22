@@ -60,6 +60,18 @@ def test_soc_endpoints(client, monkeypatch):
     monkeypatch.setattr(app.main.threatintel, "get_all", fake_cti)
     assert client.get("/api/soc/snapshot").status_code == 401
     snap = client.get("/api/soc/snapshot", headers=H).json()
-    assert snap["simulated"] is True and len(snap["endpoints"]) == 12
+    assert snap["simulated"] is True and len(snap["endpoints"]) == 14 and len(snap["agents"]) == 5
     assert client.get("/api/soc/cti", headers=H).json()["kev"]["ok"]
     assert client.get("/soc").status_code == 200
+
+
+def test_soc_agent_hunt_and_contain(client):
+    r = client.get("/api/soc/agents", headers=H).json()
+    assert {a["id"] for a in r["agents"]} >= {"support-copilot", "devops-agent"} and len(r["rules"]) == 10
+    assert client.get("/api/soc/hunt", headers=H, params={"q": "kind:tool_call"}).json()["results"] == []
+    assert client.get("/api/soc/agents/sessions/S-99999", headers=H).status_code == 404
+    body = {"contain": True, "analyst": "tester", "reason": "suspected prompt injection"}
+    assert client.post("/api/soc/agents/nope/contain", headers=H, json=body).status_code == 404
+    assert client.post("/api/soc/agents/support-copilot/contain", headers=H, json=body).json()["status"] == "contained"
+    hist = client.get("/api/history", headers=H).json()
+    assert hist[0]["module"] == "soc.contain" and hist[0]["target"] == "support-copilot"

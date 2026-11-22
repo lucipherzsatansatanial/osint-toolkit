@@ -1,6 +1,7 @@
 """EDR / XDR telemetry engine — SIMULATED events + real cross-domain correlation logic.
 
-Telemetry is synthetic (demo) until a real EDR/XDR connector is plugged in; every event carries
+Domains: endpoint (EDR), identity, email, network (NDR), cloud, agent (AI-agent audit logs via
+app.agent_detect). Telemetry is synthetic (demo) until a real EDR/XDR connector is plugged in; every event carries
 "simulated": True. When live CTI is cached, simulated C2 / exploit events reference real
 Feodo C2 IPs and CISA KEV CVEs and are flagged as CTI matches.
 
@@ -15,9 +16,10 @@ import time
 from collections import Counter, deque
 from typing import Any
 
+from app.agent_detect import AgentMonitor
 from app.modules import threatintel
 
-DOMAINS = ["endpoint", "identity", "email", "network", "cloud"]
+DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "agent"]
 SEV = ["info", "low", "medium", "high", "critical"]
 CORR_WINDOW = 1800
 
@@ -26,7 +28,8 @@ HOSTS = [("FIN-WS-014", "Windows 11", "finance.ops"), ("FIN-WS-022", "Windows 11
          ("DEV-WS-102", "Ubuntu 24.04", "dev.backend"), ("DEV-WS-118", "Windows 11", "dev.frontend"),
          ("EXEC-LT-001", "Windows 11", "exec.assistant"), ("IT-WS-003", "Windows 11", "it.helpdesk"),
          ("SRV-DC-01", "Windows Server 2022", "svc.backup"), ("SRV-FILE-02", "Windows Server 2022", "svc.files"),
-         ("SRV-WEB-01", "Ubuntu 22.04", "svc.web"), ("SRV-SQL-01", "Windows Server 2019", "svc.sql")]
+         ("SRV-WEB-01", "Ubuntu 22.04", "svc.web"), ("SRV-SQL-01", "Windows Server 2019", "svc.sql"),
+         ("SRV-AI-01", "Ubuntu 24.04", "svc.ai.support"), ("SRV-AI-02", "Ubuntu 24.04", "svc.ai.devops")]
 COUNTRIES = ["TH", "SG", "US", "NL", "RU", "CN", "VN", "DE", "BR", "KR"]
 
 # (domain, title, severity, MITRE technique, tactic)
@@ -80,6 +83,8 @@ class Engine:
         self.endpoints = {h: {"host": h, "os": os_, "user": u, "status": "healthy",
                               "realtime_protection": True, "last_seen": 0.0, "alerts": 0}
                           for h, os_, u in HOSTS}
+        self.agents = AgentMonitor(self.rng)
+        self.last_agent_records: list[dict] = []
 
     # ---------- generation ----------
     def _event(self, spec, host: str, user: str, now: float, **extra) -> dict:
@@ -112,6 +117,10 @@ class Engine:
                 extra["cti_match"] = "CISA KEV"
             out.append(self._event(EXPLOIT, extra.pop("host"), extra.pop("user"), now, **extra))
         out.extend(self._advance_campaign(now))
+        recs, alerts = self.agents.step(now)
+        self.last_agent_records = recs
+        for a in alerts:
+            out.append(self._event(a["spec"], a["host"], a["user"], now, **a["extra"]))
         for ev in out:
             self._ingest(ev)
         return out
@@ -171,8 +180,8 @@ class Engine:
                          ("tactics", ev["tactic"])):
             if val not in inc[key]:
                 inc[key].append(val)
-        inc["alerts"].append({k: ev[k] for k in ("id", "ts", "domain", "title", "severity", "technique",
-                                                 "host", "cti_match")})
+        inc["alerts"].append({k: ev.get(k) for k in ("id", "ts", "domain", "title", "severity", "technique",
+                                                     "host", "cti_match", "agent", "session")})
         base = max((a["severity"] for a in inc["alerts"]), key=SEV.index)
         inc["coordinated"] = len(inc["domains"]) >= 2 and SEV.index(base) >= SEV.index("high")
         inc["severity"] = sev_up(base) if inc["coordinated"] else base
@@ -209,7 +218,9 @@ class Engine:
 
     def snapshot(self) -> dict[str, Any]:
         return {"events": list(self.events)[-80:], "incidents": self.incident_list(),
-                "endpoints": list(self.endpoints.values()), "stats": self.stats(), "simulated": True}
+                "endpoints": list(self.endpoints.values()), "stats": self.stats(), "simulated": True,
+                "agents": self.agents.inventory(), "agent_records": list(self.agents.records)[-60:],
+                "rules": self.agents.rules()}
 
     def incident_list(self) -> list[dict]:
         return sorted(self.incidents.values(), key=lambda i: (i["status"] != "open", -i["last_ts"]))[:25]
@@ -250,7 +261,9 @@ class Hub:
             msg = {"events": events, "stats": self.engine.stats(now),
                    "incidents": self.engine.incident_list() if any("incident_id" in e for e in events)
                    or tick % 10 == 0 else None,
-                   "endpoints": list(self.engine.endpoints.values()) if events else None}
+                   "endpoints": list(self.engine.endpoints.values()) if events else None,
+                   "agent_records": self.engine.last_agent_records, "agents": self.engine.agents.inventory(),
+                   "rules": self.engine.agents.rules()}
             for q in list(self.subs):
                 if q.qsize() < 50:
                     q.put_nowait(msg)

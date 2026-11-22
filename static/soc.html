@@ -10,7 +10,7 @@
 <header class="top">
   <div class="brand">
     <span class="logo">◈</span> SOC Threat Dashboard
-    <span class="sub"><b class="c-edr">EDR</b> · <b class="c-xdr">XDR</b> · <b class="c-cti">CTI</b></span>
+    <span class="sub"><b class="c-edr">EDR</b> · <b class="c-xdr">XDR</b> · <b class="c-cti">CTI</b> · <b class="c-agent">AI Agent</b></span>
   </div>
   <div class="status">
     <span id="live" class="pill off"><i></i><span>offline</span></span>
@@ -74,6 +74,43 @@
     </div>
   </section>
 
+  <section class="card span3" id="agentCard">
+    <h2><span class="c-agent">Agentic AI</span> — Threat Detection &amp; Hunting
+      <small class="muted">AI Agent Audit Logs · Tool Invocation · Process Tree · Network · Permissions</small></h2>
+    <div class="agent-grid">
+      <div>
+        <h3>Agent inventory <small class="muted">สิทธิ์ (scope) · การใช้งาน · ความเสี่ยง</small></h3>
+        <div class="tbl-wrap"><table class="tbl" id="agents">
+          <thead><tr><th>Agent</th><th>Host</th><th>Scopes</th><th>Calls</th><th>Denied</th><th>Risk</th><th>สถานะ</th><th></th></tr></thead><tbody></tbody>
+        </table></div>
+      </div>
+      <div>
+        <h3>Detection rules <small class="muted">ATT&amp;CK / ATLAS</small></h3>
+        <ul id="rules" class="rules"></ul>
+      </div>
+    </div>
+    <div class="agent-grid">
+      <div>
+        <h3>Agent audit log (live) <small class="muted">คลิกแถวเพื่อเปิด session</small></h3>
+        <ul id="agentLog" class="alog"></ul>
+      </div>
+      <div>
+        <h3>Threat hunting</h3>
+        <form id="huntForm" class="hunt"><input id="huntQ" placeholder="เช่น agent:support kind:tool_call decision:denied" autocomplete="off"><button>ค้นหา</button></form>
+        <div class="presets" id="presets"></div>
+        <ul id="huntRes" class="alog small"></ul>
+      </div>
+    </div>
+    <div id="sessionBox" class="session" hidden>
+      <h3>Session <span id="s-title"></span> <button id="s-close" class="ghost sm">ปิด</button></h3>
+      <div class="sess-grid">
+        <div><h4>Process tree</h4><div id="s-tree" class="ptree"></div></div>
+        <div><h4>Network connections</h4><ul id="s-net" class="alog small"></ul></div>
+        <div><h4>Execution log (tool calls / prompts / auth)</h4><ol id="s-log" class="timeline"></ol></div>
+      </div>
+    </div>
+  </section>
+
   <section class="card span3">
     <h2><span class="c-cti">Cyber Threat Intelligence</span> — แหล่งข้อมูลจริง
       <button id="ctiRefresh" class="ghost sm">รีเฟรช</button></h2>
@@ -86,7 +123,7 @@
 </main>
 
 <footer class="foot">
-  Telemetry EDR/XDR บนหน้านี้เป็น <b>ข้อมูลจำลอง</b> เพื่อสาธิต correlation logic · CTI ดึงจริงจาก CISA KEV และ abuse.ch (cache 15 นาที) ·
+  Telemetry EDR/XDR และ AI Agent audit log บนหน้านี้เป็น <b>ข้อมูลจำลอง</b> เพื่อสาธิต correlation logic · CTI ดึงจริงจาก CISA KEV และ abuse.ch (cache 15 นาที) ·
   เหตุการณ์ C2/exploit จำลองจะอ้างอิง IP/CVE จริงจาก CTI เมื่อดึงได้
 </footer>
 <script src="/static/soc.js"></script>

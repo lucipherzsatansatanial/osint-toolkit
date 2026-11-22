@@ -1,7 +1,7 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
-const DOMAINS = ["endpoint", "identity", "email", "network", "cloud"];
-const TACTICS = ["Initial Access", "Execution", "Persistence", "Defense Evasion", "Credential Access",
+const DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "agent"];
+const TACTICS = ["Initial Access", "Execution", "Persistence", "Privilege Escalation", "Defense Evasion", "Credential Access",
   "Discovery", "Lateral Movement", "Collection", "Command and Control", "Exfiltration", "Impact"];
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -55,12 +55,17 @@ function handle(chunk) {
     msg.events.forEach((e) => addEvent(e, false));
     state.buckets = []; pushBucket(msg.events);
     renderIncidents(msg.incidents); renderEndpoints(msg.endpoints); renderStats(msg.stats);
+    $("#agentLog").innerHTML = ""; msg.agent_records.forEach((r) => addAgentRecord(r, false));
+    renderAgents(msg.agents); renderRules(msg.rules);
   } else if (ev === "tick") {
     msg.events.forEach((e) => addEvent(e, true));
     pushBucket(msg.events);
     if (msg.incidents) renderIncidents(msg.incidents);
     if (msg.endpoints) renderEndpoints(msg.endpoints);
     renderStats(msg.stats);
+    msg.agent_records.forEach((r) => addAgentRecord(r, true));
+    renderAgents(msg.agents); renderRules(msg.rules);
+    if (state.session && msg.agent_records.some((r) => r.session === state.session)) openSession(state.session, false);
   }
 }
 
@@ -224,7 +229,97 @@ function renderDetail(inc) {
   $("#graph").innerHTML = svg;
   $("#timeline").innerHTML = inc.alerts.map((a) => `<li style="--c:var(--${esc(a.domain)})">
     <span class="mono muted">${hhmmss(a.ts)}</span> <span class="sev" style="--sevc:var(--${esc(a.severity)})">${esc(a.severity)}</span>
-    ${esc(a.title)}<div class="muted">${esc(a.domain)} · ${esc(a.host)} · ${esc(a.technique)}${a.cti_match ? ` · <span style="color:var(--cti)">CTI: ${esc(a.cti_match)}</span>` : ""}</div></li>`).join("");
+    ${esc(a.title)}<div class="muted">${esc(a.domain)} · ${esc(a.host)} · ${esc(a.technique)}${a.session ? ` · <a href="#" class="slink" data-s="${esc(a.session)}">${esc(a.agent)} / ${esc(a.session)}</a>` : ""}${a.cti_match ? ` · <span style="color:var(--cti)">CTI: ${esc(a.cti_match)}</span>` : ""}</div></li>`).join("");
+}
+
+// ---------- Agentic AI ----------
+const RULE_SEV = {};
+function renderAgents(list) {
+  state.agents = list;
+  $("#agents tbody").innerHTML = list.map((a) => `<tr><td class="mono">${esc(a.id)}<div class="muted" style="font-family:inherit">owner ${esc(a.owner)}</div></td>
+    <td class="mono">${esc(a.host)}</td><td title="${esc(a.scopes.join(", "))}">${a.scopes.length}${a.shell ? ' <span class="muted">+shell</span>' : ""}</td>
+    <td>${a.calls}</td><td style="color:var(${a.denied ? "--high" : "--muted"})">${a.denied}</td>
+    <td><span class="risk"><i style="width:${a.risk}%"></i></span>${a.risk}</td>
+    <td><span class="st ${esc(a.status)}">${esc(a.status)}</span></td>
+    <td><button class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button></td></tr>`).join("");
+}
+function renderRules(rules) {
+  rules.forEach((r) => { RULE_SEV[r.id] = r.severity; });
+  $("#rules").innerHTML = rules.map((r) => `<li class="${r.hits ? "hit" : ""}"><span class="mono">${esc(r.id)}</span>
+    <span>${esc(r.title)} <span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span>
+    <span class="muted">· ${esc(r.technique)} · ${esc(r.tactic)}</span></span><b>${r.hits}</b></li>`).join("");
+}
+function agentRow(r) {
+  const chips = (r.rules || []).map((id) => `<span class="rchip" style="--sevc:var(--${esc(RULE_SEV[id] || "medium")})">${esc(id)}</span>`).join("");
+  return `<span class="mono muted">${hhmmss(r.ts)}</span><span class="mono">${esc(r.agent)}</span>
+    <span class="sum"><span class="kind">${esc(r.kind)}</span>${esc(r.summary)} <span class="muted">${esc(r.session)}</span>${chips}</span>
+    <span class="dec ${esc(r.decision)}">${esc(r.decision)}</span>`;
+}
+function addAgentRecord(r, animate) {
+  if (state.paused) return;
+  const li = document.createElement("li");
+  li.dataset.s = r.session; li.innerHTML = agentRow(r);
+  if (animate) li.style.animation = "slide .35s ease-out";
+  const ul = $("#agentLog"); ul.prepend(li);
+  while (ul.children.length > 80) ul.lastChild.remove();
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "HTTP " + r.status);
+  return r.json();
+}
+function buildTree(procs) {
+  const kids = {}; procs.forEach((p) => { (kids[p.ppid] ||= []).push(p); });
+  const shells = ["bash", "sh", "zsh", "cmd.exe", "powershell.exe", "pwsh", "curl.exe"];
+  const node = (p) => `<li><span class="img ${p.rules?.length || (p.ppid && shells.includes(p.image) && !state.sessionShell) ? "bad" : ""}">${esc(p.image)}</span>
+    <span class="muted">pid ${p.pid}</span>${(p.rules || []).map((id) => `<span class="rchip" style="--sevc:var(--${esc(RULE_SEV[id] || "medium")})">${esc(id)}</span>`).join("")}
+    <span class="cmd">${esc(p.cmdline)}</span>${kids[p.pid] ? `<ul>${kids[p.pid].map(node).join("")}</ul>` : ""}</li>`;
+  return `<ul>${procs.filter((p) => p.ppid === null).map(node).join("")}</ul>`;
+}
+async function openSession(sid, scroll = true) {
+  try {
+    const d = await api("/api/soc/agents/sessions/" + encodeURIComponent(sid));
+    state.session = sid; state.sessionShell = d.agent.shell;
+    $("#sessionBox").hidden = false;
+    $("#s-title").innerHTML = `${esc(sid)} · <span class="mono">${esc(d.agent.id)}</span> @ ${esc(d.agent.host)}
+      <small class="muted">scopes: ${esc(d.agent.scopes.join(", "))} · egress: ${esc(d.agent.egress.join(", "))}</small>`;
+    $("#s-tree").innerHTML = buildTree(d.processes);
+    $("#s-net").innerHTML = d.network.map((n) => `<li><span class="mono muted">${hhmmss(n.ts)}</span><span class="mono">${esc(n.ip)}:${n.port}</span>
+      <span class="sum">${esc(n.dest)} · ${(n.bytes_out / 1e6).toFixed(2)} MB out ${(n.rules || []).map((id) => `<span class="rchip" style="--sevc:var(--${esc(RULE_SEV[id])})">${esc(id)}</span>`).join("")}</span>
+      <span class="dec ${d.agent.egress.includes(n.dest) ? "allowed" : "denied"}">${d.agent.egress.includes(n.dest) ? "allowlisted" : "unapproved"}</span></li>`).join("")
+      || '<li class="muted">ไม่มี</li>';
+    $("#s-log").innerHTML = d.records.filter((r) => r.kind !== "network" && r.kind !== "process").map((r) => `<li style="--c:var(--${r.rules.length ? "critical" : "agent"})">
+      <span class="mono muted">${hhmmss(r.ts)}</span> <span class="kind">${esc(r.kind)}</span> ${esc(r.summary)}
+      <span class="dec ${esc(r.decision)}">${esc(r.decision)}</span>${r.rules.map((id) => `<span class="rchip" style="--sevc:var(--${esc(RULE_SEV[id])})">${esc(id)}</span>`).join("")}
+      ${r.snippet ? `<div class="muted mono">${esc(r.snippet)}</div>` : ""}${r.on_behalf_of ? `<div class="muted">on behalf of ${esc(r.on_behalf_of)}</div>` : ""}</li>`).join("");
+    if (scroll) $("#sessionBox").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) { /* session aged out of the buffer */ }
+}
+$("#s-close").onclick = () => { state.session = null; $("#sessionBox").hidden = true; };
+for (const sel of ["#agentLog", "#huntRes"]) $(sel).addEventListener("click", (ev) => { const li = ev.target.closest("li[data-s]"); if (li) openSession(li.dataset.s); });
+document.addEventListener("click", (ev) => { const a = ev.target.closest("a.slink"); if (a) { ev.preventDefault(); openSession(a.dataset.s); } });
+$("#agents").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-agent]"); if (!b) return;
+  const on = b.dataset.on === "1";
+  const analyst = store.get("analyst") || prompt("ชื่อผู้ปฏิบัติงาน (analyst)") || "";
+  if (analyst.length < 2) return;
+  store.set("analyst", analyst);
+  const reason = prompt(on ? `เหตุผลในการ contain ${b.dataset.agent} (revoke token / suspend)` : `เหตุผลในการ release ${b.dataset.agent}`);
+  if (!reason || reason.length < 5) return;
+  try { await api(`/api/soc/agents/${encodeURIComponent(b.dataset.agent)}/contain`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contain: on, analyst, reason }) }); }
+  catch (e) { alert("ไม่สำเร็จ: " + e.message); }
+});
+const PRESETS = { "denied / blocked": "-decision:allowed", "shell from agents": "kind:process", "secrets": ".env",
+  "egress": "kind:network rule:*", "prompt injection": "kind:prompt", "any detection": "rule:*" };
+$("#presets").innerHTML = Object.keys(PRESETS).map((k) => `<button type="button" data-q="${esc(PRESETS[k])}">${esc(k)}</button>`).join("");
+$("#presets").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) { $("#huntQ").value = b.dataset.q; hunt(); } });
+$("#huntForm").addEventListener("submit", (ev) => { ev.preventDefault(); hunt(); });
+async function hunt() {
+  try {
+    const d = await api("/api/soc/hunt?limit=100&q=" + encodeURIComponent($("#huntQ").value));
+    $("#huntRes").innerHTML = d.results.map((r) => `<li data-s="${esc(r.session)}">${agentRow(r)}</li>`).join("") || '<li class="muted">ไม่พบ</li>';
+  } catch (e) { $("#huntRes").innerHTML = `<li class="err">${esc(e.message)}</li>`; }
 }
 
 // ---------- CTI ----------
