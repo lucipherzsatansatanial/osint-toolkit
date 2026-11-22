@@ -211,6 +211,7 @@ class AgentSpec(BaseModel):
     scopes: list[str] = Field(default_factory=list, max_length=200)
     egress: list[str] = Field(default_factory=list, max_length=200)
     shell: bool = False
+    mcp_servers: list[str] | None = Field(default=None, max_length=200)  # None = not enforced
 
 
 @app.post("/api/soc/agents/register")

@@ -52,7 +52,10 @@ RULES = {
     "AGT-009": ("Bulk data read then external send (exfiltration)", "critical", "T1567", "Exfiltration"),
     "AGT-010": ("Tool-call rate anomaly", "medium", "T1119", "Collection"),
     "AGT-011": ("Activity from unregistered AI agent (shadow AI)", "medium", "—", "Governance"),
+    "AGT-012": ("MCP tool invocation violates policy", "high", "T1059", "Execution"),
 }
+# MCP servers that are offensive-AI tool servers (names as configured by their default setup)
+OFFENSIVE_MCP = re.compile(r"(hexstrike|cyberstrike|pentagi|artex|antifox|cairn|strix|metasploit|nuclei-mcp|kali)", re.I)
 SHELLS = {"bash", "sh", "zsh", "cmd.exe", "powershell.exe", "pwsh"}
 SENSITIVE_TOOLS = {"shell.exec", "files.read", "http.post", "email.send", "git.push", "iam.role.assign"}
 EXTERNAL_SEND = {"http.post", "email.send"}
@@ -87,6 +90,14 @@ class Detector:
         elif kind == "tool_call":
             tool, args = rec.get("tool", ""), rec.get("args", "")
             st["calls"].append(rec["ts"])
+            server = rec.get("mcp_server")
+            if server:
+                allowed = agent.get("mcp_servers")
+                if OFFENSIVE_MCP.search(server):
+                    hits.append(("AGT-012", {"mcp_server": server, "reason": "offensive tool server",
+                                             "severity": "critical"}))
+                elif allowed is not None and server not in allowed:
+                    hits.append(("AGT-012", {"mcp_server": server, "reason": "server not in agent allowlist"}))
             if agent["scopes"] is not None and tool not in agent["scopes"]:
                 hits.append(("AGT-001", {}))
             if tool.startswith("iam."):
@@ -303,6 +314,7 @@ class AgentMonitor:
             if rec["decision"] != "blocked":
                 for rule, extra in self.detector.evaluate(rec, c2):
                     title, sev, tech, tactic = RULES[rule]
+                    sev = extra.pop("severity", None) or sev
                     rec["rules"].append(rule)
                     self.rule_hits[rule] += 1
                     ag["alerts"] += 1

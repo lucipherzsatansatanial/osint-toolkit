@@ -99,3 +99,52 @@ def test_rotating_proxy_detected_amid_normal_traffic():
         hits += rules(d, {"kind": "http", "dst_host": "W", "src_ip": f"203.0.113.{i}", "uri": "/admin",
                           "status": 404, "method": "GET", "ua": "x"}, 150 + i)
     assert hits.count("OAI-004") == 1
+
+
+# ---------- use cases: recon burst, lateral fan-out, DB access & exfil ----------
+def test_web_api_recon_burst_single_source():
+    d = det()
+    hits = []
+    for i in range(70):
+        hits += rules(d, {"kind": "http", "dst_host": "API-1", "src_ip": "198.51.100.9", "method": "GET",
+                          "uri": f"/api/v1/item/{i}", "status": 404, "ua": "x"}, i * 0.5)
+    assert hits.count("OAI-008") == 1
+    d2 = det()  # a busy legitimate client: same paths, all 200
+    assert not any("OAI-008" in rules(d2, {"kind": "http", "dst_host": "API-1", "src_ip": "10.0.0.5", "method": "GET",
+                                             "uri": "/api/v1/status", "status": 200, "ua": "x"}, i * 0.5) for i in range(100))
+
+
+def test_lateral_fanout_from_smb_and_logons():
+    d = det()
+    hits = []
+    for i in range(12):
+        hits += rules(d, {"kind": "net", "host": "WS-7", "dest_ip": f"10.0.5.{i + 2}", "port": 445}, i)
+    assert hits.count("OAI-009") == 1
+    d2 = det()
+    hits = []
+    for i in range(11):
+        hits += rules(d2, {"kind": "logon", "dest_host": f"SRV-{i}", "src_host": "WS-9", "user": "it.admin",
+                           "event_id": 4624, "logon_type": 3}, i)
+    assert hits.count("OAI-009") == 2  # by source machine and by account
+    d3 = det()  # interactive logons and few hosts stay quiet
+    assert not any(rules(d3, {"kind": "logon", "dest_host": f"H{i % 3}", "src_host": "WS-1", "event_id": 4624,
+                              "logon_type": 3}, i) for i in range(30))
+
+
+def test_db_dump_bulk_and_exfil_chain():
+    d = det()
+    out = d.evaluate({"kind": "db", "host": "SRV-SQL-01", "user": "app_ro", "client_host": "WS-22",
+                      "statement": "SELECT * FROM customers INTO OUTFILE '/tmp/c.csv'"}, 0)
+    assert out[0][0] == "OAI-010" and out[0][1]["reason"].startswith("dump")
+    hits = []
+    for i in range(3):
+        hits += rules(d, {"kind": "db", "host": "SRV-SQL-01", "user": "app_ro", "statement": "select * from orders",
+                          "rows": 40_000}, 10 + i)
+    assert hits == ["OAI-010"]
+    ex = d.evaluate({"kind": "dlp", "user": "app_ro", "host": "WS-22", "dest": "drive.example-share.com",
+                     "channel": "web-upload", "bytes": 80_000_000, "action": "allowed"}, 600)
+    assert ex[0][0] == "OAI-011" and ex[0][1]["severity"] == "critical" and ex[0][1]["after_bulk_access"]
+    d2 = det()  # sensitive DLP event alone -> high; blocked or internal -> nothing
+    assert d2.evaluate({"kind": "dlp", "user": "u", "dest": "x.example", "classification": "Confidential"}, 0)[0][1]["severity"] == "high"
+    assert d2.evaluate({"kind": "dlp", "user": "v", "dest": "x.example", "classification": "pii", "action": "blocked"}, 0) == []
+    assert d2.evaluate({"kind": "dlp", "user": "w", "dest": "x.example", "bytes": 10}, 0) == []

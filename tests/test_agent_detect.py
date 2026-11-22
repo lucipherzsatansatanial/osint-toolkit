@@ -78,3 +78,15 @@ def test_simulated_kill_chain_end_to_end():
     detail = m.session(sess)
     assert detail["processes"][0]["image"] == "agent-runtime"
     assert all(r["simulated"] for r in m.records)
+
+
+def test_mcp_policy():
+    m = mon()
+    m.agents["support-copilot"]["mcp_servers"] = ["kb-server"]
+    r1 = rec("tool_call", tool="mcp__kb-server__search", mcp_server="kb-server")
+    r2 = rec("tool_call", session="S-2", tool="mcp__github__push", mcp_server="github")
+    r3 = rec("tool_call", agent="devops-agent", session="S-3", tool="mcp__hexstrike-ai__nmap_scan", mcp_server="hexstrike-ai")
+    alerts = m.ingest([r1, r2, r3], 100.0)
+    assert "AGT-012" not in r1["rules"] and "AGT-012" in r2["rules"] and "AGT-012" in r3["rules"]
+    sev = {a["extra"]["mcp_server"]: a["spec"][2] for a in alerts if a["extra"]["rule"] == "AGT-012"}
+    assert sev == {"github": "high", "hexstrike-ai": "critical"}

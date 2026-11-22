@@ -22,7 +22,7 @@ from app.config import settings
 from app.offensive_ai import OffensiveAIMonitor
 from app.modules import threatintel
 
-DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "agent"]
+DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "data", "agent"]
 SEV = ["info", "low", "medium", "high", "critical"]
 INCIDENT_STATUSES = ("open", "investigating", "resolved", "false_positive", "closed")
 ACTIVE = ("open", "investigating")  # new alerts still correlate into these

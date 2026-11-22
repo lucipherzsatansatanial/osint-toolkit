@@ -1,0 +1,14 @@
+// OAI-009 Lateral movement fan-out: one source reaching many internal hosts on admin ports, or via network logons
+let adminPorts = dynamic([22, 135, 139, 445, 3389, 5985, 5986]);
+let net = DeviceNetworkEvents
+    | where Timestamp > ago(1d) and RemotePort in (adminPorts) and ipv4_is_private(RemoteIP)
+    | where ActionType in ("ConnectionSuccess", "ConnectionAttempt")
+    | project Timestamp, Source = DeviceName, Target = RemoteIP, Via = strcat("port ", tostring(RemotePort));
+let logon = DeviceLogonEvents
+    | where Timestamp > ago(1d) and LogonType in ("Network", "RemoteInteractive") and isnotempty(RemoteDeviceName)
+    | project Timestamp, Source = RemoteDeviceName, Target = DeviceName, Via = strcat("logon ", AccountName);
+union net, logon
+| summarize Targets = dcount(Target), SampleTargets = make_set(Target, 15), Via = make_set(Via, 5)
+    by Source, Window = bin(Timestamp, 10m)
+| where Targets >= 10
+| order by Targets desc

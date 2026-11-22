@@ -120,3 +120,23 @@ def test_wildcard_ai_approval():
     d = oa.Detector({("SRV-AI-09", "*")})
     assert d.evaluate({"kind": "net", "host": "SRV-AI-09", "dest": "api.deepseek.com"}, 0) == []
     assert d.evaluate({"kind": "net", "host": "SRV-OTHER", "dest": "api.deepseek.com"}, 0)[0][0] == "OAI-002"
+
+
+def test_new_kinds_and_mappings():
+    recs, rej = ingest.parse(json.dumps([
+        {"kind": "logon", "dest_host": "SRV-1", "src_host": "WS-1", "user": "a", "event_id": "4624", "logon_type": "3"},
+        {"kind": "db", "host": "SQL-1", "user": "u", "statement": "select 1", "rows": "5"},
+        {"kind": "dlp", "user": "u", "dest": "https://share.example/x", "bytes": 10},
+        {"kind": "db", "host": "SQL-1"},
+        {"agent": "a1", "kind": "tool_call", "tool": "mcp__hexstrike-ai__nmap_scan"},
+        {"DeviceName": "SRV-9", "ActionType": "LogonSuccess", "LogonType": "Network", "RemoteDeviceName": "WS-4",
+         "RemoteIP": "10.0.0.4", "AccountName": "it.admin"},
+        {"@timestamp": "2026-11-22T00:00:00Z", "event": {"category": ["authentication"], "code": "4624"},
+         "host": {"name": "SRV-8"}, "source": {"ip": "10.0.0.7"}, "user": {"name": "x"},
+         "winlog": {"event_data": {"LogonType": "3"}}},
+    ]).encode(), "auto", now=NOW)
+    assert rej == 1
+    kinds = [r["kind"] for r in recs]
+    assert kinds == ["logon", "db", "dlp", "tool_call", "logon", "logon"]
+    assert recs[0]["event_id"] == 4624 and recs[2]["dest"] == "share.example" and recs[3]["mcp_server"] == "hexstrike-ai"
+    assert recs[4]["logon_type"] == 3 and recs[4]["src_host"] == "WS-4" and recs[5]["logon_type"] == 3

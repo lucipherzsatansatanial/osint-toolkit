@@ -68,7 +68,7 @@ def test_soc_endpoints(client, monkeypatch):
 
 def test_soc_agent_hunt_and_contain(client):
     r = client.get("/api/soc/agents", headers=H).json()
-    assert {a["id"] for a in r["agents"]} >= {"support-copilot", "devops-agent"} and len(r["rules"]) == 11
+    assert {a["id"] for a in r["agents"]} >= {"support-copilot", "devops-agent"} and len(r["rules"]) == 12
     assert client.get("/api/soc/hunt", headers=H, params={"q": "kind:tool_call"}).json()["results"] == []
     assert client.get("/api/soc/agents/sessions/S-99999", headers=H).status_code == 404
     body = {"contain": True, "analyst": "tester", "reason": "suspected prompt injection"}
@@ -80,7 +80,7 @@ def test_soc_agent_hunt_and_contain(client):
 
 def test_soc_offensive_ai_pack(client):
     r = client.get("/api/soc/offensive-ai", headers=H).json()
-    assert len(r["rules"]) == 7 and len(r["frameworks"]) == 8
+    assert len(r["rules"]) == 11 and len(r["frameworks"]) == 8
     langs = {q["lang"] for q in r["queries"]}
     assert langs == {"KQL", "SPL", "Sigma"} and all(q["title"] and "comment(" not in q["title"] for q in r["queries"])
 

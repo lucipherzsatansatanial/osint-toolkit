@@ -1,0 +1,7 @@
+`comment("OAI-009 Lateral movement fan-out to admin ports (Sysmon EventCode 3)")`
+index=sysmon EventCode=3 DestinationPort IN (22,135,139,445,3389,5985,5986)
+| where cidrmatch("10.0.0.0/8", DestinationIp) OR cidrmatch("172.16.0.0/12", DestinationIp) OR cidrmatch("192.168.0.0/16", DestinationIp)
+| bin _time span=10m
+| stats dc(DestinationIp) as targets values(DestinationIp) as sample_targets values(DestinationPort) as ports by _time host User
+| where targets>=10
+| sort - targets

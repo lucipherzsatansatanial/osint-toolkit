@@ -1,0 +1,8 @@
+// OAI-008 Web/API reconnaissance burst from one source (Sentinel W3CIISLog). Tune thresholds per site.
+W3CIISLog
+| where TimeGenerated > ago(1d)
+| summarize Requests = count(), Errors = countif(toint(scStatus) >= 400), DistinctPaths = dcount(csUriStem),
+    SamplePaths = make_set(csUriStem, 15), UserAgents = make_set(csUserAgent, 5)
+    by Computer, sSiteName, cIP, Window = bin(TimeGenerated, 1m)
+| where Requests >= 60 and (todouble(Errors) / Requests >= 0.5 or DistinctPaths >= 40)
+| order by Window desc

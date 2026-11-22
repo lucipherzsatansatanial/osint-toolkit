@@ -1,6 +1,6 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
-const DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "agent"];
+const DOMAINS = ["endpoint", "identity", "email", "network", "cloud", "data", "agent"];
 const TACTICS = ["Initial Access", "Execution", "Persistence", "Privilege Escalation", "Defense Evasion", "Credential Access",
   "Discovery", "Lateral Movement", "Collection", "Command and Control", "Exfiltration", "Impact"];
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();

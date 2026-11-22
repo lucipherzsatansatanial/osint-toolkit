@@ -12,6 +12,11 @@ ARTEX / AntiFox, Cairn, PentAGI, HexStrike AI, CyberStrikeAI, Strix, Hermes Agen
 | OAI-005 | ≥3 of recon / scan / exploit / post on one entity within 15 minutes | 05 (KQL) |
 | OAI-006 | Framework indicators (user agents, strings, files, images, IPs, domains) | 06 (KQL), 23 (Sigma) |
 | OAI-007 | Out-of-band (OAST) callback domains | 05 (KQL), 24 (Sigma) |
+| OAI-008 | Web/API recon burst from one source IP | 07 (KQL) |
+| OAI-009 | Lateral movement fan-out (admin ports / network logons) | 08 (KQL), 14 (SPL) |
+| OAI-010/011 | Database dump / bulk read, then exfiltration | — (DB audit schemas vary; use the ingest API) |
+
+Use-case catalogue with priorities: [`../USE_CASES.md`](../USE_CASES.md).
 
 ## Status (read before deploying)
 - **Sigma**: parsed and converted with pySigma (`sigma convert -t splunk`). Not tested against real logs.

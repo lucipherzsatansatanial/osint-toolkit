@@ -12,8 +12,12 @@ Two layers:
 Record shapes (kind):
   process: host, user, pid, ppid, image, cmdline, parent_image?, parent_cmdline?
   http   : dst_host, src_ip, method, uri, status, ua          (web server / WAF / reverse proxy log)
-  net    : host, dest, dest_ip, port                           (EDR network / NDR / DNS / proxy egress)
+  net    : host, dest, dest_ip, port, bytes_out                (EDR network / NDR / DNS / proxy egress)
+  logon  : dest_host, src_host, src_ip, user, event_id, logon_type   (AD / Windows security log, EDR logons)
+  db     : host, user, client_host, client_ip, db, statement, rows, bytes   (database audit log)
+  dlp    : host, user, dest, channel, bytes, classification, action      (DLP / CASB)
 """
+import ipaddress
 import itertools
 import re
 from collections import Counter, defaultdict, deque
@@ -85,7 +89,27 @@ RULES = {
     "OAI-005": ("Autonomous multi-stage chain (recon→scan→exploit→post)", "critical", "T1190", "Initial Access"),
     "OAI-006": ("Known offensive-AI framework indicator", "high", "T1588.002", "Resource Development"),
     "OAI-007": ("Out-of-band (OAST) callback", "medium", "T1071.004", "Command and Control"),
+    "OAI-008": ("Web/API reconnaissance burst from one source", "medium", "T1595.003", "Reconnaissance"),
+    "OAI-009": ("Lateral movement fan-out (one source, many hosts)", "high", "T1021", "Lateral Movement"),
+    "OAI-010": ("Suspicious database access (dump / bulk read)", "high", "T1213", "Collection"),
+    "OAI-011": ("Data exfiltration after bulk access", "critical", "T1567", "Exfiltration"),
 }
+# thresholds (tune per environment)
+BURST_REQ, BURST_PATHS, BURST_WINDOW = 60, 40, 60          # OAI-008: per source IP and target
+LATERAL_HOSTS, LATERAL_WINDOW = 10, 600                      # OAI-009
+ADMIN_PORTS = {22, 135, 139, 445, 3389, 5985, 5986}
+DB_BULK_ROWS, DB_BULK_BYTES, DB_WINDOW = 100_000, 50_000_000, 600   # OAI-010
+EXFIL_BYTES, EXFIL_WINDOW = 50_000_000, 1800                 # OAI-011
+DB_DUMP = re.compile(r"(mysqldump|pg_dump|pg_dumpall|mongodump|\binto\s+outfile\b|\bcopy\b.+\bto\b|backup\s+database|"
+                     r"\bbcp\b.+\bout\b|xp_cmdshell|exp\s+\w+/|expdp\b)", re.I | re.S)
+SENSITIVE_CLASSES = {"confidential", "restricted", "secret", "pii", "personal", "pci", "phi", "sensitive"}
+
+
+def is_internal_ip(v: str | None) -> bool:
+    try:
+        return ipaddress.ip_address(v or "").is_private
+    except ValueError:
+        return False
 STAGES = ["recon", "scan", "exploit", "post"]
 SERVER_PREFIXES = tuple(p.upper() for p in settings.server_prefixes) or ("SRV",)
 FANOUT_TOOLS, FANOUT_WINDOW = 4, 120
@@ -152,6 +176,10 @@ class Detector:
         self.stages: dict[str, dict] = defaultdict(dict)  # entity -> stage -> ts
         self.fired: dict[tuple, float] = {}
         self.index = IndicatorIndex()
+        self.burst: dict[tuple, deque] = defaultdict(deque)      # (target, src_ip) -> (ts, status, path)
+        self.lateral: dict[str, deque] = defaultdict(deque)      # source -> (ts, dest)
+        self.db_reads: dict[str, deque] = defaultdict(deque)     # user -> (ts, rows, bytes)
+        self.bulk_access: dict[str, float] = {}                  # user/host -> ts of last OAI-010
 
     def _once(self, key: tuple, now: float, every: float = 600) -> bool:
         last = self.fired.get(key)
@@ -174,6 +202,63 @@ class Detector:
                 return p
             pid, seen = p.get("ppid"), seen + 1
         return None
+
+    def _fanout(self, src: str | None, dest: str | None, now: float, how: str) -> list[tuple[str, dict]]:
+        if not src or not dest or src == dest:
+            return []
+        q = self.lateral[src]
+        q.append((now, dest))
+        while q and now - q[0][0] > LATERAL_WINDOW:
+            q.popleft()
+        dests = {d for _, d in q}
+        if len(dests) >= LATERAL_HOSTS and self._once(("OAI-009", src), now):
+            return [("OAI-009", {"source": src, "distinct_hosts": len(dests), "via": how,
+                                 "sample_hosts": sorted(dests)[:8]})]
+        return []
+
+    def _exfil(self, rec: dict, keys: list, now: float) -> list[tuple[str, dict]]:
+        prior = [k for k in keys if k and now - self.bulk_access.get(k, -1e18) <= EXFIL_WINDOW]
+        sensitive = (rec.get("classification") or "").lower() in SENSITIVE_CLASSES
+        if not prior and not sensitive:
+            return []
+        key = ("OAI-011", rec.get("user") or rec.get("host"), rec.get("dest"))
+        if not self._once(key, now):
+            return []
+        return [("OAI-011", {"dest": rec.get("dest") or rec.get("dest_ip"), "bytes": rec.get("bytes") or rec.get("bytes_out"),
+                             "after_bulk_access": bool(prior), "classification": rec.get("classification"),
+                             "severity": "critical" if prior else "high"})]
+
+    def _identity_data(self, rec: dict, now: float) -> list[tuple[str, dict]]:
+        k = rec["kind"]
+        if k == "logon":
+            ok = rec.get("event_id") in (4624, 4625, 4648, None) and rec.get("logon_type") in (3, 10, None)
+            src = rec.get("src_host") or rec.get("src_ip")
+            if ok and src:  # fan-out by source machine, and by account (one credential, many hosts)
+                return self._fanout(src, rec.get("dest_host"), now, "logon") + \
+                    (self._fanout(f"user:{rec['user']}", rec.get("dest_host"), now, "logon") if rec.get("user") else [])
+            return []
+        if k == "db":
+            out = []
+            stmt = rec.get("statement") or ""
+            who = rec.get("user") or rec.get("client_host") or "unknown"
+            if DB_DUMP.search(stmt) and self._once(("OAI-010", "dump", who, rec.get("host")), now):
+                out.append(("OAI-010", {"reason": "dump/export command", "statement": stmt[:160], "db_user": who}))
+            q = self.db_reads[who]
+            q.append((now, int(rec.get("rows") or 0), int(rec.get("bytes") or 0)))
+            while q and now - q[0][0] > DB_WINDOW:
+                q.popleft()
+            rows, nbytes = sum(r for _, r, _ in q), sum(b for _, _, b in q)
+            if (rows >= DB_BULK_ROWS or nbytes >= DB_BULK_BYTES) and self._once(("OAI-010", "bulk", who), now):
+                out.append(("OAI-010", {"reason": "bulk read", "rows": rows, "bytes": nbytes, "db_user": who}))
+            if out:
+                for key in (rec.get("user"), rec.get("client_host"), rec.get("client_ip")):
+                    if key:
+                        self.bulk_access[key] = now
+            return out
+        # dlp
+        if rec.get("dest") and not is_internal_ip(rec.get("dest")) and (rec.get("action") or "allowed").lower() != "blocked":
+            return self._exfil(rec, [rec.get("user"), rec.get("host")], now)
+        return []
 
     def _stage(self, rec: dict) -> str | None:
         k = rec["kind"]
@@ -206,7 +291,7 @@ class Detector:
     def evaluate(self, rec: dict, now: float) -> list[tuple[str, dict]]:
         out: list[tuple[str, dict]] = []
         k = rec["kind"]
-        entity = rec.get("dst_host") if k == "http" else rec.get("host")
+        entity = rec.get("dst_host") if k == "http" else rec.get("dest_host") if k == "logon" else rec.get("host")
         if k == "process":
             self.procs[(rec["host"], rec["pid"])] = rec
             t = tool_name(rec.get("image", ""))
@@ -234,7 +319,23 @@ class Detector:
             d = (rec.get("dest") or "").lower()
             if any(d == o or d.endswith("." + o) for o in OAST) and self._once(("OAI-007", host, d), now):
                 out.append(("OAI-007", {"dest": d}))
-        elif k == "http":
+        elif k in ("logon", "db", "dlp"):
+            out += self._identity_data(rec, now)
+        if k == "net" and is_internal_ip(rec.get("dest_ip")) and int(rec.get("port") or 0) in ADMIN_PORTS:
+            out += self._fanout(rec.get("host"), rec["dest_ip"], now, f"port {rec.get('port')}")
+        if k == "net" and int(rec.get("bytes_out") or 0) >= EXFIL_BYTES and not is_internal_ip(rec.get("dest_ip")):
+            out += self._exfil(rec, [rec.get("host"), rec.get("user")], now)
+        if k == "http":
+            b = self.burst[(entity, rec.get("src_ip"))]
+            b.append((now, rec.get("status"), (rec.get("uri") or "").split("?")[0]))
+            while b and now - b[0][0] > BURST_WINDOW:
+                b.popleft()
+            errors = sum(1 for _, st, _ in b if st and st >= 400)
+            paths = len({u for _, _, u in b})
+            if len(b) >= BURST_REQ and (errors / len(b) >= 0.5 or paths >= BURST_PATHS) \
+                    and self._once(("OAI-008", entity, rec.get("src_ip")), now):
+                out.append(("OAI-008", {"src_ip": rec.get("src_ip"), "requests": len(b), "distinct_paths": paths,
+                                        "error_ratio": round(errors / len(b), 2)}))
             q = self.inbound[entity]
             q.append((now, rec.get("src_ip"), rec.get("status")))
             while q and now - q[0][0] > PROXY_WINDOW:
@@ -303,7 +404,7 @@ class OffensiveAISim:
         if self.rng.random() < 0.02:  # helpdesk runs one nmap: should stay quiet
             r.append({"kind": "process", "host": "IT-WS-003", "user": "it.helpdesk", "pid": next(self.pids), "ppid": 1,
                       "image": "nmap.exe", "cmdline": "nmap -sn 10.0.3.0/24"})
-        r += self._campaign(now) + self._yolo(now)
+        r += self._campaign(now) + self._yolo(now) + self._use_cases(now)
         for x in r:
             x.update(ts=now, simulated=True)
         return r
@@ -344,6 +445,29 @@ class OffensiveAISim:
         for x in out:
             x["framework_sim"] = c["fw"]
         return out
+
+    def _use_cases(self, now):
+        """Occasional one-shot scenarios for OAI-008 (recon burst), OAI-009 (lateral fan-out), OAI-010/011 (DB exfil)."""
+        x = self.rng.random()
+        if x < 0.006:
+            ip = self._ip()
+            return [{"kind": "http", "dst_host": "SRV-WEB-01", "src_ip": ip, "method": "GET", "status": 404,
+                     "uri": f"/api/v{self.rng.randint(1, 3)}/{w}", "ua": "Mozilla/5.0 (X11; Linux x86_64) Chrome/129.0"}
+                    for w in self.rng.sample(["admin", "users", "debug", "config", "export", "graphql", "swagger.json",
+                                              "internal", "metrics", "health", "token", "keys", "backup", "v2", "test",
+                                              "old", "dev", "staging", "upload", "files"] * 4, 70)]
+        if x < 0.012:
+            src = self.rng.choice(["FIN-WS-022", "HR-LT-007", "DEV-WS-118"])
+            return [{"kind": "logon", "dest_host": h, "src_host": src, "user": "it.helpdesk", "event_id": 4624,
+                     "logon_type": 3} for h in ["SRV-DC-01", "SRV-FILE-02", "SRV-SQL-01", "SRV-WEB-01", "SRV-AI-01",
+                                               "SRV-AI-02", "FIN-WS-014", "EXEC-LT-001", "SALES-LT-031", "IT-WS-003",
+                                               "DEV-WS-102"]]
+        if x < 0.016:
+            return [{"kind": "db", "host": "SRV-SQL-01", "user": "svc.report", "client_host": "SRV-FILE-02",
+                     "statement": "SELECT * FROM customers", "rows": 120_000, "bytes": 64_000_000},
+                    {"kind": "dlp", "host": "SRV-FILE-02", "user": "svc.report", "dest": "drive.share-transfer.example",
+                     "channel": "web-upload", "bytes": 64_000_000, "classification": "Confidential", "action": "allowed"}]
+        return []
 
     def _yolo(self, now):
         if self.yolo is None:
@@ -403,8 +527,8 @@ class OffensiveAIMonitor:
                     for fw in extra["framework"].split():
                         self.fw_hits[fw] += 1
                 kind = rec["kind"]
-                domain = "endpoint" if kind == "process" else "network"
-                host = rec.get("dst_host") if kind == "http" else rec.get("host")
+                domain = {"process": "endpoint", "logon": "identity", "db": "data", "dlp": "data"}.get(kind, "network")
+                host = rec.get("dst_host") if kind == "http" else rec.get("dest_host") if kind == "logon" else rec.get("host")
                 user = rec.get("user") or (f"src:{rec['src_ip']}" if rec.get("src_ip") else "unknown")
                 detail = extra.get("framework") and FRAMEWORKS.get(extra["framework"].split()[0], (extra["framework"],))[0]
                 label = f"[{rule}] {title}" + (f" — {detail}" if detail else "") + (

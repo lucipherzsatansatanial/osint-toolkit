@@ -11,7 +11,10 @@ Platform schema
   telemetry: kind = process | http | net
     process: host, user, pid, ppid, image, cmdline, parent_image, parent_cmdline
     http   : dst_host, src_ip, method, uri, status, ua
-    net    : host, dest, dest_ip, port
+    net    : host, dest, dest_ip, port, bytes_out
+    logon  : dest_host, src_host, src_ip, user, event_id, logon_type       (AD / Windows security, EDR logons)
+    db     : host, user, client_host, client_ip, db, statement, rows, bytes (database audit)
+    dlp    : host, user, dest, channel, bytes, classification, action       (DLP / CASB)
   AI-agent audit (has `agent`): kind = prompt | tool_call | process | network | auth
     common: agent, session, summary, decision, on_behalf_of, host
     prompt: source, flags[], snippet · tool_call: tool, args, bytes, dest · process: pid, ppid, image, cmdline
@@ -30,12 +33,13 @@ MAX_BYTES = 5_000_000
 MAX_RECORDS = 5000
 MAX_STR = 2000
 FORMATS = ("auto", "native", "ecs", "defender", "access_log")
-TELEMETRY_KINDS = {"process", "http", "net"}
+TELEMETRY_KINDS = {"process", "http", "net", "logon", "db", "dlp"}
 AGENT_KINDS = {"prompt", "tool_call", "process", "network", "auth"}
 STR_FIELDS = ("host", "user", "image", "cmdline", "parent_image", "parent_cmdline", "dst_host", "src_ip", "method",
               "uri", "ua", "dest", "dest_ip", "agent", "session", "summary", "decision", "on_behalf_of", "source",
-              "snippet", "tool", "args", "ip", "action", "scope", "account", "os")
-INT_FIELDS = ("pid", "ppid", "status", "port", "bytes", "bytes_out")
+              "snippet", "tool", "args", "ip", "action", "scope", "account", "os", "src_host", "dest_host",
+              "db", "statement", "client_host", "client_ip", "classification", "channel", "mcp_server")
+INT_FIELDS = ("pid", "ppid", "status", "port", "bytes", "bytes_out", "rows", "event_id", "logon_type")
 
 
 class IngestError(ValueError):
@@ -88,6 +92,9 @@ def clean(rec: dict, now: float) -> dict | None:
             out["decision"] = "allowed"
         out.setdefault("summary", " ".join(str(out.get(k, "")) for k in ("tool", "args", "image", "dest", "action")
                                            if out.get(k))[:300] or kind)
+        m = re.match(r"^mcp__([^_].*?)__(.+)$", out.get("tool") or "")
+        if m and not out.get("mcp_server"):
+            out["mcp_server"] = m.group(1)
         if kind == "network" and not out.get("ip"):
             out["ip"] = out.get("dest_ip")
         return out
@@ -104,6 +111,14 @@ def clean(rec: dict, now: float) -> dict | None:
         out.setdefault("uri", "/")
         return out
     if kind == "net" and out.get("host") and (out.get("dest") or out.get("dest_ip")):
+        if out.get("dest"):
+            out["dest"] = _hostname(out["dest"])
+        return out
+    if kind == "logon" and out.get("dest_host") and (out.get("src_host") or out.get("src_ip") or out.get("user")):
+        return out
+    if kind == "db" and out.get("host") and (out.get("statement") or out.get("rows") or out.get("bytes")):
+        return out
+    if kind == "dlp" and (out.get("user") or out.get("host")) and (out.get("dest") or out.get("channel")):
         if out.get("dest"):
             out["dest"] = _hostname(out["dest"])
         return out
@@ -144,6 +159,15 @@ def from_ecs(d: dict) -> dict | None:
                 "cmdline": _g(d, "process.command_line"),
                 "parent_image": _g(d, "process.parent.executable") or _g(d, "process.parent.name"),
                 "parent_cmdline": _g(d, "process.parent.command_line")}
+    if "authentication" in cat:
+        return {**base, "kind": "logon", "dest_host": base["host"], "src_ip": _g(d, "source.ip"),
+                "src_host": _g(d, "source.domain") or _g(d, "winlog.event_data.WorkstationName"),
+                "event_id": _g(d, "event.code") or _g(d, "winlog.event_id"),
+                "logon_type": _g(d, "winlog.event_data.LogonType") or _g(d, "winlog.logon.type")}
+    if "database" in cat:
+        return {**base, "kind": "db", "statement": _g(d, "db.statement") or _g(d, "message"),
+                "client_ip": _g(d, "source.ip") or _g(d, "client.ip"), "db": _g(d, "db.name"),
+                "rows": _g(d, "db.rows") or _g(d, "db.response.rows")}
     if "web" in cat or _g(d, "http.request.method"):
         path, query = _g(d, "url.path") or _g(d, "url.original") or "/", _g(d, "url.query")
         return {**base, "kind": "http", "dst_host": base["host"] or _g(d, "url.domain"),
@@ -166,6 +190,11 @@ def from_defender(d: dict) -> dict | None:
                 "image": d.get("FileName") or d.get("FolderPath"), "cmdline": d.get("ProcessCommandLine"),
                 "parent_image": d.get("InitiatingProcessFileName"),
                 "parent_cmdline": d.get("InitiatingProcessCommandLine")}
+    if str(d.get("ActionType", "")).startswith("Logon") and d.get("LogonType") is not None:
+        lt = {"Network": 3, "RemoteInteractive": 10, "Interactive": 2}.get(d.get("LogonType"), d.get("LogonType"))
+        return {**base, "kind": "logon", "dest_host": d.get("DeviceName"), "src_host": d.get("RemoteDeviceName"),
+                "src_ip": d.get("RemoteIP"), "user": d.get("AccountName"), "logon_type": lt,
+                "event_id": 4624 if d.get("ActionType") == "LogonSuccess" else 4625}
     if d.get("RemoteIP") or d.get("RemoteUrl"):
         return {**base, "kind": "net", "dest": d.get("RemoteUrl") or None, "dest_ip": d.get("RemoteIP"),
                 "port": d.get("RemotePort"), "user": d.get("InitiatingProcessAccountName")}
