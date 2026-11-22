@@ -175,3 +175,18 @@ def test_exports_and_policies_need_their_permissions(client):
     assert client.post("/api/soc/intakes", headers=L, json={"name": "fw"}).status_code == 403                          # ingest.sources.manage
     assert client.get("/api/soc/events", headers=V).status_code == 200 and client.post("/api/soc/query", headers=V,
                                                                                        json={"query": "events"}).status_code == 403
+
+
+PUBLIC.update({"/manual", "/manual.md"})
+
+
+def test_manual_is_up_to_date_and_covers_every_menu_and_permission():
+    import subprocess, sys
+    assert subprocess.run([sys.executable, "tools/gen_manual.py", "--check"]).returncode == 0
+    manual = Path("docs/USER_MANUAL.md").read_text(encoding="utf-8")
+    html = Path("static/soc.html").read_text(encoding="utf-8")
+    menus = re.findall(r'<a href="#[^"]+"[^>]*>.*?<span>([^<]+)</span>', html)
+    missing = [m for m in menus if m.strip() not in manual]
+    assert not missing, f"menus without a manual section: {missing}"
+    for p in rbac.PERMISSIONS:
+        assert f"`{p}`" in manual

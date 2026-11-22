@@ -6,6 +6,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY static ./static
 COPY detections ./detections
+COPY docs ./docs
 COPY docker/entrypoint.py ./docker/entrypoint.py
 RUN mkdir -p /app/data && chown osint /app/data
 ENV OSINT_DB_PATH=/app/data/osint.db

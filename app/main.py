@@ -2819,4 +2819,18 @@ def soc_page():
     return FileResponse(STATIC / "soc.html")
 
 
+MANUAL = Path(__file__).resolve().parent.parent / "docs" / "USER_MANUAL.md"
+
+
+@app.get("/manual")
+def manual_page():
+    """The user manual (rendered in the browser from /manual.md)."""
+    return FileResponse(STATIC / "manual.html")
+
+
+@app.get("/manual.md")
+def manual_md():
+    return FileResponse(MANUAL, media_type="text/markdown; charset=utf-8")
+
+
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

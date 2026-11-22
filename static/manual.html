@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>คู่มือการใช้งาน</title>
+<script>try { if (localStorage.getItem("theme") === "dark") document.documentElement.dataset.theme = "dark"; } catch (e) {}</script>
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  body { background: var(--bg); color: var(--text); font-family: var(--font); margin: 0; }
+  .mwrap { display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 100vh; }
+  .mtoc { position: sticky; top: 0; height: 100vh; overflow: auto; background: var(--side); border-right: 1px solid var(--line); padding: 16px 14px; box-sizing: border-box; }
+  .mtoc h1 { font-size: 16px; margin: 0 0 4px; }
+  .mtoc .links { display: flex; gap: 10px; font-size: 12px; margin-bottom: 10px; }
+  .mtoc input { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); color: var(--text); margin-bottom: 8px; }
+  .mtoc ul { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+  .mtoc li a { display: block; padding: 4px 8px; border-radius: 6px; color: var(--text); text-decoration: none; }
+  .mtoc li a:hover, .mtoc li a.on { background: var(--accent-soft); color: var(--accent); }
+  .mtoc li.l3 a { padding-left: 20px; color: var(--muted); font-size: 12px; }
+  .mtoc .hits { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+  .mdoc { max-width: 1080px; padding: 24px 36px 80px; line-height: 1.7; font-size: 15px; box-sizing: border-box; }
+  .mdoc h1 { font-size: 28px; } .mdoc h2 { font-size: 22px; margin-top: 40px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .mdoc h3 { font-size: 17px; margin-top: 26px; }
+  .mdoc table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 10px 0 16px; display: block; overflow-x: auto; }
+  .mdoc th, .mdoc td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; }
+  .mdoc th { background: var(--chip); }
+  .mdoc code { font-family: var(--mono); font-size: 12.5px; background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+  .mdoc pre { background: var(--code-bg); color: var(--code-ink); padding: 12px 14px; border-radius: 10px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  .mdoc pre code { background: none; padding: 0; color: inherit; }
+  .mdoc blockquote { margin: 10px 0; padding: 8px 14px; border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+  .mdoc a { color: var(--accent); }
+  .mdoc mark { background: color-mix(in srgb, var(--medium) 40%, transparent); color: inherit; }
+  .mwrap > * { min-width: 0; }
+  .mdoc p, .mdoc li, .mdoc td { overflow-wrap: anywhere; }
+  @media (max-width: 900px) {
+    .mwrap { grid-template-columns: minmax(0, 1fr); }
+    .mtoc { position: static; height: auto; max-height: 50vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    .mdoc { padding: 16px; }
+  }
+  @media print { .mtoc { display: none; } .mwrap { display: block; } .mdoc { max-width: none; } }
+</style>
+</head>
+<body>
+<div class="mwrap">
+  <nav class="mtoc" aria-label="สารบัญ">
+    <h1>📘 คู่มือการใช้งาน</h1>
+    <div class="links"><a href="/soc">← SOC</a><a href="/">OSINT</a><a href="/manual.md" download>ดาวน์โหลด .md</a><a href="#" onclick="print();return false">พิมพ์/PDF</a></div>
+    <input id="q" type="search" placeholder="ค้นหาในคู่มือ เช่น cases.close, Intake, TLP" aria-label="ค้นหาในคู่มือ">
+    <p class="hits" id="hits"></p>
+    <ul id="toc"></ul>
+  </nav>
+  <main class="mdoc" id="doc"><p>กำลังโหลด…</p></main>
+</div>
+<script>
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const slug = (t) => t.toLowerCase().replace(/<[^>]+>/g, "").replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, "").trim().replace(/\s/g, "-");
+function inline(t) {  // input already escaped
+  return t.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>")
+    .replace(/\[([^\]]+)\]\((#[^)\s]+|https?:\/\/[^)\s]+)\)/g, (m, txt, href) =>
+      `<a href="${href}"${href.startsWith("#") ? "" : ' target="_blank" rel="noopener noreferrer"'}>${txt}</a>`);
+}
+function render(md) {  // small, safe Markdown subset: everything escaped first
+  const lines = md.replace(/<!--[\s\S]*?-->/g, "").split("\n");
+  let html = "", i = 0;
+  const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(esc(c.trim())));
+  while (i < lines.length) {
+    const l = lines[i];
+    if (l.startsWith("```")) {
+      const buf = []; i++;
+      while (i < lines.length && !lines[i].startsWith("```")) buf.push(lines[i++]);
+      html += `<pre><code>${esc(buf.join("\n"))}</code></pre>`; i++; continue;
+    }
+    let m;
+    if ((m = /^(#{1,4})\s+(.*)$/.exec(l))) { const n = m[1].length, t = m[2]; html += `<h${n} id="${slug(t)}">${inline(esc(t))}</h${n}>`; i++; continue; }
+    if (/^---+\s*$/.test(l)) { html += "<hr>"; i++; continue; }
+    if (l.trim().startsWith("|") && i + 1 < lines.length && /^\s*\|[\s|:-]+\|\s*$/.test(lines[i + 1])) {
+      html += "<table><thead><tr>" + cells(l).map((c) => `<th>${c}</th>`).join("") + "</tr></thead><tbody>"; i += 2;
+      while (i < lines.length && lines[i].trim().startsWith("|")) html += "<tr>" + cells(lines[i++]).map((c) => `<td>${c}</td>`).join("") + "</tr>";
+      html += "</tbody></table>"; continue;
+    }
+    if (l.startsWith(">")) {
+      const buf = [];
+      while (i < lines.length && lines[i].startsWith(">")) buf.push(lines[i++].replace(/^>\s?/, ""));
+      html += `<blockquote>${buf.map((b) => inline(esc(b))).join("<br>")}</blockquote>`; continue;
+    }
+    if (/^\s*([-*]|\d+\.)\s+/.test(l)) {
+      const stack = [];
+      while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
+        const mm = /^(\s*)([-*]|\d+\.)\s+(.*)$/.exec(lines[i]); const depth = Math.floor(mm[1].length / 2), tag = /\d/.test(mm[2]) ? "ol" : "ul";
+        while (stack.length > depth + 1) html += `</${stack.pop()}>`;
+        if (stack.length < depth + 1) { html += `<${tag}>`; stack.push(tag); }
+        html += `<li>${inline(esc(mm[3]))}</li>`; i++;
+      }
+      while (stack.length) html += `</${stack.pop()}>`; continue;
+    }
+    if (!l.trim()) { i++; continue; }
+    const buf = [];
+    while (i < lines.length && lines[i].trim() && !/^(#|```|\||>|\s*([-*]|\d+\.)\s)/.test(lines[i])) buf.push(lines[i++]);
+    html += `<p>${inline(esc(buf.join(" ")))}</p>`;
+  }
+  return html;
+}
+let SECTIONS = [];
+(async () => {
+  const md = await (await fetch("/manual.md")).text();
+  const doc = document.getElementById("doc");
+  doc.innerHTML = render(md);
+  const hs = [...doc.querySelectorAll("h2, h3")];
+  document.getElementById("toc").innerHTML = hs.map((h) => `<li class="l${h.tagName[1]}"><a href="#${h.id}">${esc(h.textContent)}</a></li>`).join("");
+  // sections for search: from each h2/h3 to the next one
+  SECTIONS = hs.map((h, k) => { const els = []; let n = h.nextElementSibling; while (n && n !== hs[k + 1]) { els.push(n); n = n.nextElementSibling; } return { h, text: (h.textContent + " " + els.map((e) => e.textContent).join(" ")).toLowerCase() }; });
+  if (location.hash) document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();
+})();
+document.getElementById("q").addEventListener("input", (ev) => {
+  const q = ev.target.value.trim().toLowerCase();
+  const items = document.querySelectorAll("#toc li");
+  if (!q) { items.forEach((li) => { li.hidden = false; }); document.getElementById("hits").textContent = ""; return; }
+  let n = 0;
+  SECTIONS.forEach((s, k) => { const hit = s.text.includes(q); items[k].hidden = !hit; n += hit; });
+  document.getElementById("hits").textContent = n ? `พบใน ${n} หัวข้อ` : "ไม่พบ";
+});
+document.getElementById("q").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter") return;
+  const first = [...document.querySelectorAll("#toc li")].find((li) => !li.hidden); first?.querySelector("a").click();
+});
+</script>
+</body>
+</html>
