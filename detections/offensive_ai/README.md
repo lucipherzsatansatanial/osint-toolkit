@@ -15,6 +15,9 @@ ARTEX / AntiFox, Cairn, PentAGI, HexStrike AI, CyberStrikeAI, Strix, Hermes Agen
 | OAI-008 | Web/API recon burst from one source IP | 07 (KQL) |
 | OAI-009 | Lateral movement fan-out (admin ports / network logons) | 08 (KQL), 14 (SPL) |
 | OAI-010/011 | Database dump / bulk read, then exfiltration | — (DB audit schemas vary; use the ingest API) |
+| OAI-012 | Several AI agent CLIs with approvals off on one host (CAIRN-style swarm) | 09 (KQL) |
+| OAI-013 | Security tools launched by an MCP server (HexStrike = critical) | 09 (KQL) |
+| OAI-014 | Download-and-execute / reverse shell / encoded / inline code under an agent (Hermes, Agent Zero) | 09 (KQL) |
 
 Use-case catalogue with priorities: [`../USE_CASES.md`](../USE_CASES.md).
 

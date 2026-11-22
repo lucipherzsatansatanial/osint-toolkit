@@ -34,3 +34,23 @@ SLA ตอบสนองที่แนะนำ: P1 ≤ 15 นาที · P2 
 - AGT-012: MCP server ไม่อยู่ใน allowlist ของ agent (high) หรือเป็น tool server เชิงรุก (critical)
 
 สถานะ: กฎทดสอบกับข้อมูลสังเคราะห์ (unit test + demo) แล้ว ยังไม่ได้ทดสอบกับ log จริงของลูกค้า — ควรรันโหมด hunting และปรับเกณฑ์ 1–2 สัปดาห์ก่อนเปิด alert
+
+## Framework → พฤติกรรมเด่น → กฎที่ครอบคลุม
+
+| Framework | พฤติกรรมเด่น (ที่ต้องเฝ้าระวัง) | กฎหลัก | สัญญาณเสริม |
+|---|---|---|---|
+| ARTEX | Multi-step Intrusion, Autonomous Execution | OAI-005 chain, OAI-001 approvals off | OAI-012 swarm, OAI-009 fan-out, OAI-006 IOC |
+| AntiFox | Fork-specific Indicators และ Behavior | OAI-006 (indicator ที่ระบุ AntiFox แยกนับเป็นการ์ดของตัวเอง) | พฤติกรรมเดียวกับ ARTEX: OAI-005, OAI-001 |
+| CAIRN | Multi-Agent Coordination, Tool Orchestration | **OAI-012** หลาย agent CLI (approvals off) บนเครื่องเดียว | OAI-001, OAI-003, OAI-006 |
+| PentAGI | Reconnaissance, Pentest Tool Chains | OAI-003 fan-out, OAI-005 chain | OAI-008 recon burst, OAI-006 |
+| HexStrike | MCP-mediated Security Tool Invocation | **OAI-013** เครื่องมือโจมตีที่ MCP server เป็นผู้เรียก (hexstrike = critical) | AGT-012 MCP ผิดนโยบาย, OAI-003, OAI-006 |
+| CyberStrikeAI | Orchestrated Tool Execution | OAI-003, OAI-005 | OAI-007 OAST, OAI-006 (webshell UA, implant header) |
+| Strix | Web/API Security Testing Patterns | OAI-008 recon burst, OAI-004 rotating proxy | OAI-007 interactsh, OAI-006 sandbox image |
+| Hermes Agent | Shell Execution, External Tool Access | **OAI-014** download-and-execute / reverse shell / encoded / inline code จาก agent | OAI-001 (`--yolo`, `HERMES_YOLO_MODE`), AGT-003, OAI-002 |
+| Agent Zero | Dynamic Code Execution, Agent Workflows | **OAI-014** (agent runtime เช่น `run_ui.py`) | AGT-003, OAI-006 |
+
+เกณฑ์ใหม่: OAI-012 = agent CLI ต่างชนิด ≥ 2 หรือ ≥ 3 instance ในโหมดปิดการอนุมัติบนเครื่องเดียวภายใน 10 นาที ·
+OAI-013 = เครื่องมือโจมตีที่มีบรรพบุรุษเป็น MCP server (`hexstrike_server.py`, `mcp-server`, `fastmcp` …) ·
+OAI-014 = ภายใต้ agent: `curl|wget … | sh/python`, `/dev/tcp`/`nc -e` (critical), `base64 -d |`/`-enc`, `python -c … exec/socket/subprocess`
+
+KQL: `09_agent_swarm_mcp_dynamic_code.kql`

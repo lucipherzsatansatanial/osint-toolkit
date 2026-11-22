@@ -80,7 +80,7 @@ def test_soc_agent_hunt_and_contain(client):
 
 def test_soc_offensive_ai_pack(client):
     r = client.get("/api/soc/offensive-ai", headers=H).json()
-    assert len(r["rules"]) == 11 and len(r["frameworks"]) == 8
+    assert len(r["rules"]) == 14 and len(r["frameworks"]) == 9
     langs = {q["lang"] for q in r["queries"]}
     assert langs == {"KQL", "SPL", "Sigma"} and all(q["title"] and "comment(" not in q["title"] for q in r["queries"])
 

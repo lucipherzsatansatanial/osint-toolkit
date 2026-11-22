@@ -1,0 +1,21 @@
+// OAI-012 / OAI-013 / OAI-014 — agent swarm, MCP-launched security tools, dynamic code from an agent (Defender XDR)
+let bypass = @"(?i)(--dangerously-skip-permissions|--dangerously-bypass-approvals-and-sandbox|--full-auto|--yolo\b|--approval-mode[ =]yolo|bypassPermissions|--auto-approve|HERMES_YOLO_MODE)";
+let tools = dynamic(["nmap","masscan","naabu","subfinder","httpx","katana","nuclei","ffuf","gobuster","feroxbuster","dirsearch","sqlmap","nikto","wpscan","hydra","msfconsole","netexec","nxc","crackmapexec","kerbrute","responder","secretsdump.py","psexec.py","interactsh-client","evil-winrm","chisel"]);
+let swarm = DeviceProcessEvents
+    | where Timestamp > ago(1d) and ProcessCommandLine matches regex bypass
+    | summarize Agents = make_set(tolower(FileName), 10), Instances = count() by DeviceName, Window = bin(Timestamp, 10m)
+    | where array_length(Agents) >= 2 or Instances >= 3
+    | project Window, DeviceName, Rule = "OAI-012 agent swarm", Evidence = strcat(strcat_array(Agents, ", "), " x", tostring(Instances));
+let mcp = DeviceProcessEvents
+    | where Timestamp > ago(1d)
+    | extend Tool = tolower(replace_regex(FileName, @"\.exe$", ""))
+    | where Tool in (tools)
+    | where InitiatingProcessCommandLine matches regex @"(?i)(hexstrike_(server|mcp)\.py|mcp[-_]server|fastmcp|\bmcp\s+(run|serve)\b)"
+    | project Window = Timestamp, DeviceName, Rule = "OAI-013 MCP-launched tool", Evidence = strcat(InitiatingProcessCommandLine, " -> ", ProcessCommandLine);
+let dyn = DeviceProcessEvents
+    | where Timestamp > ago(1d)
+    | where InitiatingProcessCommandLine matches regex @"(?i)(claude|codex|gemini|qwen|kimi|opencode|hermes|agent[-_ ]?zero|run_ui\.py|cairn|pentagi|strix)"
+    | where ProcessCommandLine matches regex @"(?i)((curl|wget|iwr|invoke-webrequest)\b[^|;&]*\|\s*(sudo\s+)?((ba|z|da)?sh|python3?|perl|ruby|node|iex)\b|/dev/tcp/|\bnc(at)?\b[^|;]*\s-e\s|base64\s+(-d|--decode)\s*\||-enc(odedcommand)?\s+[A-Za-z0-9+/=]{20,}|frombase64string)"
+    | project Window = Timestamp, DeviceName, Rule = "OAI-014 agent dynamic code", Evidence = strcat(InitiatingProcessCommandLine, " -> ", ProcessCommandLine);
+union swarm, mcp, dyn
+| order by Window desc

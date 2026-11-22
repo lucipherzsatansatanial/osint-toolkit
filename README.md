@@ -77,6 +77,9 @@ API: `GET /api/soc/agents`, `GET /api/soc/agents/sessions/{sid}`, `GET /api/soc/
 | OAI-009 | Lateral movement fan-out: เครื่อง/บัญชีเดียวเข้าถึง ≥10 เครื่องใน 10 นาที (admin ports หรือ network logon) |
 | OAI-010 | การเข้าถึงฐานข้อมูลผิดปกติ: คำสั่ง dump/export หรืออ่านข้อมูลจำนวนมาก |
 | OAI-011 | ส่งข้อมูลออกภายนอกหลังการเข้าถึงข้อมูลจำนวนมาก / DLP พบข้อมูลลับออกนอกองค์กร |
+| OAI-012 | หลาย AI agent (approvals off) ทำงานพร้อมกันบนเครื่องเดียว — แบบ CAIRN |
+| OAI-013 | เครื่องมือโจมตีถูกเรียกโดย MCP server — แบบ HexStrike |
+| OAI-014 | Agent สั่ง download-and-execute / reverse shell / โค้ดเข้ารหัส / inline code — แบบ Hermes, Agent Zero |
 
 ตาราง use case + Priority + แหล่ง log: [`detections/USE_CASES.md`](detections/USE_CASES.md) · AGT-012: MCP tool invocation ผิดนโยบาย (allowlist `mcp_servers` ตอนลงทะเบียน agent)
 
@@ -167,7 +170,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (93 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (97 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

@@ -413,7 +413,9 @@ const OFF_SEV = {};
 function renderOffai(o) {
   if (!o) return;
   $("#frameworks").innerHTML = o.frameworks.map((f) => `<div class="fw ${f.hits ? "hot" : ""}">
-    <div class="n"><span>${esc(f.name)}</span><b title="detections">${f.hits}</b></div><div class="d">${esc(f.desc)}</div>
+    <div class="n"><span>${esc(f.name)}</span><b title="indicator matches (IOC) for this framework">${f.hits}</b></div>
+    <div class="focus">${esc(f.focus || "")}</div><div class="d">${esc(f.desc)}</div>
+    <div class="fr">${(f.rules || []).map((r) => `<span class="${r.hits ? "on" : ""}" title="${r.hits == null ? "agent rule" : r.hits + " hits (all sources)"}">${esc(r.id)}</span>`).join("")}</div>
     <div class="t">${f.indicators ? `${f.indicators} indicators · ${Object.entries(f.by_type).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}` : "indicator feed ยังไม่โหลด"}</div></div>`).join("");
   o.rules.forEach((r) => { OFF_SEV[r.id] = r.severity; });
   $("#nb-off").textContent = o.rules.reduce((n, r) => n + r.hits, 0);
