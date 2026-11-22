@@ -80,7 +80,8 @@ def test_task_lifecycle_tenant_scoped_and_audited(client):
     view = client.post("/api/users", headers={**H, "X-Tenant": "acme"}, json={"username": "vee", "role": "viewer"}).json()["token"]
     A = {"X-API-Key": tok}
     assert client.get("/api/soc/assignees", headers=A).json()["users"] == ["nok", "vee"]
-    bad = client.post("/api/soc/tasks", headers=A, json={"name": "x", "assignee": "stranger"})
+    assert client.post("/api/soc/tasks", headers=A, json={"name": "x", "assignee": "vee"}).status_code == 403  # analysts cannot assign others
+    bad = client.post("/api/soc/tasks", headers={**H, "X-Tenant": "acme"}, json={"name": "x", "assignee": "stranger"})
     assert bad.status_code == 422
     t = client.post("/api/soc/tasks", headers=A, json={"name": "Isolate host SRV-01", "assignee": "nok",
                                                         "due": 1_000_000_000.0, "description": "ติดต่อเจ้าของเครื่อง"}).json()

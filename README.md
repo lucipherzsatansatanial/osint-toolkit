@@ -241,21 +241,42 @@ poll ได้ ส่วน POST/PATCH และการสแกน OSINT ย�
 - ปุ่ม "แจ้งเตือน: …" บนแถบด้านบนของ `/soc` = ส่งข้อความทดสอบ (บันทึกใน audit log); `GET /api/soc/notify` แสดงช่องทางและผลส่งล่าสุด (ไม่แสดง URL/token)
 - ลิงก์ `…/soc#inc-<id>` เปิดหน้ารายละเอียด incident นั้นโดยตรง
 
-### ผู้ใช้และสิทธิ์ (RBAC)
+### ผู้ใช้และสิทธิ์ (RBAC) — สิทธิ์ตามการกระทำ
 
-| บทบาท | ทำอะไรได้ |
+สิทธิ์ตั้งชื่อตามการกระทำ (47 สิทธิ์ ใน 11 กลุ่ม — รายการเต็มและคำอธิบายภาษาไทยอยู่ที่ `GET /api/roles` และตารางในหน้า
+"ผู้ใช้และสิทธิ์") ทุก endpoint ผูกกับสิทธิ์เดียว และมีเทสต์ตรวจว่าไม่มี endpoint ใดไม่มีการตรวจสิทธิ์
+
+| กลุ่ม | สิทธิ์ |
 |---|---|
-| `viewer` ผู้ดู | ดู dashboard, incident, รายงาน, hunting |
-| `analyst` นักวิเคราะห์ | + สแกน OSINT และดูประวัติสแกน, จัดการ incident (สถานะ/ผู้รับผิดชอบ/บันทึก) |
-| `lead` หัวหน้าทีม SOC | + ส่ง log (ingest), ลงทะเบียน agent, Contain/Release, ทดสอบช่องทางแจ้งเตือน, เปิด/ปิดกฎที่สร้างเอง |
-| `admin` ผู้ดูแลระบบ | + จัดการผู้ใช้ |
-| `ingest` บัญชีส่ง log | ส่ง log เข้า `/api/soc/ingest` ได้อย่างเดียว (ใช้กับ `tools/ship_logs.py`) |
+| ข้อมูล SOC | `soc.read` `alerts.read` `events.read` `cases.read` `assets.read` `entities.read` |
+| ค้นหาและวิเคราะห์ | `query.run` `notebooks.read` `notebooks.write` `soc.export` |
+| จัดการเคส | `cases.create` `cases.update` `cases.assign` `cases.close` |
+| จัดการ Alert | `alerts.acknowledge` `alerts.assign` `alerts.escalate` `alerts.close` |
+| Threat Intelligence / OSINT | `threatintel.read` `threatintel.curate` `osint.scan` `osint.history` `osint.export` |
+| กฎและการตรวจจับ | `rules.read` `rules.edit` `rules.publish` `rules.rollback` |
+| Agentic AI | `agents.read` `agents.edit` `agents.approve` `agents.deploy` |
+| AI | `ai.copilot` `ai.hunt` `ai.enrich` |
+| การตอบสนอง | `respond.execute` `respond.approve` |
+| ระบบและการกำกับดูแล | `assets.manage` `integrations.manage` `ingest.sources.manage` `ingest.submit` `governance.read` `governance.manage` |
+| ผู้ใช้และการตรวจสอบ | `users.read` `users.manage` `roles.manage` `tokens.manage` `audit.read` |
 
-- แต่ละคนมี **token ส่วนตัว** (เก็บเฉพาะ hash, แสดงครั้งเดียวตอนสร้าง/ออกใหม่) — ใส่ในช่อง API key ของหน้าเว็บ
-- audit log บันทึก**ชื่อผู้ใช้จาก token** ไม่ใช่ชื่อที่พิมพ์เอง → ใช้เป็นหลักฐานได้
-- `OSINT_API_KEY` ยังใช้ได้ในฐานะ **break-glass admin** (สร้างผู้ใช้คนแรก) แต่การกระทำที่ต้อง audit ต้องพิมพ์ชื่อผู้ปฏิบัติงาน — ควรเก็บ key นี้ไว้กับผู้บริหาร/ทีมดูแลระบบเท่านั้น
-- เริ่มใช้งาน: เปิด `/soc` ด้วย `OSINT_API_KEY` → เมนู **ผู้ใช้และสิทธิ์** → สร้าง admin ตัวจริง → ใช้ token นั้นแทน
-- API: `GET /api/me`, `GET/POST /api/users`, `POST /api/users/{u}/rotate`, `PATCH /api/users/{u}` (role / disabled)
+- บทบาท: **viewer** (อ่านอย่างเดียว ไม่มีสิทธิ์ส่งออก) ⊂ **analyst** (ค้นหา วิเคราะห์ สร้าง/แก้/ปิด case, รับทราบ/ยกระดับ/ปิด alert,
+  ร่าง rule, เสนอสิทธิ์ agent — ไม่มี `respond.execute`, `rules.publish`, `agents.deploy`, `cases.assign`) ⊂ **lead** (+ มอบหมาย,
+  เผยแพร่/ย้อน rule, ขอและอนุมัติการตอบสนอง, อนุมัติสิทธิ์ agent, retire agent, `osint.export`, `audit.read`) ⊂ **admin** (+ ผู้ใช้
+  บทบาท token การเชื่อมต่อ แหล่ง log นโยบาย); **ingest** มีแค่ `ingest.submit` (บัญชีบุคคลส่ง log ไม่ได้)
+- **บทบาทกำหนดเอง** ต่อ tenant (`PUT/DELETE /api/roles/{name}`, สิทธิ์ `roles.manage`) — มอบได้เฉพาะสิทธิ์ที่ผู้สร้างมีอยู่เอง;
+  การสร้างผู้ใช้หรือเปลี่ยนบทบาทก็ตรวจแบบเดียวกัน (ห้ามยกระดับสิทธิ์ตัวเอง/ผู้อื่นเกินตัว)
+- ตรวจตามการกระทำจริง: แก้ case = `cases.update`, ปิด/เปิดใหม่ = `cases.close`, มอบหมายให้ผู้อื่น = `cases.assign`
+  (รับงานเองใช้แค่ `cases.update`); ส่งออก CSV/รายงาน = `soc.export`
+- **แยกผู้ขอกับผู้อนุมัติ** (นโยบายใน Governance, `GET/PUT /api/soc/policies`): การตอบสนอง (กักกัน/ปล่อย agent) และการเพิ่ม/แก้สิทธิ์
+  AI agent เป็น "คำขอ" ที่ต้องให้อีกคนอนุมัติ (`/api/soc/response-requests`, `/api/soc/agents/requests`) — เปิดเป็นค่าเริ่มต้น;
+  ผู้ขออนุมัติคำขอตัวเองไม่ได้; เลือกเปิดได้ว่าผู้แก้ rule ล่าสุดเผยแพร่เองไม่ได้
+- **Rule versioning**: แก้ rule ที่มีอยู่ = draft (เวอร์ชันที่ใช้งานยังทำงานต่อ), `rules.publish` เผยแพร่ draft เป็นเวอร์ชันใหม่,
+  `rules.rollback` ย้อนเวอร์ชัน (`POST /api/soc/rules/{id}/rollback`) — เก็บ 20 เวอร์ชันล่าสุด
+- **Alert actions** (`POST /api/soc/alerts/action`): รับทราบ / มอบหมาย / ยกระดับ (เพิ่ม priority ของ case หรือสร้าง case ใหม่) /
+  ปิด (ต้องมีเหตุผล) / เปิดใหม่ — ไม่มีสิทธิ์สั่งตอบโต้ระบบ; alert ที่ปิดแล้วเกิดซ้ำจะกลับเป็น "ใหม่"
+- **Agent lifecycle** (`POST /api/soc/agents/{id}/lifecycle`, `agents.deploy`): retire agent — กิจกรรมหลังจากนั้นถูกบล็อกและแจ้ง AGT-011
+- ทุกการกระทำข้างต้นบันทึกใน audit log พร้อมชื่อผู้ขอ/ผู้อนุมัติ
 
 ### AI SOC Copilot (เฟส 2)
 

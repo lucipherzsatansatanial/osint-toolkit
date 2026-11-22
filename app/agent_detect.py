@@ -302,7 +302,17 @@ class AgentMonitor:
             if ag is None:
                 alerts.append(self._unregistered(rec, now))
                 ag = self.agents[rec["agent"]]
-            if ag["contained"]:
+            if ag.get("retired"):
+                rec["decision"] = "blocked"  # retired agents must have no working credentials left
+                if not ag.get("retired_alerted"):
+                    ag["retired_alerted"] = True
+                    title, sev, tech, tactic = RULES["AGT-011"]
+                    self.rule_hits["AGT-011"] += 1
+                    alerts.append({"spec": ("agent", f"[AGT-011] Activity from a retired AI agent", "high", tech, tactic),
+                                   "host": ag.get("host") or "unknown", "user": ag.get("account") or ag["id"],
+                                   "extra": {"agent": ag["id"], "session": rec.get("session"), "rule": "AGT-011",
+                                             "record": rec.get("summary")}})
+            elif ag["contained"]:
                 rec["decision"] = "blocked"
             elif rec["kind"] == "tool_call" and ag["scopes"] is not None and rec.get("tool") not in ag["scopes"]:
                 rec["decision"] = "denied"  # policy gateway enforces scope

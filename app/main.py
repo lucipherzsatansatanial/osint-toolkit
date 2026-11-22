@@ -105,13 +105,13 @@ def _authenticate(request: Request, x_api_key: str) -> rbac.Principal:
         raise HTTPException(429, "rate limit exceeded")
     q.append(now)
     if settings.api_key and x_api_key and hmac.compare_digest(x_api_key, settings.api_key):
-        return _with_tenant(rbac.Principal("admin (bootstrap key)", "admin", client, False, set(rbac.ROLES["admin"]),
+        return _with_tenant(rbac.Principal("admin (bootstrap key)", "admin", client, False, set(rbac.ALL),
                                            platform=True), request)
     user = rbac.authenticate(x_api_key, client)
     if user:
         return _with_tenant(user, request)
     if not settings.api_key and not rbac.has_users():  # local development: no credentials configured at all
-        return _with_tenant(rbac.Principal("anonymous", "admin", client, False, set(rbac.ROLES["admin"]),
+        return _with_tenant(rbac.Principal("anonymous", "admin", client, False, set(rbac.ALL),
                                            platform=True), request)
     raise HTTPException(401, "invalid or missing X-API-Key")
 
@@ -124,6 +124,13 @@ def require(perm: str):
             raise HTTPException(403, f"role '{who.role}' lacks permission '{perm}'")
         return who
     return dep
+
+
+def need(who: rbac.Principal, *perms: str) -> None:
+    """Run-time permission check for actions decided by the request body (e.g. closing vs editing a case)."""
+    missing = [p for p in perms if not who.can(p)]
+    if missing:
+        raise HTTPException(403, f"role '{who.role}' lacks permission '{missing[0]}'")
 
 
 def E(who: rbac.Principal):
@@ -189,6 +196,22 @@ def history(limit: int = 50, who: rbac.Principal = Depends(require("osint.histor
     return audit.history(min(max(limit, 1), 500), tenant=who.tenant)
 
 
+@app.get("/api/history.csv")
+def history_csv(limit: int = 500, who: rbac.Principal = Depends(require("osint.export"))):
+    rows = audit.history(min(max(limit, 1), 5000), tenant=who.tenant)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["id", "ts", "analyst", "module", "target", "purpose", "legal_basis", "case_ref"])
+    for r in rows:
+        w.writerow([r.get("id"), r.get("ts"), soc_report._cell(r.get("analyst") or ""), r.get("module"),
+                    soc_report._cell(r.get("target") or ""), soc_report._cell(r.get("purpose") or ""),
+                    r.get("legal_basis"), soc_report._cell(r.get("case_ref") or "")])
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="osint.export", target=f"{len(rows)} scans",
+                 purpose="export scan history", legal_basis="own_asset", case_ref=None, result={"rows": len(rows)})
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="osint-history.csv"'})
+
+
 @app.get("/api/scan/{scan_id}")
 def get_scan(scan_id: int, who: rbac.Principal = Depends(require("osint.history"))):
     row = audit.get(scan_id)
@@ -222,27 +245,79 @@ def me(request: Request, x_api_key: str = Header(default="")):
             "named": who.named, "permissions": sorted(who.perms)}
 
 
+# ---------- roles and permissions ----------
+@app.get("/api/roles")
+def roles_list(who: rbac.Principal = Depends(require("users.read"))):
+    groups: dict[str, list] = {}
+    for pid, (grp, desc) in rbac.PERMISSIONS.items():
+        groups.setdefault(grp, []).append({"id": pid, "description": desc})
+    return {"roles": rbac.all_roles(who.tenant), "permissions": [{"group": g, "items": v} for g, v in groups.items()],
+            "mine": sorted(who.perms)}
+
+
+class RoleIn(BaseModel):
+    label: str = Field(default="", max_length=60)
+    permissions: list[str] = Field(min_length=1, max_length=len(rbac.PERMISSIONS))
+
+
+def _no_escalation(who: rbac.Principal, perms: set[str]) -> None:
+    extra = perms - who.perms
+    if extra:
+        raise HTTPException(403, f"cannot grant permissions you do not hold: {', '.join(sorted(extra))}")
+
+
+@app.put("/api/roles/{name}")
+def roles_save(name: str, req: RoleIn, who: rbac.Principal = Depends(require("roles.manage"))):
+    perms = set(req.permissions)
+    unknown = perms - rbac.ALL
+    if unknown:
+        raise HTTPException(422, f"unknown permissions: {', '.join(sorted(unknown))}")
+    _no_escalation(who, perms)
+    try:
+        role = rbac.save_role(who.tenant, name, req.label, perms, who.name)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="rbac.role", target=f"role:{name}",
+                 purpose=", ".join(sorted(perms))[:300], legal_basis="own_asset", case_ref=None, result={"perms": len(perms)})
+    return role
+
+
+@app.delete("/api/roles/{name}")
+def roles_delete(name: str, who: rbac.Principal = Depends(require("roles.manage"))):
+    try:
+        ok = rbac.delete_role(who.tenant, name)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    if not ok:
+        raise HTTPException(404, "role not found")
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="rbac.role", target=f"role:{name}",
+                 purpose="delete", legal_basis="own_asset", case_ref=None, result={})
+    return {"deleted": name}
+
+
 class UserCreate(BaseModel):
     username: str = Field(min_length=2, max_length=63)
     tenant: str | None = Field(default=None, max_length=41)  # platform staff only; "*" = platform user
-    role: Literal["viewer", "analyst", "lead", "admin", "ingest"]
+    role: str = Field(min_length=2, max_length=31)
 
 
 class UserUpdate(BaseModel):
-    role: Literal["viewer", "analyst", "lead", "admin", "ingest"] | None = None
+    role: str | None = Field(default=None, min_length=2, max_length=31)
     disabled: bool | None = None
 
 
 @app.get("/api/users")
-def users_list(who: rbac.Principal = Depends(require("users.manage"))):
-    return {"users": rbac.list_users(None if who.platform else who.tenant), "roles": [{"id": r, "th": rbac.ROLE_TH[r], "permissions": sorted(p)}
-                                                  for r, p in rbac.ROLES.items()]}
+def users_list(who: rbac.Principal = Depends(require("users.read"))):
+    return {"users": rbac.list_users(None if who.platform else who.tenant),
+            "roles": [{"id": r["name"], "th": r["label"], "permissions": r["perms"], "custom": r["custom"]}
+                      for r in rbac.all_roles(who.tenant)]}
 
 
 @app.post("/api/users")
 def users_create(req: UserCreate, who: rbac.Principal = Depends(require("users.manage"))):
     try:
         tenant = (req.tenant or who.tenant) if who.platform else who.tenant
+        _no_escalation(who, rbac.role_perms(req.role, tenant))
         token = rbac.create_user(req.username.strip().lower(), req.role, who.name, tenant)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
@@ -259,7 +334,7 @@ def _same_tenant_user(username: str, who: rbac.Principal) -> None:
 
 
 @app.post("/api/users/{username}/rotate")
-def users_rotate(username: str, who: rbac.Principal = Depends(require("users.manage"))):
+def users_rotate(username: str, who: rbac.Principal = Depends(require("tokens.manage"))):
     _same_tenant_user(username, who)
     token = rbac.rotate(username)
     if token is None:
@@ -270,8 +345,13 @@ def users_rotate(username: str, who: rbac.Principal = Depends(require("users.man
 
 
 @app.patch("/api/users/{username}")
-def users_update(username: str, req: UserUpdate, who: rbac.Principal = Depends(require("users.manage"))):
+def users_update(username: str, req: UserUpdate, who: rbac.Principal = Depends(require("users.read"))):
     _same_tenant_user(username, who)
+    if req.disabled is not None:
+        need(who, "users.manage")
+    if req.role is not None:
+        need(who, "roles.manage")
+        _no_escalation(who, rbac.role_perms(req.role, rbac.user_tenant(username) or who.tenant))
     if who.named and username == who.name and (req.disabled or (req.role and req.role != "admin")):
         raise HTTPException(409, "cannot disable or demote your own account")
     try:
@@ -286,7 +366,7 @@ def users_update(username: str, req: UserUpdate, who: rbac.Principal = Depends(r
 
 
 @app.get("/api/tenants")
-def tenants_list(who: rbac.Principal = Depends(require("users.manage"))):
+def tenants_list(who: rbac.Principal = Depends(require("users.read"))):
     """Platform staff: every tenant known to the system. Others: their own tenant."""
     if not who.platform:
         return {"tenants": [who.tenant], "current": who.tenant}
@@ -300,12 +380,12 @@ async def soc_snapshot(who: rbac.Principal = Depends(require("soc.read"))):
 
 
 @app.get("/api/soc/cti")
-async def soc_cti(refresh: bool = False, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_cti(refresh: bool = False, who: rbac.Principal = Depends(require("threatintel.read"))):
     return threatintel.public(await threatintel.get_all(force=refresh))
 
 
 @app.get("/api/soc/offensive-ai")
-async def soc_offensive_ai(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_offensive_ai(who: rbac.Principal = Depends(require("alerts.read"))):
     """Offensive AI-agent framework coverage, rule hit counts and the hunting query library."""
     return {**E(who).offai.summary(), "queries": hunting_pack()}
 
@@ -325,13 +405,13 @@ def hunting_pack() -> list[dict]:
 
 
 @app.get("/api/soc/agents")
-async def soc_agents(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_agents(who: rbac.Principal = Depends(require("agents.read"))):
     m = E(who).agents
     return {"agents": m.inventory(), "rules": m.rules()}
 
 
 @app.get("/api/soc/agents/sessions/{sid}")
-async def soc_agent_session(sid: str, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_agent_session(sid: str, who: rbac.Principal = Depends(require("agents.read"))):
     data = E(who).agents.session(sid[:20])
     if not data:
         raise HTTPException(404, "session not found")
@@ -339,7 +419,7 @@ async def soc_agent_session(sid: str, who: rbac.Principal = Depends(require("soc
 
 
 @app.get("/api/soc/hunt")
-async def soc_hunt(q: str = "", limit: int = 100, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_hunt(q: str = "", limit: int = 100, who: rbac.Principal = Depends(require("agents.read"))):
     return {"query": q[:300], "results": E(who).agents.hunt(q[:300], min(max(limit, 1), 500))}
 
 
@@ -368,7 +448,7 @@ def _parse(body: bytes, fmt: str, host: str | None):
 
 @app.post("/api/soc/ingest")
 async def soc_ingest(request: Request, format: str = "auto", host: str | None = None,
-                     who: rbac.Principal = Depends(require("ingest"))):
+                     who: rbac.Principal = Depends(require("ingest.submit"))):
     """Ingest real EDR / NDR / web / AI-agent telemetry. Formats: auto, native, ecs, defender, access_log."""
     records, rejected = _parse(await _read_body(request), format, host)
     result = E(who).ingest_external(records, source=INGEST_SOURCE.get(format, format))
@@ -473,7 +553,7 @@ def _sightings(who: rbac.Principal, values: list[str], days: int = 7) -> dict[st
 
 @app.get("/api/soc/intel")
 async def soc_intel(q: str = "", types: str = "", sources: str = "", min_conf: int = 0, page: int = 1, size: int = 25,
-                    who: rbac.Principal = Depends(require("soc.read"))):
+                    who: rbac.Principal = Depends(require("threatintel.read"))):
     rows = _indicators(who.tenant)
     size = max(10, min(size, 100))
     res = intel.search(rows, q[:20000], [t for t in types.split(",") if t], [s for s in sources.split(",") if s],
@@ -508,7 +588,7 @@ def _collections(tenant: str) -> list[dict]:
 
 
 @app.post("/api/soc/iocs")
-async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("threatintel.curate"))):
     """Add the tenant's own IOCs (bulk). They are searched with the CTI feeds, matched in logs (IOC-001) and can be
     published through outgoing feeds."""
     if req.collection_id is not None and not any(c["id"] == req.collection_id for c in _collections(who.tenant)):
@@ -540,7 +620,7 @@ async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("rules.
 
 @app.get("/api/soc/iocs")
 async def soc_iocs_list(collection_id: int | None = None, q: str = "", page: int = 1, size: int = 50,
-                        who: rbac.Principal = Depends(require("soc.read"))):
+                        who: rbac.Principal = Depends(require("threatintel.read"))):
     rows = sorted(soc_store.iocs(who.tenant), key=lambda i: -(i.get("added_at") or 0))
     if collection_id is not None:
         rows = [i for i in rows if i.get("collection_id") == collection_id]
@@ -559,14 +639,14 @@ class CollectionIn(BaseModel):
 
 
 @app.get("/api/soc/ioc-collections")
-async def soc_collections(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_collections(who: rbac.Principal = Depends(require("threatintel.read"))):
     counts = Counter(i.get("collection_id") for i in soc_store.iocs(who.tenant))
     return {"collections": [{**c, "iocs": counts.get(c["id"], 0)} for c in _collections(who.tenant)],
             "unassigned": counts.get(None, 0), "kill_chain": list(KILL_CHAIN)}
 
 
 @app.post("/api/soc/ioc-collections")
-async def soc_collection_create(req: CollectionIn, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_collection_create(req: CollectionIn, who: rbac.Principal = Depends(require("threatintel.curate"))):
     cur = _collections(who.tenant)
     item = {"id": max([c["id"] for c in cur] + [0]) + 1, **req.model_dump(), "created_by": who.name, "created_at": time.time()}
     soc_store.set_setting("ioc_collections", cur + [item], who.tenant)
@@ -576,7 +656,7 @@ async def soc_collection_create(req: CollectionIn, who: rbac.Principal = Depends
 
 
 @app.put("/api/soc/ioc-collections/{cid}")
-async def soc_collection_update(cid: int, req: CollectionIn, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_collection_update(cid: int, req: CollectionIn, who: rbac.Principal = Depends(require("threatintel.curate"))):
     cur = _collections(who.tenant)
     c = next((x for x in cur if x["id"] == cid), None)
     if c is None:
@@ -592,7 +672,7 @@ class IocRevoke(BaseModel):
 
 
 @app.post("/api/soc/iocs/revoke")
-async def soc_iocs_revoke(req: IocRevoke, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_iocs_revoke(req: IocRevoke, who: rbac.Principal = Depends(require("threatintel.curate"))):
     want = {intel.classify(v)[1].lower() for v in req.values}
     rows = [i for i in soc_store.iocs(who.tenant) if i["value"].lower() in want]
     for i in rows:
@@ -606,7 +686,7 @@ async def soc_iocs_revoke(req: IocRevoke, who: rbac.Principal = Depends(require(
 
 
 @app.get("/api/soc/ioc-collections/{cid}/report")
-async def soc_collection_report(cid: int, days: int = 30, format: str = "json", who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_collection_report(cid: int, days: int = 30, format: str = "json", who: rbac.Principal = Depends(require("threatintel.read"))):
     """Telemetry report: for every IOC in the collection, how often it appeared in this tenant's logs and alerts."""
     col = next((c for c in _collections(who.tenant) if c["id"] == cid), None)
     if col is None:
@@ -622,6 +702,7 @@ async def soc_collection_report(cid: int, days: int = 30, format: str = "json", 
            "hosts": sorted({h for x in seen for h in x["hosts"]}), "items": items,
            "note": f"นับจาก log ดิบ (เก็บ {soc_store.RAW_RETENTION_DAYS} วัน) และ alert ของ tenant นี้เท่านั้น"}
     if format == "csv":
+        need(who, "soc.export")
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["value", "type", "threat", "logs", "alerts", "last_seen", "hosts", "revoked"])
@@ -639,7 +720,7 @@ class IocDelete(BaseModel):
 
 
 @app.post("/api/soc/iocs/delete")
-async def soc_iocs_delete(req: IocDelete, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_iocs_delete(req: IocDelete, who: rbac.Principal = Depends(require("threatintel.curate"))):
     n = soc_store.delete_iocs([intel.classify(v)[1] for v in req.values], who.tenant)
     _INTEL_CACHE.pop(who.tenant, None)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ioc", target=f"{n} IOCs",
@@ -666,7 +747,7 @@ def _feed_url(request: Request, key: str, fmt: str) -> str:
 
 
 @app.get("/api/soc/feeds")
-async def soc_feeds(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_feeds(who: rbac.Principal = Depends(require("threatintel.read"))):
     rows = _indicators(who.tenant)
     out = []
     for f in soc_store.feeds(who.tenant):
@@ -676,13 +757,13 @@ async def soc_feeds(who: rbac.Principal = Depends(require("soc.read"))):
 
 
 @app.post("/api/soc/feeds/preview")
-async def soc_feed_preview(req: FeedIn, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_feed_preview(req: FeedIn, who: rbac.Principal = Depends(require("threatintel.read"))):
     rows = intel.select(_indicators(who.tenant), req.model_dump())
     return {"count": len(rows), "sample": rows[:10], "by_type": dict(Counter(i["type"] for i in rows))}
 
 
 @app.post("/api/soc/feeds")
-async def soc_feed_create(req: FeedIn, request: Request, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_feed_create(req: FeedIn, request: Request, who: rbac.Principal = Depends(require("threatintel.curate"))):
     key = "fd_" + secrets.token_urlsafe(32)
     feed = soc_store.save_feed({"id": None, **req.model_dump(), "created_by": who.name, "created_at": time.time(),
                                 "key_hint": key[:7] + "…" + key[-4:], "pulls": 0, "last_pull": None}, _key_hash(key), who.tenant)
@@ -695,7 +776,7 @@ async def soc_feed_create(req: FeedIn, request: Request, who: rbac.Principal = D
 
 @app.put("/api/soc/feeds/{feed_id}")
 async def soc_feed_update(feed_id: int, req: FeedIn, request: Request, rotate_key: bool = False,
-                          who: rbac.Principal = Depends(require("rules.manage"))):
+                          who: rbac.Principal = Depends(require("threatintel.curate"))):
     cur = next((f for f in soc_store.feeds(who.tenant) if f["id"] == feed_id), None)
     if cur is None:
         raise HTTPException(404, "feed not found")
@@ -835,12 +916,12 @@ class AssistantIn(BaseModel):
 
 
 @app.get("/api/assistant/suggestions")
-async def assistant_suggestions(who: rbac.Principal = Depends(require("soc.read"))):
+async def assistant_suggestions(who: rbac.Principal = Depends(require("ai.copilot"))):
     return {"suggestions": assistant.SUGGESTIONS, "ai": ai.status()}
 
 
 @app.post("/api/assistant")
-async def assistant_ask(req: AssistantIn, who: rbac.Principal = Depends(require("ai.use"))):
+async def assistant_ask(req: AssistantIn, who: rbac.Principal = Depends(require("ai.copilot"))):
     out = await assistant.run(req.question, req.history, _assistant_tools(who))
     cost = ai.cost_usd(out.get("model"), out.get("usage"))
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="ai.assistant", target="assistant",
@@ -947,7 +1028,7 @@ def telemetry_placeholders() -> set:
 
 
 @app.get("/api/soc/graph/expand")
-async def soc_graph_expand(type: str, value: str, limit: int = 25, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_graph_expand(type: str, value: str, limit: int = 25, who: rbac.Principal = Depends(require("query.run"))):
     return _graph_neighbors(who, type, value[:500], max(5, min(limit, 60)))
 
 
@@ -968,13 +1049,13 @@ def _clean_graph(req: GraphIn) -> tuple[list, list]:
 
 
 @app.get("/api/soc/graphs")
-async def soc_graphs(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_graphs(who: rbac.Principal = Depends(require("notebooks.read"))):
     return {"graphs": [{k: g[k] for k in ("id", "name", "created_by", "created_at", "updated_at")} | {"nodes": len(g["nodes"])}
                        for g in soc_store.graphs(who.tenant)]}
 
 
 @app.get("/api/soc/graphs/{gid}")
-async def soc_graph(gid: int, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_graph(gid: int, who: rbac.Principal = Depends(require("notebooks.read"))):
     g = next((g for g in soc_store.graphs(who.tenant) if g["id"] == gid), None)
     if g is None:
         raise HTTPException(404, "graph not found")
@@ -982,7 +1063,7 @@ async def soc_graph(gid: int, who: rbac.Principal = Depends(require("soc.read"))
 
 
 @app.post("/api/soc/graphs")
-async def soc_graph_create(req: GraphIn, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_graph_create(req: GraphIn, who: rbac.Principal = Depends(require("notebooks.write"))):
     nodes, edges = _clean_graph(req)
     now = time.time()
     return soc_store.save_graph({"id": None, "name": req.name, "nodes": nodes, "edges": edges, "created_by": who.name,
@@ -990,7 +1071,7 @@ async def soc_graph_create(req: GraphIn, who: rbac.Principal = Depends(require("
 
 
 @app.put("/api/soc/graphs/{gid}")
-async def soc_graph_update(gid: int, req: GraphIn, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_graph_update(gid: int, req: GraphIn, who: rbac.Principal = Depends(require("notebooks.write"))):
     g = next((g for g in soc_store.graphs(who.tenant) if g["id"] == gid), None)
     if g is None:
         raise HTTPException(404, "graph not found")
@@ -1000,7 +1081,7 @@ async def soc_graph_update(gid: int, req: GraphIn, who: rbac.Principal = Depends
 
 
 @app.delete("/api/soc/graphs/{gid}")
-async def soc_graph_delete(gid: int, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_graph_delete(gid: int, who: rbac.Principal = Depends(require("notebooks.write"))):
     if not soc_store.delete_graph(gid, who.tenant):
         raise HTTPException(404, "graph not found")
     return {"deleted": gid}
@@ -1034,7 +1115,7 @@ async def soc_workspace(who: rbac.Principal = Depends(require("soc.read"))):
 
 
 @app.put("/api/soc/workspace")
-async def soc_workspace_set(req: ProfileIn, who: rbac.Principal = Depends(require("users.manage"))):
+async def soc_workspace_set(req: ProfileIn, who: rbac.Principal = Depends(require("governance.manage"))):
     data = req.model_dump()
     if data["domain"]:
         try:
@@ -1058,7 +1139,7 @@ class CaseTemplate(BaseModel):
 
 
 @app.put("/api/soc/case-templates")
-async def soc_case_templates(templates: list[CaseTemplate], who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_case_templates(templates: list[CaseTemplate], who: rbac.Principal = Depends(require("governance.manage"))):
     if len(templates) > 50:
         raise HTTPException(422, "at most 50 templates")
     out, next_id = [], max([t.id or 0 for t in templates] + [0]) + 1
@@ -1075,6 +1156,223 @@ async def soc_case_templates(templates: list[CaseTemplate], who: rbac.Principal 
     return {"templates": out}
 
 
+# ---------- governance policies (separation of duties) ----------
+POLICY_DEFAULTS = {"four_eyes_response": True, "four_eyes_agents": True, "four_eyes_rules": False}
+
+
+def _policies(tenant: str) -> dict:
+    return {**POLICY_DEFAULTS, **soc_store.get_setting("policies", {}, tenant)}
+
+
+class PolicyIn(BaseModel):
+    four_eyes_response: bool = True   # response actions need a second person (respond.approve)
+    four_eyes_agents: bool = True     # agent permission changes need agents.approve by someone else
+    four_eyes_rules: bool = False     # the publisher of a rule must not be its last editor
+
+
+@app.get("/api/soc/policies")
+async def soc_policies(who: rbac.Principal = Depends(require("governance.read"))):
+    return {"policies": _policies(who.tenant), "defaults": POLICY_DEFAULTS}
+
+
+@app.put("/api/soc/policies")
+async def soc_policies_set(req: PolicyIn, who: rbac.Principal = Depends(require("governance.manage"))):
+    soc_store.set_setting("policies", req.model_dump(), who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="governance.policy", target="policies",
+                 purpose=json.dumps(req.model_dump()), legal_basis="own_asset", case_ref=None, result=req.model_dump())
+    return {"policies": _policies(who.tenant)}
+
+
+# ---------- approvals: response actions and agent permission changes ----------
+def _requests(tenant: str, key: str) -> list[dict]:
+    return soc_store.get_setting(key, [], tenant)
+
+
+def _save_requests(tenant: str, key: str, items: list[dict]) -> None:
+    soc_store.set_setting(key, items[-500:], tenant)
+
+
+def _new_request(who: rbac.Principal, key: str, body: dict) -> dict:
+    items = _requests(who.tenant, key)
+    req = {"id": max([r["id"] for r in items] + [0]) + 1, **body, "requested_by": who.name, "requested_at": time.time(),
+           "status": "pending"}
+    _save_requests(who.tenant, key, items + [req])
+    return req
+
+
+class Decision(BaseModel):
+    approve: bool
+    comment: str = Field(default="", max_length=500)
+
+
+def _decide(who: rbac.Principal, key: str, req_id: int, d: Decision) -> dict:
+    items = _requests(who.tenant, key)
+    r = next((x for x in items if x["id"] == req_id), None)
+    if r is None:
+        raise HTTPException(404, "request not found")
+    if r["status"] != "pending":
+        raise HTTPException(409, f"request already {r['status']}")
+    if r["requested_by"] == who.name:
+        raise HTTPException(403, "separation of duties: the requester cannot approve their own request")
+    r.update(status="approved" if d.approve else "rejected", decided_by=who.name, decided_at=time.time(), comment=d.comment)
+    _save_requests(who.tenant, key, items)
+    return r
+
+
+def _do_contain(who: rbac.Principal, agent_id: str, contain: bool) -> dict:
+    eng = E(who)
+    if agent_id not in eng.agents.agents:
+        raise HTTPException(404, "unknown agent")
+    result = eng.agents.contain(agent_id, contain)
+    if eng.persist and not eng.agents.agents[agent_id].get("demo"):
+        soc_store.save_agents([eng.agents.agents[agent_id]], who.tenant)
+    return result
+
+
+@app.get("/api/soc/response-requests")
+async def soc_response_requests(who: rbac.Principal = Depends(require("cases.read"))):
+    return {"requests": list(reversed(_requests(who.tenant, "response_requests")))[:100],
+            "four_eyes": _policies(who.tenant)["four_eyes_response"]}
+
+
+@app.post("/api/soc/response-requests/{req_id}/decision")
+async def soc_response_decide(req_id: int, d: Decision, who: rbac.Principal = Depends(require("respond.approve"))):
+    r = _decide(who, "response_requests", req_id, d)
+    result = None
+    if d.approve:
+        result = _do_contain(who, r["agent"], r["action"] == "contain")
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name,
+                 module=("soc.contain" if r["action"] == "contain" else "soc.release") if d.approve else "soc.response_rejected",
+                 target=r["agent"], purpose=f"request #{req_id} by {r['requested_by']}: {r['reason']} | {d.comment}"[:500],
+                 legal_basis="own_asset", case_ref=None,
+                 result={"approved": d.approve, "requested_by": r["requested_by"], "simulated": True})
+    return {**r, "result": result}
+
+
+@app.get("/api/soc/agents/requests")
+async def soc_agent_requests(who: rbac.Principal = Depends(require("agents.read"))):
+    return {"requests": list(reversed(_requests(who.tenant, "agent_requests")))[:100],
+            "four_eyes": _policies(who.tenant)["four_eyes_agents"]}
+
+
+def _apply_agent_specs(who: rbac.Principal, specs: list[dict]) -> list[dict]:
+    out = E(who).agents.register(specs)
+    if E(who).persist:
+        soc_store.save_agents([E(who).agents.agents[a["id"]] for a in out], who.tenant)
+    return out
+
+
+@app.post("/api/soc/agents/requests/{req_id}/decision")
+async def soc_agent_decide(req_id: int, d: Decision, who: rbac.Principal = Depends(require("agents.approve"))):
+    r = _decide(who, "agent_requests", req_id, d)
+    out = _apply_agent_specs(who, [r["spec"]]) if d.approve else None
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.agent_approve" if d.approve else "soc.agent_reject",
+                 target=r["spec"]["id"], purpose=f"request #{req_id} by {r['requested_by']} {d.comment}"[:500],
+                 legal_basis="own_asset", case_ref=None, result={"approved": d.approve})
+    return {**r, "agent": out[0] if out else None}
+
+
+class Lifecycle(BaseModel):
+    state: Literal["active", "retired"]
+    reason: str = Field(min_length=5, max_length=500)
+
+
+@app.post("/api/soc/agents/{agent_id}/lifecycle")
+async def soc_agent_lifecycle(agent_id: str, req: Lifecycle, who: rbac.Principal = Depends(require("agents.deploy"))):
+    """Put an approved agent into service or retire it. Activity from a retired agent is blocked and alerted (AGT-011)."""
+    ag = E(who).agents.agents.get(agent_id)
+    if ag is None or not ag.get("registered"):
+        raise HTTPException(404, "unknown or unapproved agent")
+    ag["retired"] = req.state == "retired"
+    ag["retired_alerted"] = False
+    ag["lifecycle"] = {"state": req.state, "by": who.name, "at": time.time(), "reason": req.reason}
+    if E(who).persist and not ag.get("demo"):
+        soc_store.save_agents([ag], who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module=f"soc.agent_{req.state}", target=agent_id,
+                 purpose=req.reason, legal_basis="own_asset", case_ref=None, result={"state": req.state})
+    return E(who).agents.public(ag)
+
+
+# ---------- alert actions ----------
+def _alert_states(tenant: str) -> dict:
+    return soc_store.get_setting("alert_state", {}, tenant)
+
+
+class AlertAction(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    host: str | None = Field(default=None, max_length=255)
+    action: Literal["acknowledge", "assign", "escalate", "close", "reopen"]
+    assignee: str | None = Field(default=None, max_length=80)
+    reason: str = Field(default="", max_length=500)
+    verdict: Literal["false_positive", "benign", "true_positive", ""] = ""
+
+
+ALERT_PERM = {"acknowledge": "alerts.acknowledge", "assign": "alerts.assign", "escalate": "alerts.escalate",
+              "close": "alerts.close", "reopen": "alerts.close"}
+
+
+@app.post("/api/soc/alerts/action")
+async def soc_alert_action(req: AlertAction, who: rbac.Principal = Depends(require("alerts.read"))):
+    """Act on an alert group (same alert title on the same host) without touching response capabilities."""
+    perm = ALERT_PERM[req.action]
+    if req.action == "assign" and who.named and req.assignee == who.name:
+        perm = "alerts.acknowledge"  # taking an alert yourself
+    need(who, perm)
+    if req.action == "close" and len(req.reason.strip()) < 3:
+        raise HTTPException(422, "closing an alert needs a reason")
+    eng = E(who)
+    now = time.time()
+    events = [e for e in _tenant_events(who, now - 30 * 86400, now) if e.get("title") == req.title and e.get("host") == req.host]
+    if not events:
+        raise HTTPException(404, "alert not found")
+    key = workspace.alert_key(req.title, req.host)
+    states = _alert_states(who.tenant)
+    st = dict(states.get(key) or {})
+    result: dict = {}
+    if req.action == "acknowledge":
+        st.update(status="acknowledged")
+    elif req.action == "assign":
+        st.update(status=st.get("status") if st.get("status") not in (None, "closed") else "acknowledged",
+                  assignee=_check_assignee(who, req.assignee) if req.assignee else None)
+    elif req.action == "close":
+        st.update(status="closed", verdict=req.verdict or None)
+    elif req.action == "reopen":
+        st.update(status="new", verdict=None)
+    elif req.action == "escalate":
+        inc_id = next((e["incident_id"] for e in reversed(events) if e.get("incident_id")), None)
+        inc = eng.incidents.get(inc_id) or (soc_store.incident(inc_id, who.tenant) if inc_id else None)
+        if inc and inc.get("status") not in CLOSED:
+            order = ["low", "medium", "high", "critical"]
+            cur = inc.get("priority") or (inc.get("severity") if inc.get("severity") in order else "medium")
+            new = order[min(len(order) - 1, order.index(cur) + 1)]
+            eng.update_incident(inc["id"], who.name, "investigating" if inc["status"] == "open" else None,
+                                note=f"escalated from alert '{req.title}' on {req.host}: {req.reason}".strip(), priority=new)
+            result = {"incident_id": inc["id"], "priority": new}
+        else:
+            last = events[-1]
+            case = eng.create_case(who.name, f"[Escalated] {req.title}"[:200],
+                                   f"ยกระดับจาก alert บน {req.host}: {req.reason}".strip(),
+                                   {"critical": "critical", "high": "high"}.get(last.get("severity"), "medium"),
+                                   None, ["escalated"], [req.host] if req.host else [])
+            case["alerts"] = [{k: e.get(k) for k in ("id", "ts", "domain", "title", "severity", "technique", "host", "rule",
+                                                     "cti_match", "user")} for e in events[-50:]]
+            eng._dirty.add(case["id"])
+            eng.flush()
+            result = {"incident_id": case["id"], "created": True}
+        st.update(status="escalated", incident_id=result["incident_id"])
+    st.update(ts=now, by=who.name, reason=req.reason or st.get("reason"))
+    states[key] = st
+    if len(states) > 5000:
+        for k in sorted(states, key=lambda k: states[k].get("ts", 0))[: len(states) - 5000]:
+            states.pop(k)
+    soc_store.set_setting("alert_state", states, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module=f"soc.alert_{req.action}",
+                 target=f"{req.title} @ {req.host}"[:300], purpose=req.reason or req.action, legal_basis="own_asset",
+                 case_ref=f"INC-{result['incident_id']}" if result.get("incident_id") else None,
+                 result={k: v for k, v in st.items() if k in ("status", "assignee", "verdict")})
+    return {"state": st, **result}
+
+
 # ---------- entities and intakes ----------
 class EntityIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
@@ -1083,14 +1381,14 @@ class EntityIn(BaseModel):
 
 
 @app.get("/api/soc/entities")
-async def soc_entities(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_entities(who: rbac.Principal = Depends(require("entities.read"))):
     ins = soc_store.intakes(who.tenant)
     return {"entities": [{**e, "intakes": sum(1 for i in ins if i.get("entity_id") == e["id"])}
                          for e in soc_store.entities(who.tenant)]}
 
 
 @app.post("/api/soc/entities")
-async def soc_entity_create(req: EntityIn, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_entity_create(req: EntityIn, who: rbac.Principal = Depends(require("ingest.sources.manage"))):
     if any(e["name"].lower() == req.name.strip().lower() for e in soc_store.entities(who.tenant)):
         raise HTTPException(409, "entity name already exists")
     ent = soc_store.save_entity({"id": None, **req.model_dump(), "name": req.name.strip(), "created_by": who.name,
@@ -1101,7 +1399,7 @@ async def soc_entity_create(req: EntityIn, who: rbac.Principal = Depends(require
 
 
 @app.put("/api/soc/entities/{ent_id}")
-async def soc_entity_update(ent_id: int, req: EntityIn, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_entity_update(ent_id: int, req: EntityIn, who: rbac.Principal = Depends(require("ingest.sources.manage"))):
     ent = next((e for e in soc_store.entities(who.tenant) if e["id"] == ent_id), None)
     if ent is None:
         raise HTTPException(404, "entity not found")
@@ -1127,7 +1425,7 @@ def _public_intake(i: dict) -> dict:
 
 
 @app.get("/api/soc/intakes")
-async def soc_intakes(days: int = 1, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_intakes(days: int = 1, who: rbac.Principal = Depends(require("entities.read"))):
     days = 1 if days not in (1, 7, 30) else days
     ins = soc_store.intakes(who.tenant)
     stats = _intake_stats(who.tenant, [i["id"] for i in ins], days)
@@ -1149,7 +1447,7 @@ def _check_entity(who: rbac.Principal, ent_id: int | None) -> None:
 
 
 @app.post("/api/soc/intakes")
-async def soc_intake_create(req: IntakeIn, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_intake_create(req: IntakeIn, who: rbac.Principal = Depends(require("ingest.sources.manage"))):
     _check_entity(who, req.entity_id)
     if any(i["name"].lower() == req.name.lower() for i in soc_store.intakes(who.tenant)):
         raise HTTPException(409, "intake name already exists")
@@ -1170,7 +1468,7 @@ class IntakePatch(BaseModel):
 
 
 @app.patch("/api/soc/intakes/{intake_id}")
-async def soc_intake_update(intake_id: int, req: IntakePatch, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_intake_update(intake_id: int, req: IntakePatch, who: rbac.Principal = Depends(require("ingest.sources.manage"))):
     cur = next((i for i in soc_store.intakes(who.tenant) if i["id"] == intake_id), None)
     if cur is None:
         raise HTTPException(404, "intake not found")
@@ -1211,7 +1509,7 @@ def _all_assets(who: rbac.Principal) -> dict[tuple, dict]:
 
 @app.get("/api/soc/assets")
 async def soc_assets_list(type: str = "", q: str = "", revoked: bool = False, tag: str = "", sort: str = "last_seen", real_only: bool = False,
-                          page: int = 1, size: int = 50, who: rbac.Principal = Depends(require("soc.read"))):
+                          page: int = 1, size: int = 50, who: rbac.Principal = Depends(require("assets.read"))):
     crit = soc_store.get_setting("asset_criticality", {}, who.tenant)
     rows = [{**a, "criticality": crit.get(a["name"], 0)} for a in _all_assets(who).values()]
     if real_only:
@@ -1246,7 +1544,7 @@ class AssetIn(BaseModel):
 
 
 @app.put("/api/soc/assets")
-async def soc_asset_upsert(req: AssetIn, who: rbac.Principal = Depends(require("agents.manage"))):
+async def soc_asset_upsert(req: AssetIn, who: rbac.Principal = Depends(require("assets.manage"))):
     """Create a manual asset or update tags / description / criticality / revoked on a discovered one."""
     name = req.name.strip()
     key = (req.type, name)
@@ -1287,13 +1585,23 @@ class AgentSpec(BaseModel):
 
 
 @app.post("/api/soc/agents/register")
-async def soc_register_agents(items: list[AgentSpec], who: rbac.Principal = Depends(require("agents.manage"))):
+async def soc_register_agents(items: list[AgentSpec], who: rbac.Principal = Depends(require("agents.edit"))):
     """Upsert real AI agents and what they are allowed to do. Unregistered agents seen in logs raise AGT-011."""
     if len(items) > 500:
         raise HTTPException(413, "max 500 agents per request")
-    out = E(who).agents.register([{**a.model_dump(), "account": a.account or a.id} for a in items])
-    if E(who).persist:
-        soc_store.save_agents([E(who).agents.agents[a["id"]] for a in out], who.tenant)
+    specs = [{**a.model_dump(), "account": a.account or a.id} for a in items]
+    if _policies(who.tenant)["four_eyes_agents"]:
+        reqs = [_new_request(who, "agent_requests", {"spec": sp, "change": "new" if sp["id"] not in E(who).agents.agents
+                                                     else "update"}) for sp in specs]
+        audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.agent_request",
+                     target=", ".join(sp["id"] for sp in specs)[:300], purpose="propose agent permissions",
+                     legal_basis="own_asset", case_ref=None, result={"requests": [r["id"] for r in reqs]})
+        return JSONResponse({"status": "pending_approval", "requests": reqs,
+                             "note": "ต้องให้ผู้มีสิทธิ์ agents.approve คนอื่นอนุมัติก่อน สิทธิ์ใหม่จึงจะมีผล"}, status_code=202)
+    out = _apply_agent_specs(who, specs)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.agent_register",
+                 target=", ".join(a["id"] for a in out)[:300], purpose="register agents (four-eyes off)",
+                 legal_basis="own_asset", case_ref=None, result={"agents": len(out)})
     return out
 
 
@@ -1314,7 +1622,7 @@ class NotifyTest(BaseModel):
 
 
 @app.post("/api/soc/notify/test")
-async def soc_notify_test(req: NotifyTest, who: rbac.Principal = Depends(require("notify.test"))):
+async def soc_notify_test(req: NotifyTest, who: rbac.Principal = Depends(require("integrations.manage"))):
     if not notifier.channels():
         raise HTTPException(409, "no alert channel configured (set SOC_NOTIFY_* environment variables)")
     now = time.time()
@@ -1342,7 +1650,7 @@ class AiSummaryRequest(BaseModel):
 
 
 @app.post("/api/soc/incidents/{inc_id}/ai/summary")
-async def soc_ai_summary(inc_id: int, req: AiSummaryRequest, who: rbac.Principal = Depends(require("ai.use"))):
+async def soc_ai_summary(inc_id: int, req: AiSummaryRequest, who: rbac.Principal = Depends(require("ai.copilot"))):
     """AI alert summary + AI incident timeline + response actions. Cached on the incident until refresh=true."""
     inc = _find_incident(inc_id, who)
     if inc.get("ai") and not req.refresh:
@@ -1368,7 +1676,7 @@ class AiAskRequest(BaseModel):
 
 
 @app.post("/api/soc/incidents/{inc_id}/ai/ask")
-async def soc_ai_ask(inc_id: int, req: AiAskRequest, who: rbac.Principal = Depends(require("ai.use"))):
+async def soc_ai_ask(inc_id: int, req: AiAskRequest, who: rbac.Principal = Depends(require("ai.copilot"))):
     inc = _find_incident(inc_id, who)
     out = await ai.ask(inc, req.question, req.history)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ai_ask", target=f"incident:{inc_id}",
@@ -1389,7 +1697,7 @@ class NlHuntRequest(BaseModel):
 
 
 @app.post("/api/soc/hunt/nl")
-async def soc_nl_hunt(req: NlHuntRequest, who: rbac.Principal = Depends(require("ai.use"))):
+async def soc_nl_hunt(req: NlHuntRequest, who: rbac.Principal = Depends(require("ai.hunt"))):
     out = await phase3.nl_hunt(req.question, _hunt_data(who), time.time())
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ai_hunt", target="hunt", purpose=req.question[:300],
                  legal_basis="own_asset", case_ref=None,
@@ -1402,7 +1710,7 @@ class EnrichRequest(BaseModel):
 
 
 @app.post("/api/soc/enrich")
-async def soc_enrich(req: EnrichRequest, who: rbac.Principal = Depends(require("ai.use"))):
+async def soc_enrich(req: EnrichRequest, who: rbac.Principal = Depends(require("ai.enrich"))):
     out = await phase3.enrich(req.indicator, _hunt_data(who))
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ai_enrich", target=req.indicator[:200],
                  purpose="threat enrichment", legal_basis="own_asset", case_ref=None,
@@ -1412,12 +1720,12 @@ async def soc_enrich(req: EnrichRequest, who: rbac.Principal = Depends(require("
 
 
 @app.get("/api/soc/chains")
-async def soc_chains(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_chains(who: rbac.Principal = Depends(require("cases.read"))):
     return {"chains": phase3.build_chains(list(E(who).incidents.values()))[:30]}
 
 
 @app.post("/api/soc/chains/{chain_id}/ai")
-async def soc_chain_ai(chain_id: str, who: rbac.Principal = Depends(require("ai.use"))):
+async def soc_chain_ai(chain_id: str, who: rbac.Principal = Depends(require("ai.copilot"))):
     chain = next((c for c in phase3.build_chains(list(E(who).incidents.values())) if c["id"] == chain_id), None)
     if chain is None:
         raise HTTPException(404, "chain not found (chains are rebuilt from current incidents)")
@@ -1445,19 +1753,19 @@ def readyz():
 
 
 @app.get("/api/audit")
-def audit_list(limit: int = 200, module: str | None = None, who: rbac.Principal = Depends(require("users.manage"))):
+def audit_list(limit: int = 200, module: str | None = None, who: rbac.Principal = Depends(require("audit.read"))):
     return {"rows": audit.history(min(max(limit, 1), 2000), tenant=who.tenant, module_prefix=module)}
 
 
 @app.get("/api/audit/verify")
-def audit_verify(who: rbac.Principal = Depends(require("users.manage"))):
+def audit_verify(who: rbac.Principal = Depends(require("audit.read"))):
     if not who.platform:
         raise HTTPException(403, "chain verification covers every tenant — platform staff only")
     return audit.verify()
 
 
 @app.get("/api/audit.csv")
-def audit_csv(module: str | None = None, who: rbac.Principal = Depends(require("users.manage"))):
+def audit_csv(module: str | None = None, who: rbac.Principal = Depends(require("audit.read"))):
     rows = audit.history(5000, tenant=who.tenant, module_prefix=module)
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -1477,7 +1785,7 @@ class Feedback(BaseModel):
 
 
 @app.post("/api/ai/feedback")
-def ai_feedback(req: Feedback, who: rbac.Principal = Depends(require("ai.use"))):
+def ai_feedback(req: Feedback, who: rbac.Principal = Depends(require("ai.copilot"))):
     """Analyst rating of an AI answer — part of continuous AI evaluation."""
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="ai.feedback", target=f"{req.feature}:{req.ref}",
                  purpose=req.comment or req.rating, legal_basis="own_asset", case_ref=None,
@@ -1486,7 +1794,7 @@ def ai_feedback(req: Feedback, who: rbac.Principal = Depends(require("ai.use")))
 
 
 @app.get("/api/governance/ai-usage")
-def ai_usage(days: int = 30, who: rbac.Principal = Depends(require("users.manage"))):
+def ai_usage(days: int = 30, who: rbac.Principal = Depends(require("governance.read"))):
     """AI governance report: calls, tokens, estimated cost, fallbacks, grounding flags and analyst feedback."""
     since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - min(max(days, 1), 365) * 86400))
     rows = audit.rows_since(since, tenant=who.tenant)
@@ -1520,7 +1828,7 @@ def ai_usage(days: int = 30, who: rbac.Principal = Depends(require("users.manage
 
 
 @app.get("/api/admin/backup")
-def admin_backup(who: rbac.Principal = Depends(require("users.manage"))):
+def admin_backup(who: rbac.Principal = Depends(require("governance.manage"))):
     """Download a consistent SQLite snapshot (all tenants) — platform staff only."""
     if not who.platform:
         raise HTTPException(403, "backups contain every tenant — platform staff only")
@@ -1563,7 +1871,7 @@ def _raw_records(who: rbac.Principal) -> list[dict]:
 
 
 @app.post("/api/soc/rules/draft")
-async def soc_rule_draft(req: RuleDraftRequest, who: rbac.Principal = Depends(require("ai.use"))):
+async def soc_rule_draft(req: RuleDraftRequest, who: rbac.Principal = Depends(require("rules.edit"))):
     draft = await phase4.draft_rule(req.description)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ai_rule_draft", target="rule", purpose=req.description[:300],
                  legal_basis="own_asset", case_ref=None,
@@ -1580,13 +1888,13 @@ class RuleTestRequest(BaseModel):
 
 
 @app.post("/api/soc/rules/test")
-async def soc_rule_test(req: RuleTestRequest, who: rbac.Principal = Depends(require("ai.use"))):
+async def soc_rule_test(req: RuleTestRequest, who: rbac.Principal = Depends(require("rules.edit"))):
     rule = phase4.assemble({"local_rule": req.rule, **{k: v for k, v in req.rule.items() if k != "conditions"}})
     return {"rule": rule, **phase4.evaluate_draft(rule, req.test_cases, _raw_records(who))}
 
 
 @app.get("/api/soc/rules")
-async def soc_rules(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_rules(who: rbac.Principal = Depends(require("rules.read"))):
     rules = soc_store.list_rules(who.tenant)
     for r in rules:
         r["hits"] = E(who).custom.hits.get(r["id"], 0)
@@ -1598,21 +1906,60 @@ class RuleSave(BaseModel):
 
 
 @app.post("/api/soc/rules")
-async def soc_rule_save(req: RuleSave, who: rbac.Principal = Depends(require("ai.use"))):
-    """Save a rule as a draft (disabled). Enabling needs rules.manage."""
+async def soc_rule_save(req: RuleSave, who: rbac.Principal = Depends(require("rules.edit"))):
+    """Save a custom rule. A new rule is stored disabled as version 1; editing an existing rule stores a DRAFT —
+    the live version keeps running until someone with rules.publish publishes the draft."""
     rule = phase4.assemble({"local_rule": req.rule, **{k: v for k, v in req.rule.items() if k != "conditions"}})
     errs = phase4.validate_rule(rule)
     if errs:
         raise HTTPException(422, "; ".join(errs))
-    existing = soc_store.list_rules(who.tenant)
-    rule["id"] = req.rule.get("id") if req.rule.get("id") in {r["id"] for r in existing} \
-        else f"CUS-{len(existing) + 1:03d}"
-    rule.update(status="disabled", created_by=who.name, updated_at=time.time())
-    soc_store.save_rule(rule, who.tenant)
+    existing = {r["id"]: r for r in soc_store.list_rules(who.tenant)}
+    now = time.time()
+    definition = _rule_def(rule)
+    if req.rule.get("id") in existing:
+        cur = existing[req.rule["id"]]
+        cur["draft"] = {"def": definition, "by": who.name, "at": now}
+        cur["updated_at"] = now
+        soc_store.save_rule(cur, who.tenant)
+        out, status = cur, "draft"
+    else:
+        rule["id"] = f"CUS-{len(existing) + 1:03d}"
+        rule.update(status="disabled", created_by=who.name, updated_at=now, version=1, draft=None,
+                    versions=[{"version": 1, "def": definition, "by": who.name, "at": now, "note": "created"}])
+        soc_store.save_rule(rule, who.tenant)
+        out, status = rule, "disabled"
     E(who).custom.load(soc_store.list_rules(who.tenant))
-    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_save", target=rule["id"], purpose=rule.get("title", "")[:300],
-                 legal_basis="own_asset", case_ref=None, result={"status": "disabled"})
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_save", target=out["id"],
+                 purpose=out.get("title", "")[:300], legal_basis="own_asset", case_ref=None, result={"status": status})
+    return out
+
+
+RULE_META = {"id", "status", "created_by", "updated_at", "status_by", "versions", "version", "draft", "hits",
+             "published_by", "published_at"}
+
+
+def _rule_def(rule: dict) -> dict:
+    return {k: v for k, v in rule.items() if k not in RULE_META}
+
+
+def _get_rule(who: rbac.Principal, rule_id: str) -> dict:
+    rule = next((r for r in soc_store.list_rules(who.tenant) if r["id"] == rule_id), None)
+    if rule is None:
+        raise HTTPException(404, "rule not found")
+    rule.setdefault("versions", [{"version": 1, "def": _rule_def(rule), "by": rule.get("created_by"),
+                                  "at": rule.get("updated_at"), "note": "created"}])
+    rule.setdefault("version", 1)
     return rule
+
+
+def _apply_version(rule: dict, definition: dict, who: str, note: str) -> None:
+    for k in list(rule):
+        if k not in RULE_META:
+            rule.pop(k)
+    rule.update(definition)
+    rule["version"] = max(v["version"] for v in rule["versions"]) + 1
+    rule["versions"] = (rule["versions"] + [{"version": rule["version"], "def": definition, "by": who, "at": time.time(),
+                                             "note": note}])[-20:]
 
 
 class RuleStatus(BaseModel):
@@ -1620,20 +1967,52 @@ class RuleStatus(BaseModel):
 
 
 @app.patch("/api/soc/rules/{rule_id}")
-async def soc_rule_status(rule_id: str, req: RuleStatus, who: rbac.Principal = Depends(require("rules.manage"))):
-    rule = next((r for r in soc_store.list_rules(who.tenant) if r["id"] == rule_id), None)
-    if rule is None:
-        raise HTTPException(404, "rule not found")
+async def soc_rule_status(rule_id: str, req: RuleStatus, who: rbac.Principal = Depends(require("rules.publish"))):
+    """Publish (enable — applying a pending draft as a new version) or disable a custom rule."""
+    rule = _get_rule(who, rule_id)
+    published = None
+    if req.status == "enabled":
+        editor = (rule.get("draft") or {}).get("by") or rule["versions"][-1].get("by")
+        if _policies(who.tenant)["four_eyes_rules"] and editor == who.name:
+            raise HTTPException(403, "separation of duties: the last editor of a rule cannot publish it")
+        if rule.get("draft"):
+            _apply_version(rule, rule["draft"]["def"], rule["draft"]["by"], f"published by {who.name}")
+            rule["draft"] = None
+        published = rule["version"]
+        rule.update(published_by=who.name, published_at=time.time())
     rule.update(status=req.status, status_by=who.name, updated_at=time.time())
     soc_store.save_rule(rule, who.tenant)
     E(who).custom.load(soc_store.list_rules(who.tenant))
-    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_status", target=rule_id, purpose=req.status,
-                 legal_basis="own_asset", case_ref=None, result={"status": req.status})
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_publish" if published else "soc.rule_status",
+                 target=rule_id, purpose=req.status, legal_basis="own_asset", case_ref=None,
+                 result={"status": req.status, "version": published})
+    return rule
+
+
+class Rollback(BaseModel):
+    version: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+@app.post("/api/soc/rules/{rule_id}/rollback")
+async def soc_rule_rollback(rule_id: str, req: Rollback, who: rbac.Principal = Depends(require("rules.rollback"))):
+    """Restore an earlier version of a custom rule (recorded as a new version). Takes effect immediately if enabled."""
+    rule = _get_rule(who, rule_id)
+    old = next((v for v in rule["versions"] if v["version"] == req.version), None)
+    if old is None:
+        raise HTTPException(404, "version not found (only the last 20 are kept)")
+    _apply_version(rule, old["def"], who.name, f"rollback to v{req.version}: {req.reason}")
+    rule["updated_at"] = time.time()
+    soc_store.save_rule(rule, who.tenant)
+    E(who).custom.load(soc_store.list_rules(who.tenant))
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_rollback", target=rule_id,
+                 purpose=f"to v{req.version}: {req.reason}", legal_basis="own_asset", case_ref=None,
+                 result={"version": rule["version"], "from": req.version})
     return rule
 
 
 @app.get("/api/soc/agents/risk")
-async def soc_agent_risk(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_agent_risk(who: rbac.Principal = Depends(require("agents.read"))):
     e, now = E(who), time.time()
     out = []
     for ag in e.agents.agents.values():
@@ -1644,7 +2023,7 @@ async def soc_agent_risk(who: rbac.Principal = Depends(require("soc.read"))):
 
 
 @app.get("/api/soc/incidents/{inc_id}/response")
-async def soc_response_plan(inc_id: int, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_response_plan(inc_id: int, who: rbac.Principal = Depends(require("cases.read"))):
     inc = _find_incident(inc_id, who)
     return phase4.response_plan(inc, inc.get("response"))
 
@@ -1655,7 +2034,7 @@ class StepUpdate(BaseModel):
 
 @app.post("/api/soc/incidents/{inc_id}/response/{step_id}")
 async def soc_response_step(inc_id: int, step_id: str, req: StepUpdate,
-                            who: rbac.Principal = Depends(require("incident.write"))):
+                            who: rbac.Principal = Depends(require("cases.update"))):
     inc = _find_incident(inc_id, who)
     plan = phase4.response_plan(inc, inc.get("response"))
     if step_id not in {s["id"] for s in plan["steps"]}:
@@ -1688,6 +2067,7 @@ class IncidentUpdate(BaseModel):
 
 
 CASE_EXTRA = ("priority", "tags", "custom_fields", "name", "description")
+CLOSED = ("resolved", "false_positive", "closed")
 
 
 def _clean_tags(tags: list[str] | None) -> list[str] | None:
@@ -1702,7 +2082,7 @@ def _clean_tags(tags: list[str] | None) -> list[str] | None:
 
 
 @app.patch("/api/soc/incidents/{inc_id}")
-async def soc_update_incident(inc_id: int, req: IncidentUpdate, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_update_incident(inc_id: int, req: IncidentUpdate, who: rbac.Principal = Depends(require("cases.read"))):
     """Analyst workflow: status, assignee and notes. Every change is written to the audit log."""
     extra = {k: getattr(req, k) for k in CASE_EXTRA if getattr(req, k) is not None}
     if "tags" in extra:
@@ -1711,6 +2091,15 @@ async def soc_update_incident(inc_id: int, req: IncidentUpdate, who: rbac.Princi
         extra["custom_fields"] = _check_custom_fields(who, extra["custom_fields"])
     if not (req.status or req.assignee is not None or req.note or req.verdict is not None or extra):
         raise HTTPException(422, "nothing to update")
+    cur = _find_incident(inc_id, who)
+    if req.status and req.status != cur.get("status"):
+        closing = req.status in CLOSED or cur.get("status") in CLOSED  # closing, or re-opening a closed case
+        need(who, "cases.close" if closing else "cases.update")
+    if req.assignee is not None and req.assignee != (cur.get("assignee") or ""):
+        need(who, "cases.update" if who.named and req.assignee in (who.name, "") and cur.get("assignee") in (None, who.name)
+             else "cases.assign")
+    if req.note or req.verdict is not None or extra:
+        need(who, "cases.update")
     name = actor(who, req.analyst)
     inc = E(who).update_incident(inc_id, name, req.status, req.assignee, req.note, verdict=req.verdict, **extra)
     if inc is None:
@@ -1739,7 +2128,7 @@ def _case_row(i: dict) -> dict:
 @app.get("/api/soc/cases")
 async def soc_cases(status: str = "", priority: str = "", q: str = "", tag: str = "", assignee: str = "",
                     type: str = "", real_only: bool = False, sort: str = "updated", page: int = 1, size: int = 25,
-                    who: rbac.Principal = Depends(require("soc.read"))):
+                    who: rbac.Principal = Depends(require("cases.read"))):
     merged = {i["id"]: i for i in soc_store.incidents(None, 2000, who.tenant)}
     merged.update(E(who).incidents)
     rows = [_case_row(i) for i in merged.values()]
@@ -1781,7 +2170,7 @@ class CaseIn(BaseModel):
 
 
 @app.post("/api/soc/cases")
-async def soc_case_create(req: CaseIn, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_case_create(req: CaseIn, who: rbac.Principal = Depends(require("cases.create"))):
     tpl = None
     if req.template_id is not None:
         tpl = next((t for t in soc_store.get_setting("case_templates", [], who.tenant) if t["id"] == req.template_id), None)
@@ -1833,12 +2222,12 @@ def _check_custom_fields(who: rbac.Principal, values: dict | None) -> dict | Non
 
 
 @app.get("/api/soc/case-fields")
-async def soc_case_fields(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_case_fields(who: rbac.Principal = Depends(require("cases.read"))):
     return {"fields": soc_store.get_setting("case_fields", [], who.tenant)}
 
 
 @app.put("/api/soc/case-fields")
-async def soc_case_fields_set(fields: list[CaseField], who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_case_fields_set(fields: list[CaseField], who: rbac.Principal = Depends(require("governance.manage"))):
     if len(fields) > 20 or len({f.key for f in fields}) != len(fields):
         raise HTTPException(422, "at most 20 fields with unique keys")
     data = [f.model_dump() for f in fields]
@@ -1849,7 +2238,7 @@ async def soc_case_fields_set(fields: list[CaseField], who: rbac.Principal = Dep
 
 
 @app.get("/api/soc/assets/criticality")
-async def soc_assets(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_assets(who: rbac.Principal = Depends(require("assets.read"))):
     return {"criticality": soc_store.get_setting("asset_criticality", {}, who.tenant)}
 
 
@@ -1859,7 +2248,7 @@ class Criticality(BaseModel):
 
 
 @app.put("/api/soc/assets/criticality")
-async def soc_asset_set(req: Criticality, who: rbac.Principal = Depends(require("agents.manage"))):
+async def soc_asset_set(req: Criticality, who: rbac.Principal = Depends(require("assets.manage"))):
     cur = soc_store.get_setting("asset_criticality", {}, who.tenant)
     if req.level == 0:
         cur.pop(req.host, None)
@@ -1874,7 +2263,7 @@ async def soc_asset_set(req: Criticality, who: rbac.Principal = Depends(require(
 
 
 @app.get("/api/soc/cases/{inc_id}/events")
-async def soc_case_events(inc_id: int, q: str = "", who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_case_events(inc_id: int, q: str = "", who: rbac.Principal = Depends(require("events.read"))):
     """Raw telemetry for the case's hosts and users, from 1 h before first seen to 1 h after last seen."""
     inc = _find_incident(inc_id, who)
     start, end = (inc.get("first_ts") or time.time()) - 3600, min(time.time(), (inc.get("last_ts") or time.time()) + 3600)
@@ -1894,7 +2283,7 @@ async def soc_case_events(inc_id: int, q: str = "", who: rbac.Principal = Depend
 
 # ---------- rules catalog ----------
 @app.get("/api/soc/rules/catalog")
-async def soc_rules_catalog(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_rules_catalog(who: rbac.Principal = Depends(require("rules.read"))):
     now = time.time()
     events = _tenant_events(who, now - 7 * 86400, now)
     incs = dict(E(who).incidents)
@@ -1914,7 +2303,7 @@ class RuleToggle(BaseModel):
 
 
 @app.put("/api/soc/rules/{rule_id}/enabled")
-async def soc_rule_toggle(rule_id: str, req: RuleToggle, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_rule_toggle(rule_id: str, req: RuleToggle, who: rbac.Principal = Depends(require("rules.publish"))):
     known = {r["id"] for r in catalog.builtin_rules()} | {r["id"] for r in soc_store.list_rules(who.tenant)}
     if rule_id not in known:
         raise HTTPException(404, "rule not found")
@@ -1933,7 +2322,7 @@ class QueryIn(BaseModel):
 
 
 @app.post("/api/soc/query")
-async def soc_query(req: QueryIn, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_query(req: QueryIn, who: rbac.Principal = Depends(require("query.run"))):
     try:
         plan = query.parse(req.query)
     except query.QueryError as e:
@@ -1962,12 +2351,12 @@ class SavedQuery(BaseModel):
 
 
 @app.get("/api/soc/queries")
-async def soc_saved_queries(who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_saved_queries(who: rbac.Principal = Depends(require("query.run"))):
     return {"queries": soc_store.get_setting("saved_queries", [], who.tenant)}
 
 
 @app.post("/api/soc/queries")
-async def soc_save_query(req: SavedQuery, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_save_query(req: SavedQuery, who: rbac.Principal = Depends(require("query.run"))):
     try:
         query.parse(req.query)
     except query.QueryError as e:
@@ -1981,7 +2370,7 @@ async def soc_save_query(req: SavedQuery, who: rbac.Principal = Depends(require(
 
 
 @app.delete("/api/soc/queries/{qid}")
-async def soc_delete_query(qid: int, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_delete_query(qid: int, who: rbac.Principal = Depends(require("query.run"))):
     cur = soc_store.get_setting("saved_queries", [], who.tenant)
     new = [q for q in cur if q["id"] != qid]
     if len(new) == len(cur):
@@ -1999,7 +2388,7 @@ class NotebookIn(BaseModel):
 
 @app.get("/api/soc/notebooks")
 async def soc_notebooks(trash: bool = False, q: str = "", case_id: int | None = None,
-                        who: rbac.Principal = Depends(require("soc.read"))):
+                        who: rbac.Principal = Depends(require("notebooks.read"))):
     items = soc_store.notebooks(who.tenant, deleted=trash)
     if case_id is not None:
         items = [n for n in items if n.get("case_id") == case_id]
@@ -2009,7 +2398,7 @@ async def soc_notebooks(trash: bool = False, q: str = "", case_id: int | None = 
 
 
 @app.post("/api/soc/notebooks")
-async def soc_notebook_create(req: NotebookIn, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_notebook_create(req: NotebookIn, who: rbac.Principal = Depends(require("notebooks.write"))):
     if req.case_id is not None:
         _find_incident(req.case_id, who)
     now = time.time()
@@ -2029,7 +2418,7 @@ class NotebookPatch(BaseModel):
 
 
 @app.put("/api/soc/notebooks/{nb_id}")
-async def soc_notebook_update(nb_id: int, req: NotebookPatch, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_notebook_update(nb_id: int, req: NotebookPatch, who: rbac.Principal = Depends(require("notebooks.write"))):
     nb = soc_store.notebook(nb_id, who.tenant)
     if nb is None:
         raise HTTPException(404, "notebook not found")
@@ -2054,7 +2443,7 @@ async def soc_overview(who: rbac.Principal = Depends(require("soc.read"))):
     eng = E(who)
     now = time.time()
     events = list(eng.events)
-    alerts = workspace.alert_summary(events, eng.incidents)
+    alerts = workspace.alert_summary(events, eng.incidents, states=_alert_states(who.tenant))
     tasks = soc_store.list_tasks(who.tenant)
     hist = _tenant_events(who, now - 2 * 86400, now)
     cur_a = sum(1 for e in hist if e["ts"] >= now - 86400 and e.get("severity") not in ("info", "low"))
@@ -2068,7 +2457,7 @@ async def soc_overview(who: rbac.Principal = Depends(require("soc.read"))):
                        for i in merged.values() for n in i.get("notes", [])), key=lambda n: -n["ts"])[:8]
     recent_cases = [_case_row(i) for i in sorted(merged.values(), key=lambda i: -(i.get("first_ts") or 0))[:6]]
     return {"pending_alerts": sum(1 for a in alerts if a["status"] in ("new", "open")),
-            "ongoing_alerts": sum(1 for a in alerts if a["status"] == "investigating"),
+            "ongoing_alerts": sum(1 for a in alerts if a["status"] in ("investigating", "acknowledged", "escalated")),
             "trend": {"alerts_24h": cur_a, "alerts_prev_24h": prev_a, "alerts_pct": trend(cur_a, prev_a),
                       "cases_24h": cur_c, "cases_prev_24h": prev_c, "cases_pct": trend(cur_c, prev_c)},
             "last_comments": comments, "recent_cases": recent_cases,
@@ -2136,7 +2525,9 @@ async def soc_tasks(status: str | None = None, q: str | None = None, assignee: s
 
 
 @app.post("/api/soc/tasks")
-async def soc_task_create(req: TaskIn, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_task_create(req: TaskIn, who: rbac.Principal = Depends(require("cases.update"))):
+    if req.assignee and req.assignee != who.name:
+        need(who, "cases.assign")
     if req.incident_id is not None:
         _find_incident(req.incident_id, who)
     now = time.time()
@@ -2152,7 +2543,7 @@ async def soc_task_create(req: TaskIn, who: rbac.Principal = Depends(require("in
 
 
 @app.patch("/api/soc/tasks/{task_id}")
-async def soc_task_update(task_id: int, req: TaskPatch, who: rbac.Principal = Depends(require("incident.write"))):
+async def soc_task_update(task_id: int, req: TaskPatch, who: rbac.Principal = Depends(require("cases.update"))):
     t = soc_store.task(task_id, who.tenant)
     if t is None:
         raise HTTPException(404, "task not found")
@@ -2165,6 +2556,8 @@ async def soc_task_update(task_id: int, req: TaskPatch, who: rbac.Principal = De
         t["description"] = req.description
         changes.append("description")
     if req.assignee is not None and (req.assignee or None) != t.get("assignee"):
+        if not (who.named and req.assignee in (who.name, "") and t.get("assignee") in (None, who.name)):
+            need(who, "cases.assign")  # taking a free task yourself only needs cases.update
         t["assignee"] = _check_assignee(who, req.assignee)
         changes.append(f"assignee → {t['assignee'] or '-'}")
     if req.status and req.status != t["status"]:
@@ -2230,12 +2623,12 @@ async def soc_notify_rules(who: rbac.Principal = Depends(require("soc.read"))):
 
 
 @app.post("/api/soc/notify-rules/test")
-async def soc_notify_rule_test(req: NotifyRule, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_notify_rule_test(req: NotifyRule, who: rbac.Principal = Depends(require("integrations.manage"))):
     return {"matches": notify_rules.test_rule(req.model_dump(), list(E(who).incidents.values()))}
 
 
 @app.post("/api/soc/notify-rules")
-async def soc_notify_rule_create(req: NotifyRule, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_notify_rule_create(req: NotifyRule, who: rbac.Principal = Depends(require("integrations.manage"))):
     rule = req.model_dump()
     errs = notify_rules.validate(rule)
     if errs:
@@ -2249,7 +2642,7 @@ async def soc_notify_rule_create(req: NotifyRule, who: rbac.Principal = Depends(
 
 
 @app.put("/api/soc/notify-rules/{rule_id}")
-async def soc_notify_rule_update(rule_id: int, req: NotifyRule, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_notify_rule_update(rule_id: int, req: NotifyRule, who: rbac.Principal = Depends(require("integrations.manage"))):
     old = next((r for r in notify_rules.rules(who.tenant) if r["id"] == rule_id), None)
     if old is None:
         raise HTTPException(404, "rule not found")
@@ -2266,7 +2659,7 @@ async def soc_notify_rule_update(rule_id: int, req: NotifyRule, who: rbac.Princi
 
 
 @app.delete("/api/soc/notify-rules/{rule_id}")
-async def soc_notify_rule_delete(rule_id: int, who: rbac.Principal = Depends(require("rules.manage"))):
+async def soc_notify_rule_delete(rule_id: int, who: rbac.Principal = Depends(require("integrations.manage"))):
     if not soc_store.delete_notify_rule(rule_id, who.tenant):
         raise HTTPException(404, "rule not found")
     notify_rules.invalidate(who.tenant)
@@ -2287,7 +2680,7 @@ def _tenant_events(who: rbac.Principal, start: float, end: float) -> list[dict]:
 
 
 @app.get("/api/soc/landscape")
-async def soc_landscape(hours: int = 24, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_landscape(hours: int = 24, who: rbac.Principal = Depends(require("alerts.read"))):
     hours = max(1, min(hours, 24 * 30))
     now = time.time()
     tf, kev = threatintel.feed_index("threatfox"), threatintel.feed_index("kev")
@@ -2301,7 +2694,7 @@ async def soc_landscape(hours: int = 24, who: rbac.Principal = Depends(require("
 
 @app.get("/api/soc/events")
 async def soc_events(q: str = "", minutes: int = 15, end: float | None = None, limit: int = 200,
-                     who: rbac.Principal = Depends(require("soc.read"))):
+                     who: rbac.Principal = Depends(require("events.read"))):
     """Raw telemetry explorer: real records from the database (kept SOC_RAW_RETENTION_DAYS) plus the in-memory window."""
     minutes = max(1, min(minutes, 7 * 24 * 60))
     end = min(end or time.time(), time.time())
@@ -2319,7 +2712,7 @@ async def soc_events(q: str = "", minutes: int = 15, end: float | None = None, l
 
 @app.get("/api/soc/alerts")
 async def soc_alerts(status: str = "", severity: str = "", q: str = "", real_only: bool = False, sort: str = "recent",
-                     page: int = 1, size: int = 25, hours: int = 24, who: rbac.Principal = Depends(require("soc.read"))):
+                     page: int = 1, size: int = 25, hours: int = 24, who: rbac.Principal = Depends(require("alerts.read"))):
     now = time.time()
     events = _tenant_events(who, now - max(1, min(hours, 24 * 90)) * 3600, now)
     incs = dict(E(who).incidents)
@@ -2329,7 +2722,8 @@ async def soc_alerts(status: str = "", severity: str = "", q: str = "", real_onl
             inc = soc_store.incident(iid, who.tenant)
             if inc:
                 incs[iid] = inc
-    return explorer.alerts_page(events, incs, status, severity, q[:200], real_only, sort, page, size)
+    return explorer.alerts_page(events, incs, status, severity, q[:200], real_only, sort, page, size,
+                                states=_alert_states(who.tenant))
 
 
 def _find_incident(inc_id: int, who: rbac.Principal) -> dict:
@@ -2341,7 +2735,7 @@ def _find_incident(inc_id: int, who: rbac.Principal) -> dict:
 
 @app.get("/api/soc/incidents")
 async def soc_incidents(status: str | None = None, real_only: bool = True, limit: int = 200,
-                        who: rbac.Principal = Depends(require("soc.read"))):
+                        who: rbac.Principal = Depends(require("cases.read"))):
     """Incident list. real_only (default) reads persisted cases from SQLite; otherwise the live in-memory set."""
     limit = min(max(limit, 1), 1000)
     if real_only:
@@ -2351,35 +2745,43 @@ async def soc_incidents(status: str | None = None, real_only: bool = True, limit
 
 
 @app.get("/api/soc/incidents/{inc_id}")
-async def soc_incident(inc_id: int, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_incident(inc_id: int, who: rbac.Principal = Depends(require("cases.read"))):
     return _find_incident(inc_id, who)
 
 
 @app.get("/api/soc/incidents/{inc_id}/report", response_class=HTMLResponse)
-async def soc_incident_report(inc_id: int, analyst: str = "", who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_incident_report(inc_id: int, analyst: str = "", who: rbac.Principal = Depends(require("soc.export"))):
     html = soc_report.html_report(_find_incident(inc_id, who), who.name if who.named else analyst[:80])
     return HTMLResponse(html, headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
                                                                   "script-src 'unsafe-inline'"})
 
 
 @app.get("/api/soc/incidents.csv")
-async def soc_incidents_csv(status: str | None = None, real_only: bool = True, who: rbac.Principal = Depends(require("soc.read"))):
+async def soc_incidents_csv(status: str | None = None, real_only: bool = True, who: rbac.Principal = Depends(require("soc.export"))):
     items = await soc_incidents(status, real_only, 1000, who)
     return Response(soc_report.csv_export(items), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="soc-incidents.csv"'})
 
 
 @app.post("/api/soc/agents/{agent_id}/contain")
-async def soc_contain(agent_id: str, req: ContainRequest, who: rbac.Principal = Depends(require("respond"))):
-    """Response action: revoke the agent's token / suspend it (simulated). Logged in the audit log."""
+async def soc_contain(agent_id: str, req: ContainRequest, who: rbac.Principal = Depends(require("respond.execute"))):
+    """Response action: revoke the agent's token / suspend it (simulated). With the four-eyes policy (default) this
+    only files a request; a different person with respond.approve executes it."""
     if agent_id not in E(who).agents.agents:
         raise HTTPException(404, "unknown agent")
-    result = E(who).agents.contain(agent_id, req.contain)
-    if E(who).persist and not E(who).agents.agents[agent_id].get("demo"):
-        soc_store.save_agents([E(who).agents.agents[agent_id]], who.tenant)
+    action = "contain" if req.contain else "release"
+    if _policies(who.tenant)["four_eyes_response"]:
+        r = _new_request(who, "response_requests", {"action": action, "agent": agent_id, "reason": req.reason,
+                                                    "requested_by_display": actor(who, req.analyst)})
+        audit.record(tenant=who.tenant, client_ip=who.ip, analyst=actor(who, req.analyst), module="soc.response_request",
+                     target=agent_id, purpose=f"{action}: {req.reason}", legal_basis="own_asset", case_ref=None,
+                     result={"request_id": r["id"], "status": "pending"})
+        return JSONResponse({"status": "pending_approval", "request": r,
+                             "note": "ต้องให้ผู้มีสิทธิ์ respond.approve คนอื่นอนุมัติก่อนจึงจะดำเนินการ"}, status_code=202)
+    result = _do_contain(who, agent_id, req.contain)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=actor(who, req.analyst), module="soc.contain" if req.contain else "soc.release",
                  target=agent_id, purpose=req.reason, legal_basis="own_asset", case_ref=None,
-                 result={"contained": req.contain, "simulated": True})
+                 result={"contained": req.contain, "simulated": True, "four_eyes": False})
     return result
 
 

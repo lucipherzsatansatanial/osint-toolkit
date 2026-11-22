@@ -74,9 +74,16 @@ def test_soc_agent_hunt_and_contain(client):
     assert client.get("/api/soc/agents/sessions/S-99999", headers=H).status_code == 404
     body = {"contain": True, "analyst": "tester", "reason": "suspected prompt injection"}
     assert client.post("/api/soc/agents/nope/contain", headers=H, json=body).status_code == 404
-    assert client.post("/api/soc/agents/support-copilot/contain", headers=H, json=body).json()["status"] == "contained"
+    # four-eyes (default): the request is filed, a second person approves, then it runs
+    pend = client.post("/api/soc/agents/support-copilot/contain", headers=H, json=body)
+    assert pend.status_code == 202 and pend.json()["status"] == "pending_approval"
+    rid = pend.json()["request"]["id"]
+    assert client.post(f"/api/soc/response-requests/{rid}/decision", headers=H, json={"approve": True}).status_code == 403
+    lead = client.post("/api/users", headers=H, json={"username": "lead.two", "role": "lead"}).json()["token"]
+    ok = client.post(f"/api/soc/response-requests/{rid}/decision", headers={"X-API-Key": lead}, json={"approve": True}).json()
+    assert ok["status"] == "approved" and ok["result"]["status"] == "contained" and ok["decided_by"] == "lead.two"
     hist = client.get("/api/history", headers=H).json()
-    assert hist[0]["module"] == "soc.contain" and hist[0]["target"] == "support-copilot"
+    assert hist[0]["module"] == "soc.contain" and hist[0]["target"] == "support-copilot" and hist[0]["analyst"] == "lead.two"
 
 
 def test_soc_offensive_ai_pack(client):
@@ -95,6 +102,7 @@ def test_soc_ingest_api(client):
     assert client.post("/api/soc/ingest?format=xml", headers=H, json=body).status_code == 422
     big = b"x" * (app.main.ingest.MAX_BYTES + 1)
     assert client.post("/api/soc/ingest", headers=H, content=big).status_code == 413
+    client.put("/api/soc/policies", headers=H, json={"four_eyes_agents": False, "four_eyes_response": True, "four_eyes_rules": False})
     reg = client.post("/api/soc/agents/register", headers=H,
                       json=[{"id": "hr-bot", "scopes": ["hr.read"], "egress": [], "shell": False}]).json()
     assert reg[0]["registered"] is True and reg[0]["account"] == "hr-bot"
@@ -146,12 +154,17 @@ def test_rbac_roles_and_audit_identity(client):
     assert up.status_code == 200 and up.json()["notes"][-1]["analyst"] == "ana.lyst"
     assert client.post("/api/soc/agents/support-copilot/contain", headers=A,
                        json={"contain": True, "reason": "test containment"}).status_code == 403
-    # lead: response actions, no user management
-    assert client.post("/api/soc/agents/support-copilot/contain", headers=L,
-                       json={"contain": False, "reason": "release after test"}).status_code == 200
-    assert client.get("/api/users", headers=L).status_code == 403
+    # lead: requests a response action; it runs only after a different approver (admin) approves
+    r = client.post("/api/soc/agents/support-copilot/contain", headers=L, json={"contain": False, "reason": "release after test"})
+    assert r.status_code == 202
+    assert client.post(f"/api/soc/response-requests/{r.json()['request']['id']}/decision", headers=L, json={"approve": True}).status_code == 403
+    assert client.post(f"/api/soc/response-requests/{r.json()['request']['id']}/decision", headers=H,
+                       json={"approve": True}).json()["result"]["status"] == "normal"
+    # lead can read users but not create them
+    assert client.get("/api/users", headers=L).status_code == 200
+    assert client.post("/api/users", headers=L, json={"username": "x.y", "role": "viewer"}).status_code == 403
     hist = client.get("/api/history", headers=H).json()
-    assert hist[0]["analyst"] == "lead.one" and hist[0]["module"] == "soc.release"
+    assert hist[0]["module"] == "soc.release" and "lead.one" in hist[0]["purpose"]
     # admin: rotate + disable; old token stops working
     new = client.post("/api/users/ana.lyst/rotate", headers=H).json()["token"]
     assert client.get("/api/me", headers=A).status_code == 401 and client.get("/api/me", headers={"X-API-Key": new}).status_code == 200
@@ -226,10 +239,12 @@ def test_phase4_endpoints(client, monkeypatch):
 
 def test_multi_tenant_isolation(client):
     acme = client.post("/api/users", headers=H, json={"username": "acme.lead", "role": "lead", "tenant": "acme"}).json()["token"]
+    ship = client.post("/api/users", headers=H, json={"username": "acme.ship", "role": "ingest", "tenant": "acme"}).json()["token"]
     beta = client.post("/api/users", headers=H, json={"username": "beta.admin", "role": "admin", "tenant": "beta"}).json()["token"]
     A, B = {"X-API-Key": acme}, {"X-API-Key": beta}
     assert client.get("/api/me", headers=A).json()["tenant"] == "acme"
-    client.post("/api/soc/ingest", headers=A, json=[{"kind": "net", "host": "SRV-ACME", "dest": "api.deepseek.com"}])
+    assert client.post("/api/soc/ingest", headers=A, json=[]).status_code == 403  # people do not ship logs
+    client.post("/api/soc/ingest", headers={"X-API-Key": ship}, json=[{"kind": "net", "host": "SRV-ACME", "dest": "api.deepseek.com"}])
     # acme sees its incident, beta and default do not
     assert [i["hosts"] for i in client.get("/api/soc/incidents", headers=A).json()] == [["SRV-ACME"]]
     assert client.get("/api/soc/incidents", headers=B).json() == []

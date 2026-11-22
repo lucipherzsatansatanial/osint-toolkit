@@ -141,6 +141,7 @@ async function loadMe() {
   try {
     const me = await api("/api/me");
     if (me.named) { $("#analyst").value = me.name; $("#analyst").readOnly = true; $("#analyst").title = "ชื่อจาก token ของคุณ"; }
+    $("#exportHist").hidden = !me.permissions.includes("osint.export");
     if (!me.permissions.includes("osint.scan")) {
       $("#runBtn").disabled = true;
       $("#summary").textContent = `บทบาท ${me.role_th} ไม่มีสิทธิ์สแกน OSINT — ติดต่อผู้ดูแลระบบ`;
@@ -200,3 +201,10 @@ $("#scanForm").addEventListener("submit", async (e) => {
 });
 
 init();
+
+$("#exportHist").addEventListener("click", async () => {
+  const headers = {}; const key = $("#apiKey").value; if (key) headers["X-API-Key"] = key;
+  const r = await fetch("/api/history.csv?limit=5000", { headers });
+  if (!r.ok) { alert("ส่งออกไม่สำเร็จ: " + ((await r.json().catch(() => ({}))).detail || r.status)); return; }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "osint-history.csv"; a.click();
+});

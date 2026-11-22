@@ -570,3 +570,30 @@ tr.revoked td { opacity: .5; text-decoration: line-through; } tr.revoked td:last
 .rep-box button { width: max-content; }
 .tpl .tpl-del { width: max-content; }
 #wsMissing { background: var(--warn-bg); color: var(--warn-ink); border-color: transparent; }
+
+/* ---------- permissions, approvals, alert actions ---------- */
+.perm-matrix th.rc { text-align: center; white-space: nowrap; font-size: 11px; }
+.perm-matrix th.custom { cursor: pointer; color: var(--accent); }
+.perm-matrix td.ck { text-align: center; color: var(--ok-ink); font-weight: 700; }
+.perm-matrix tr.grp td { background: var(--chip); font-weight: 700; font-size: 12px; font-family: var(--font); }
+.perm-matrix td:first-child { white-space: normal; min-width: 260px; }
+.role-form { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.role-form h3 { margin: 0; }
+.role-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.role-form input:not([type=checkbox]), .role-form select { font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+.role-form .row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.role-perms { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+.role-perms fieldset { border: 1px solid var(--line2); border-radius: 8px; padding: 6px 10px; margin: 0; display: flex; flex-direction: column; gap: 3px; }
+.role-perms legend { font-size: 11px; color: var(--muted); }
+.role-perms .chk { flex-direction: row; align-items: center; gap: 6px; font: 12px var(--mono); color: var(--text); }
+.role-perms input:disabled + * , .role-perms label:has(input:disabled) { opacity: .45; }
+.pol { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.pol .chk { display: flex; gap: 8px; align-items: flex-start; }
+.appr { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.appr li { display: flex; flex-direction: column; gap: 4px; }
+.appr li.read { opacity: .6; }
+.al-acts { white-space: nowrap; }
+.al-acts .mini { margin: 1px; }
+@media (max-width: 900px) { .appr, .role-form .row3 { grid-template-columns: minmax(0, 1fr); } }
+.al-acts { display: flex; flex-wrap: wrap; gap: 3px; min-width: 150px; white-space: normal; }
+.al-acts .mini { background: var(--panel); color: var(--accent); border: 1px solid var(--line); font-size: 11px; padding: 1px 7px; }

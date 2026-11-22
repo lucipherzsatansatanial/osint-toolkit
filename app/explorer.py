@@ -95,14 +95,14 @@ VERDICT = {"false_positive": "false_positive", "resolved": "true_positive", "clo
 
 
 def alerts_page(events: list[dict], incidents: dict, status: str = "", severity: str = "", q: str = "",
-                real_only: bool = False, sort: str = "recent", page: int = 1, size: int = 25) -> dict:
-    items = workspace.alert_summary(events, incidents, limit=100000)
+                real_only: bool = False, sort: str = "recent", page: int = 1, size: int = 25, states: dict | None = None) -> dict:
+    items = workspace.alert_summary(events, incidents, limit=100000, states=states)
     tact = {}
     for e in events:
         tact.setdefault((e.get("title"), e.get("host")), (e.get("tactic"), e.get("framework") or e.get("malware") or e.get("cve")))
     for a in items:
         inc = incidents.get(a["incident_id"]) if a["incident_id"] else None
-        a["verdict"] = (inc or {}).get("verdict") or VERDICT.get(a["status"])
+        a["verdict"] = (inc or {}).get("verdict") or (a.get("alert_state") or {}).get("verdict") or VERDICT.get(a["status"])
         a["detection_type"] = detection_type(a)
         a["type"], threat = tact.get((a["title"], a["host"]), (None, None))
         a["threats"] = [t for t in (threat, a["cti"] and "CTI match") if t]

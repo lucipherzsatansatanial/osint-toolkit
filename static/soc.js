@@ -266,9 +266,9 @@ async function loadMe() {
     $("#meRole").textContent = `${state.me.role_th}${state.me.named ? "" : " · shared key"} · tenant: ${state.me.tenant}`;
     document.querySelectorAll("[data-plat]").forEach((el) => { el.hidden = !state.me.platform; });
     if (state.me.platform) loadTenants();
-    if (can("users.manage")) loadGov();
+    if (can("governance.read")) loadGov();
     document.querySelectorAll("[data-perm]").forEach((el) => { el.hidden = !can(el.dataset.perm); });
-    if (can("users.manage")) loadUsers();
+    if (can("users.read")) loadUsers();
     if (state.agents) renderAgents(state.agents);
   } catch { /* older server */ }
 }
@@ -280,14 +280,14 @@ async function loadUsers() {
     d.roles.forEach((r) => { ROLE_TH[r.id] = r.th; });
     if (!$("#newRole").options.length)
       $("#newRole").innerHTML = d.roles.map((r) => `<option value="${esc(r.id)}" ${r.id === "analyst" ? "selected" : ""}>${esc(r.th)} (${esc(r.id)})</option>`).join("");
-    $("#rolesList").innerHTML = d.roles.map((r) => `<li><b>${esc(r.th)} (${esc(r.id)})</b>: ${esc(r.permissions.join(", "))}</li>`).join("");
+    loadRoles();
     const t = (x) => x ? new Date(x * 1000).toLocaleString("th-TH", { hour12: false }) : "-";
     $("#usersTbl tbody").innerHTML = d.users.map((u) => `<tr><td>${esc(u.username)}${state.me?.platform && u.tenant ? `<div class="sub">${esc(u.tenant === "*" ? "platform" : u.tenant)}</div>` : ""}</td>
-      <td><select data-u="${esc(u.username)}" class="roleSel">${d.roles.map((r) => `<option value="${esc(r.id)}" ${r.id === u.role ? "selected" : ""}>${esc(r.th)}</option>`).join("")}</select></td>
+      <td><select data-u="${esc(u.username)}" class="roleSel" ${can("roles.manage") ? "" : "disabled"} aria-label="บทบาทของ ${esc(u.username)}">${d.roles.map((r) => `<option value="${esc(r.id)}" ${r.id === u.role ? "selected" : ""}>${esc(r.th)}</option>`).join("")}</select></td>
       <td><span class="st ${u.disabled ? "contained" : "healthy"}">${u.disabled ? "ปิดใช้งาน" : "ใช้งาน"}</span></td>
       <td class="muted">${t(u.last_seen)}</td><td class="muted">${esc(u.created_by || "")}</td>
-      <td><button class="mini release" data-act="rotate" data-u="${esc(u.username)}">ออก token ใหม่</button>
-          <button class="mini release" data-act="${u.disabled ? "enable" : "disable"}" data-u="${esc(u.username)}">${u.disabled ? "เปิดใช้งาน" : "ปิดใช้งาน"}</button></td></tr>`).join("")
+      <td>${can("tokens.manage") ? `<button class="mini release" data-act="rotate" data-u="${esc(u.username)}">ออก token ใหม่</button>` : ""}
+          ${can("users.manage") ? `<button class="mini release" data-act="${u.disabled ? "enable" : "disable"}" data-u="${esc(u.username)}">${u.disabled ? "เปิดใช้งาน" : "ปิดใช้งาน"}</button>` : ""}</td></tr>`).join("")
       || '<tr><td colspan="6" class="muted">ยังไม่มีผู้ใช้ — สร้างผู้ใช้แรกด้านบน</td></tr>';
   } catch (e) { $("#usersTbl tbody").innerHTML = `<tr><td colspan="6" class="err">${esc(e.message)}</td></tr>`; }
 }
@@ -344,7 +344,7 @@ function renderCopilot(inc) {
     renderChat();
     if (inc.ai) renderAi(inc.ai);
     else $("#aiOut").innerHTML = '<p class="muted">กด "สรุปด้วย AI" เพื่อสรุปเหตุการณ์ ไทม์ไลน์ และขั้นตอนรับมือ</p>';
-    $("#aiRefresh").hidden = !inc.ai || !can("ai.use");
+    $("#aiRefresh").hidden = !inc.ai || !can("ai.copilot");
   }
 }
 function renderAi(a) { renderAiInto($("#aiOut"), a); }
@@ -588,11 +588,21 @@ async function loadRules() {
     $("#nb-rules").textContent = r.rules.filter((x) => x.status === "enabled").length;
     $("#customRules").innerHTML = r.rules.map((x) => `<li class="${x.hits ? "hit" : ""}"><span class="mono">${esc(x.id)}</span>
       <span>${esc(x.title)} <span class="sev" style="--sevc:var(--${esc(x.severity)})">${esc(x.severity)}</span>
-      <span class="st ${esc(x.status)}">${x.status === "enabled" ? "เปิด" : "ปิด"}</span><small class="muted"> · ${esc(x.kind)} · โดย ${esc(x.created_by || "")}</small>
-      ${can("rules.manage") ? `<button class="mini release" data-rid="${esc(x.id)}" data-to="${x.status === "enabled" ? "disabled" : "enabled"}">${x.status === "enabled" ? "ปิด" : "เปิดใช้"}</button>` : ""}</span><b>${x.hits}</b></li>`).join("")
+      <span class="st ${esc(x.status)}">${x.status === "enabled" ? "เปิด" : "ปิด"}</span><small class="muted"> · v${x.version || 1} · ${esc(x.kind)} · โดย ${esc(x.created_by || "")}${x.published_by ? " · เผยแพร่โดย " + esc(x.published_by) : ""}</small>
+      ${x.draft ? `<span class="vd" title="แก้โดย ${esc(x.draft.by)}">มี draft รอเผยแพร่ (${esc(x.draft.by)})</span>` : ""}
+      ${can("rules.publish") ? (x.draft ? `<button class="mini release" data-rid="${esc(x.id)}" data-to="enabled">เผยแพร่ draft</button>` : "")
+        + `<button class="mini release" data-rid="${esc(x.id)}" data-to="${x.status === "enabled" ? "disabled" : "enabled"}">${x.status === "enabled" ? "ปิด" : "เปิดใช้"}</button>` : ""}
+      ${can("rules.rollback") && (x.versions || []).length > 1 ? `<select class="rb" data-rid="${esc(x.id)}" aria-label="ย้อนเวอร์ชัน ${esc(x.id)}"><option value="">ย้อนเวอร์ชัน…</option>${x.versions.filter((v) => v.version !== x.version).map((v) => `<option value="${v.version}">v${v.version} · ${esc(v.by || "")} · ${esc((v.note || "").slice(0, 30))}</option>`).join("")}</select>` : ""}</span><b>${x.hits}</b></li>`).join("")
       || '<li class="muted">ยังไม่มีกฎที่สร้างเอง</li>';
   } catch {}
 }
+$("#customRules").addEventListener("change", async (ev) => {
+  const sel = ev.target.closest("select.rb"); if (!sel || !sel.value) return;
+  const reason = prompt(`เหตุผลที่ย้อน ${sel.dataset.rid} ไป v${sel.value}`);
+  if (!reason || reason.length < 3) { sel.value = ""; return; }
+  try { await api(`/api/soc/rules/${encodeURIComponent(sel.dataset.rid)}/rollback`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ version: Number(sel.value), reason }) }); loadRules(); } catch (e) { alert("ไม่สำเร็จ: " + e.message); sel.value = ""; }
+});
 $("#customRules").addEventListener("click", async (ev) => {
   const b = ev.target.closest("button[data-rid]"); if (!b) return;
   if (b.dataset.to === "enabled" && !confirm(`เปิดใช้ ${b.dataset.rid}? กฎจะเริ่มตรวจ log ทุกรายการทันที`)) return;
@@ -609,7 +619,7 @@ function renderResponse(p) {
   if (p.incident !== state.selected) return;
   const left = p.pdpa_deadline ? p.pdpa_deadline - Date.now() / 1000 : null;
   const fmt = (s) => s <= 0 ? "เลยกำหนดแล้ว" : `เหลือ ${Math.floor(s / 3600)} ชม. ${Math.floor((s % 3600) / 60)} นาที`;
-  const canW = can("incident.write");
+  const canW = can("cases.update");
   $("#respPlan").innerHTML = `<h3><span>แผนตอบสนอง (Response plan)</span><small class="muted">${Math.round(p.progress * 100)}% เสร็จ</small></h3>
     <div class="bar"><i style="width:${p.progress * 100}%"></i></div>
     ${left !== null ? `<div class="pdpa">⏱ PDPA ม.37(4): หากมีข้อมูลส่วนบุคคลรั่วไหลและมีความเสี่ยงต่อสิทธิ ต้องแจ้ง สคส. ภายใน 72 ชม. — ${fmt(left)}
@@ -660,6 +670,8 @@ async function loadGov() {
       <td>${f.input_tokens.toLocaleString()} / ${f.output_tokens.toLocaleString()}</td><td>${f.cost_usd.toFixed(4)}</td><td>${f.up} / ${f.down}</td></tr>`).join("")
       || '<tr><td colspan="7" class="muted">ยังไม่มีการใช้ AI ในช่วงนี้</td></tr>';
     $("#aiUsageFoot").textContent = `รวมประมาณ $${u.total_cost_usd} · ${u.ai.enabled ? `Claude ${u.ai.model}` : "ยังไม่ตั้งค่า API key"} · ${u.note}`;
+    loadPolicies();
+    if (!can("audit.read")) { $("#auditRows").innerHTML = '<li class="muted">ต้องมีสิทธิ์ audit.read</li>'; return; }
     const a = await api("/api/audit?limit=40");
     $("#auditRows").innerHTML = a.rows.map((r) => `<li><span class="mono muted">${esc(r.ts.slice(5, 16).replace("T", " "))}</span>
       <span class="mono">${esc(r.analyst)}</span><span class="sum"><span class="kind">${esc(r.module)}</span>${esc(r.target)} <span class="muted">${esc((r.purpose || "").slice(0, 80))}</span></span><span></span></li>`).join("");
@@ -755,7 +767,7 @@ function renderAgents(list) {
     <td>${a.calls}</td><td style="color:var(${a.denied ? "--high" : "--muted"})">${a.denied}</td>
     <td class="riskbtn" title="${esc(riskTip(a.id))}"><span class="risk"><i style="width:${riskOf(a)}%"></i></span>${riskOf(a)}${state.risk?.[a.id] ? ` <span class="st ${esc(state.risk[a.id].level === "low" ? "normal" : state.risk[a.id].level === "medium" ? "suspicious" : "compromised")}">${esc(state.risk[a.id].level)}</span>` : ""}</td>
     <td><span class="st ${esc(a.status)}">${esc(a.status)}</span>${a.registered === false ? ' <span class="st unregistered" title="seen in logs but not in the agent inventory">unregistered</span>' : ""}</td>
-    <td>${can("respond") ? `<button title="บันทึกสถานะ contained และ audit log — ยังไม่มี connector สั่ง revoke token จริง" class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button>` : ""}</td></tr>`).join("");
+    <td>${can("agents.deploy") && a.registered && !a.demo ? `<button class="mini release" data-life="${esc(a.id)}" data-state="${a.retired ? "active" : "retired"}">${a.retired ? "นำกลับมาใช้" : "Retire"}</button> ` : ""}${a.retired ? '<span class="st contained">retired</span> ' : ""}${can("respond.execute") ? `<button title="บันทึกสถานะ contained และ audit log — ยังไม่มี connector สั่ง revoke token จริง" class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button>` : ""}</td></tr>`).join("");
 }
 function renderRules(rules) {
   rules.forEach((r) => { RULE_SEV[r.id] = r.severity; });
@@ -822,8 +834,9 @@ $("#agents").addEventListener("click", async (ev) => {
   store.set("analyst", analyst);
   const reason = prompt(on ? `เหตุผลในการ contain ${b.dataset.agent} (revoke token / suspend)` : `เหตุผลในการ release ${b.dataset.agent}`);
   if (!reason || reason.length < 5) return;
-  try { await api(`/api/soc/agents/${encodeURIComponent(b.dataset.agent)}/contain`, { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contain: on, analyst, reason }) }); }
+  try { const r = await api(`/api/soc/agents/${encodeURIComponent(b.dataset.agent)}/contain`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contain: on, analyst, reason }) });
+    if (r.status === "pending_approval") { alert(`ส่งคำขอ #${r.request.id} แล้ว — รอผู้มีสิทธิ์ respond.approve คนอื่นอนุมัติ`); loadApprovals(); } }
   catch (e) { alert("ไม่สำเร็จ: " + e.message); }
 });
 const PRESETS = { "denied / blocked": "-decision:allowed", "shell from agents": "kind:process", "secrets": ".env",
@@ -974,7 +987,7 @@ connect();
 
 // ---------- workspace: overview widgets, tasks, notifications ----------
 const TASK_TH = { pending: "รอดำเนินการ", awaiting_input: "รอข้อมูล", in_progress: "กำลังทำ", completed: "เสร็จแล้ว", cancelled: "ยกเลิก" };
-const ALERT_ST = { new: "ใหม่", open: "open", investigating: "investigating", resolved: "resolved", false_positive: "false positive", closed: "closed" };
+const ALERT_ST = { new: "ใหม่", open: "open", investigating: "investigating", resolved: "resolved", false_positive: "false positive", closed: "closed", acknowledged: "รับทราบแล้ว", escalated: "ยกระดับแล้ว" };
 const SRC_COLORS = ["--endpoint", "--network", "--identity", "--agent", "--email", "--cloud", "--data", "--off", "--xdr", "--low", "--medium", "--info"];
 const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); return s < 60 ? `${s | 0} วิ` : s < 3600 ? `${(s / 60) | 0} นาที` : s < 86400 ? `${(s / 3600) | 0} ชม.` : `${(s / 86400) | 0} วัน`; };
 function urgRing(u) {
@@ -1046,7 +1059,7 @@ async function loadTasks() {
     const open = (r.by_status.pending || 0) + (r.by_status.awaiting_input || 0) + (r.by_status.in_progress || 0);
     $("#nb-task").textContent = open;
     $("#taskCounts").textContent = r.statuses.map((s) => `${s.th} ${r.by_status[s.id] || 0}`).join(" · ");
-    const now = Date.now() / 1000, edit = can("incident.write");
+    const now = Date.now() / 1000, edit = can("cases.update");
     $("#tasksTbl tbody").innerHTML = r.tasks.map((t) => {
       const overdue = t.due && t.due < now && !["completed", "cancelled"].includes(t.status);
       return `<tr data-task="${t.id}" class="clk"><td>${t.id}</td>
@@ -1078,7 +1091,7 @@ function openTask(t, preset = {}) {
   $("#taskHist").innerHTML = (t?.history || []).concat((t?.notes || []).map((n) => ({ ...n, change: "📝 " + n.text })))
     .sort((a, b) => a.ts - b.ts).map((h) => `<li><span class="muted">${esc(t2(h.ts))}</span> <b>${esc(h.analyst)}</b> ${esc(h.change)}</li>`).join("");
   $("#taskErr").textContent = "";
-  const ro = !can("incident.write");
+  const ro = !can("cases.update");
   f.querySelectorAll("input,textarea,select").forEach((el) => { el.disabled = ro; });
   if (t) f.incident_id.disabled = true;
   $("#taskSave").hidden = ro;
@@ -1151,7 +1164,7 @@ window.addEventListener("hashchange", () => {
 });
 function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); loadAlertsList(); loadEvents(); loadLandscape(); loadNotifyRules();
   loadCases(); loadSavedQueries(); loadNotebooks(); loadCatalog(); loadCaseMeta(); loadIntakes(); loadEntities(); loadAssets();
-  loadIntel(); loadFeeds(); loadIntegrations(); loadCollections(); loadGraphs(); loadWsSettings(); }
+  loadIntel(); loadFeeds(); loadIntegrations(); loadCollections(); loadGraphs(); loadWsSettings(); loadApprovals(); }
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);
 
@@ -1175,12 +1188,17 @@ async function loadAlertsList() {
     $("#alTotal").textContent = `${r.total.toLocaleString()} รายการ (จัดกลุ่มตาม alert + host)`;
     $("#alPage").textContent = `หน้า ${r.page} / ${r.pages}`;
     $("#alPrev").disabled = r.page <= 1; $("#alNext").disabled = r.page >= r.pages;
-    $("#alTbl tbody").innerHTML = r.items.map((a) => `<tr data-inc="${a.incident_id ?? ""}" class="${a.incident_id ? "clk" : ""}">
+    const acts = (a) => [can("alerts.acknowledge") && ["new", "open"].includes(a.status) ? '<button class="mini" data-aa="acknowledge" title="รับทราบ">รับทราบ</button>' : "",
+      can("alerts.assign") || can("alerts.acknowledge") ? '<button class="mini" data-aa="assign" title="มอบหมาย">มอบหมาย</button>' : "",
+      can("alerts.escalate") && a.status !== "escalated" ? '<button class="mini" data-aa="escalate" title="ยกระดับเป็น case">ยกระดับ</button>' : "",
+      can("alerts.close") ? (a.status === "closed" ? '<button class="mini" data-aa="reopen">เปิดใหม่</button>' : '<button class="mini" data-aa="close">ปิด</button>') : ""].join("");
+    $("#alTbl tbody").innerHTML = r.items.map((a) => `<tr data-inc="${a.incident_id ?? ""}" data-title="${esc(a.title)}" data-host="${esc(a.host || "")}" class="${a.incident_id ? "clk" : ""}">
       <td class="num"><span class="occ sev-${esc(a.severity)}">${a.occurrences}</span></td>
       <td>${a.incident_id ? `<a href="#inc-${a.incident_id}">INC-${a.incident_id}</a>` : '<span class="muted">—</span>'}</td>
       <td title="${esc(t2(a.first_ts))} → ${esc(t2(a.last_ts))}">${esc(new Date(a.last_ts * 1000).toLocaleString("th-TH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }))}</td>
       <td class="a-title">${a.real ? '<span class="real">REAL</span>' : ""}${esc(a.title)}<div class="sub">${esc(a.technique || "")}${a.rule ? " · " + esc(a.rule) : ""}</div></td>
-      <td><span class="ist ${esc(a.status)}">${esc(ALERT_ST[a.status] || a.status)}</span></td>
+      <td><span class="ist ${esc(a.status)}">${esc(ALERT_ST[a.status] || a.status)}</span>${a.reoccurred ? '<div class="sub">เกิดซ้ำหลังปิด</div>' : ""}</td>
+      <td class="al-acts">${acts(a)}</td>
       <td>${a.verdict ? `<span class="vd ${esc(a.verdict)}">${esc(VERDICT_TH[a.verdict] || a.verdict)}</span>` : '<span class="muted">—</span>'}</td>
       <td>${a.assignee ? esc(a.assignee) : '<span class="muted">—</span>'}</td>
       <td class="mono">${esc(a.host || "-")}</td>
@@ -1188,7 +1206,7 @@ async function loadAlertsList() {
       <td><span class="dt">${esc(a.detection_type)}</span></td>
       <td>${esc(a.type || "-")}</td>
       <td>${a.threats.map((t) => `<span class="thr">${esc(t)}</span>`).join(" ") || '<span class="muted">—</span>'}</td></tr>`).join("")
-      || '<tr><td colspan="12" class="muted">ไม่พบ alert ตามเงื่อนไข</td></tr>';
+      || '<tr><td colspan="13" class="muted">ไม่พบ alert ตามเงื่อนไข</td></tr>';
   } catch (e) { $("#alTbl tbody").innerHTML = `<tr><td colspan="12" class="err">${esc(e.message)}</td></tr>`; }
 }
 let alT;
@@ -1197,7 +1215,7 @@ $("#alQ").addEventListener("input", () => { clearTimeout(alT); alT = setTimeout(
 $("#alPrev").onclick = () => { AL.page--; loadAlertsList(); };
 $("#alNext").onclick = () => { AL.page++; loadAlertsList(); };
 $("#alTbl").addEventListener("click", (ev) => {
-  if (ev.target.closest("a")) return;
+  if (ev.target.closest("a, button")) return;
   const tr = ev.target.closest("tr[data-inc]"); if (tr?.dataset.inc) location.hash = "#inc-" + tr.dataset.inc;
 });
 
@@ -1314,7 +1332,7 @@ async function loadNotifyRules() {
     const r = await api("/api/soc/notify-rules");
     NR.rules = r.rules; NR.server = r.server_channels;
     $("#nrChannels").textContent = "ช่องทางภายนอกที่ตั้งค่าบนเซิร์ฟเวอร์แล้ว: " + (r.server_channels.map((c) => CH_TH[c]).join(", ") || "ยังไม่มี (ใช้ได้เฉพาะแจ้งเตือนในระบบ)");
-    const edit = can("rules.manage");
+    const edit = can("integrations.manage");
     $("#nrTbl tbody").innerHTML = r.rules.map((x) => `<tr data-id="${x.id}"><td>${x.id}</td><td class="a-title">${esc(x.name)}</td>
       <td class="a-title small">≥ ${esc(x.min_severity)}${x.min_urgency ? ` · urgency ≥ ${x.min_urgency}` : ""}${x.domains.length ? " · " + x.domains.map(esc).join("/") : ""}${x.rule_prefixes.length ? " · rule " + x.rule_prefixes.map(esc).join(", ") : ""}${x.keyword ? ` · “${esc(x.keyword)}”` : ""}${x.real_only ? " · log จริง" : " · รวมจำลอง"}</td>
       <td>${x.channels.map((c) => `<span class="thr ${c !== "in_app" && !NR.server.includes(c) ? "off" : ""}" title="${c !== "in_app" && !NR.server.includes(c) ? "ยังไม่ได้ตั้งค่าช่องทางนี้บนเซิร์ฟเวอร์" : ""}">${esc(CH_TH[c] || c)}</span>`).join(" ")}</td>
@@ -1490,11 +1508,11 @@ function renderCase(inc) {
     $("#ctEvents").textContent = "–";
     loadCaseNotebooks(inc.id);
   }
-  const ro = !can("incident.write");
+  const ro = !can("cases.update");
   document.querySelectorAll("#caseBar [data-perm-dis], #cbFields [data-cf]").forEach((el) => { el.disabled = ro; });
   $("#cbImpact").innerHTML = '<b class="small">Impact</b> ' + (inc.hosts || []).filter(Boolean).map((h) => {
     const lv = CS.crit[h] || 0;
-    return `<span class="asset l${lv}"><span class="mono">${esc(h)}</span><select data-host="${esc(h)}" ${can("agents.manage") ? "" : "disabled"} aria-label="ความสำคัญของ ${esc(h)}" title="Asset criticality">${CRIT_TH.map((t, i) => `<option value="${i}" ${i === lv ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
+    return `<span class="asset l${lv}"><span class="mono">${esc(h)}</span><select data-host="${esc(h)}" ${can("assets.manage") ? "" : "disabled"} aria-label="ความสำคัญของ ${esc(h)}" title="Asset criticality">${CRIT_TH.map((t, i) => `<option value="${i}" ${i === lv ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
   }).join("") + (inc.description ? `<p class="case-desc">${esc(inc.description)}</p>` : "");
   $("#ctAlerts").textContent = (inc.alerts || []).length;
   $("#ctTasks").textContent = TS.tasks.filter((t) => t.incident_id === inc.id).length;
@@ -1584,7 +1602,7 @@ async function loadSavedQueries() {
     const r = await api("/api/soc/queries");
     QB.saved = r.queries;
     $("#qbSaved").innerHTML = r.queries.map((x) => `<li data-id="${x.id}"><a href="#queryCard" class="qb-load">${esc(x.name)}</a>
-      ${can("incident.write") ? '<button class="ghost sm qb-del" title="ลบ">×</button>' : ""}<div class="mono small muted">${esc(x.query.replace(/\s+/g, " ").slice(0, 90))}</div></li>`).join("")
+      ${can("query.run") ? '<button class="ghost sm qb-del" title="ลบ">×</button>' : ""}<div class="mono small muted">${esc(x.query.replace(/\s+/g, " ").slice(0, 90))}</div></li>`).join("")
       || '<li class="muted">ยังไม่มี — กด “บันทึก query”</li>';
   } catch {}
 }
@@ -1635,13 +1653,13 @@ async function loadNotebooks() {
 }
 function openNotebook(n) {
   NB.cur = n;
-  const ro = !can("incident.write") || n.deleted;
+  const ro = !can("notebooks.write") || n.deleted;
   $("#nbMain").innerHTML = `<div class="nb-head"><input id="nbTitle" value="${esc(n.title)}" maxlength="200" ${ro ? "disabled" : ""} aria-label="ชื่อ notebook">
     <span class="muted small">${n.case_id ? `<a href="#inc-${n.case_id}">INC-${n.case_id}</a> · ` : ""}แก้ไขล่าสุดโดย ${esc(n.updated_by)} · ${esc(t2(n.updated_at))}</span></div>
     <div class="seg nb-mode"><button data-m="edit" class="${NB.preview ? "" : "on"}" ${ro ? "disabled" : ""}>แก้ไข</button><button data-m="view" class="${NB.preview ? "on" : ""}">แสดงผล</button></div>
     <textarea id="nbBody" class="code" rows="16" ${ro ? "disabled" : ""} ${NB.preview ? "hidden" : ""} aria-label="เนื้อหา">${esc(n.content)}</textarea>
     <div id="nbView" class="nb-view" ${NB.preview ? "" : "hidden"}>${md(n.content) || '<p class="muted">ว่าง — กด “แก้ไข”</p>'}</div>
-    <div class="task-bar">${n.deleted ? `<button id="nbRestore" data-perm="incident.write">กู้คืน</button>` : `${ro ? "" : '<button id="nbSaveBtn">บันทึก</button><button id="nbTrash" class="ghost">ย้ายไปถังขยะ</button>'}`}
+    <div class="task-bar">${n.deleted ? `<button id="nbRestore" data-perm="notebooks.write">กู้คืน</button>` : `${ro ? "" : '<button id="nbSaveBtn">บันทึก</button><button id="nbTrash" class="ghost">ย้ายไปถังขยะ</button>'}`}
     <span id="nbMsg" class="muted small"></span></div>`;
   document.querySelectorAll("#nbList li").forEach((li) => li.classList.toggle("on", Number(li.dataset.id) === n.id));
 }
@@ -1715,7 +1733,7 @@ function renderCatalog() {
     && (CAT.mode !== "configured" || r.log_sources.some((x) => d.configured_sources.includes(x))));
   const s = $("#catSort").value;
   rows.sort(s === "id" ? (a, b) => a.id.localeCompare(b.id) : s === "quality" ? (a, b) => (a.quality ?? 101) - (b.quality ?? 101) : (a, b) => b.alerts_7d - a.alerts_7d);
-  const edit = can("rules.manage");
+  const edit = can("rules.publish");
   $("#catList").innerHTML = rows.map((r) => `<div class="cat-rule ${r.enabled ? "" : "off"}">
     <div class="cr-main"><div class="cr-t"><span class="mono">${esc(r.id)}</span> ${esc(r.title)}</div>
       <div class="cr-m"><span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span> <span class="dt">${esc(r.category)}</span>
@@ -1744,7 +1762,7 @@ $("#catSrcMode").addEventListener("click", (ev) => {
 });
 $("#catList").addEventListener("click", (ev) => {
   const b = ev.target.closest(".cr-notify"); if (!b) return;
-  if (!can("rules.manage")) { alert("ต้องมีสิทธิ์ rules.manage เพื่อสร้างกฎแจ้งเตือน"); return; }
+  if (!can("integrations.manage")) { alert("ต้องมีสิทธิ์ integrations.manage เพื่อสร้างกฎแจ้งเตือน"); return; }
   openRule(null);
   const f = $("#nrForm");
   f.name.value = `แจ้งเตือนเมื่อ ${b.dataset.rule} ทำงาน`; f.rule_prefixes.value = b.dataset.rule; f.min_severity.value = "info";
@@ -1759,7 +1777,7 @@ async function loadIntakes() {
     const r = await api("/api/soc/intakes?days=" + IN.days);
     IN.items = r.intakes;
     $("#nb-intake").textContent = r.intakes.filter((i) => !i.disabled).length;
-    const edit = can("rules.manage");
+    const edit = can("ingest.sources.manage");
     $("#inList").innerHTML = r.intakes.map((i) => `<div class="intake ${i.disabled ? "off" : ""}" data-id="${i.id}">
       <div class="in-main"><b>${esc(i.name)}</b>${i.disabled ? ' <span class="ist">disabled</span>' : ""}
         <div class="cr-m"><span class="dt">${esc(FMT_TH[i.format] || i.format)}</span>${i.entity ? `<span class="thr">🏢 ${esc(i.entity)}</span>` : ""}
@@ -1821,7 +1839,7 @@ $("#inList").addEventListener("change", async (ev) => {
 async function loadEntities() {
   try {
     IN.ents = (await api("/api/soc/entities")).entities;
-    const edit = can("rules.manage");
+    const edit = can("ingest.sources.manage");
     $("#enTbl tbody").innerHTML = IN.ents.map((e) => `<tr data-id="${e.id}"><td><span class="who">${esc(e.name[0].toUpperCase())}</span><b>${esc(e.name)}</b></td>
       <td class="a-title">${esc(e.description || "")}</td><td class="num">${e.intakes}</td>
       <td><span class="${e.mode === "monitor" ? "vd" : "dt"}">${e.mode === "monitor" ? "monitor (log only)" : "automatic"}</span></td>
@@ -1831,13 +1849,13 @@ async function loadEntities() {
 }
 const EN = { edit: null };
 function openEntity(e) {
-  EN.edit = e; const f = $("#enForm"); f.reset(); $("#enErr").textContent = "";
+  EN.edit = e; const f = $("#entForm"); f.reset(); $("#enErr").textContent = "";
   $("#enDlgTitle").textContent = e ? `แก้ไข ${e.name}` : "New entity";
   if (e) { f.name.value = e.name; f.description.value = e.description || ""; f.mode.value = e.mode; }
   $("#enDlg").showModal();
 }
 $("#enNew").onclick = () => openEntity(null);
-$("#enForm").addEventListener("submit", async (ev) => {
+$("#entForm").addEventListener("submit", async (ev) => {
   if (ev.submitter?.value !== "save") return;
   ev.preventDefault();
   const f = ev.target, body = { name: f.name.value.trim(), description: f.description.value.trim(), mode: f.mode.value };
@@ -1872,7 +1890,7 @@ async function loadAssets() {
     $("#nb-asset").textContent = all;
     $("#asPage").textContent = `หน้า ${r.page} / ${r.pages} · ${r.total.toLocaleString()} รายการ`;
     $("#asPrev").disabled = r.page <= 1; $("#asNext").disabled = r.page >= r.pages;
-    const edit = can("agents.manage");
+    const edit = can("assets.manage");
     $("#asTbl tbody").innerHTML = r.items.map((a, i) => `<tr data-i="${i}"><td class="mono">${a.real ? "" : '<span class="muted small">(จำลอง) </span>'}${esc(a.name)}${a.description ? `<div class="sub">${esc(a.description)}</div>` : ""}</td>
       <td><span class="dt">${TYPE_TH[a.type] || esc(a.type)}</span>${a.manual ? ' <span class="muted small">manual</span>' : ""}</td>
       <td>${(a.tags || []).map((t) => `<span class="thr">${esc(t)}</span>`).join(" ") || '<span class="muted">—</span>'}</td>
@@ -1993,7 +2011,7 @@ const FMT_OUT = { stix: "STIX 2.1", text: "Text", csv: "CSV" };
 async function loadFeeds() {
   try {
     FD.items = (await api("/api/soc/feeds")).feeds;
-    const edit = can("rules.manage");
+    const edit = can("threatintel.curate");
     $("#fdTbl tbody").innerHTML = FD.items.map((f) => `<tr data-id="${f.id}"><td><b>${esc(f.name)}</b><div class="sub">${esc(f.description || "")} <span class="mono">${esc(f.key_hint)}</span></div></td>
       <td><span class="dt">${FMT_OUT[f.format]}</span></td>
       <td class="small">${f.types.length ? esc(f.types.join(", ")) : "ทุกชนิด"} · ${f.sources.length ? esc(f.sources.join(", ")) : "ทุกแหล่ง"} · conf ≥ ${f.min_confidence} · TLP ≤ ${esc(f.max_tlp.toUpperCase())}</td>
@@ -2164,7 +2182,7 @@ async function openCollection(c) {
   if (COL.q) p.set("q", COL.q);
   let r;
   try { r = await api("/api/soc/iocs?" + p); } catch (e) { $("#colMain").innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
-  const edit = can("rules.manage");
+  const edit = can("threatintel.curate");
   $("#colMain").innerHTML = `<div class="col-head"><div><h3>${esc(c.name)}</h3><p class="muted small">${esc(c.description || "")}</p></div>
     <div class="task-bar">${edit ? '<button id="colImport" class="ghost sm">นำเข้า / เพิ่ม IOC</button>' : ""}
       <select id="colDays" aria-label="ช่วงเวลา"><option value="7">7 วัน</option><option value="30" selected>30 วัน</option><option value="90">90 วัน</option></select>
@@ -2305,7 +2323,7 @@ async function loadWsSettings() {
     $("#wsTenant").textContent = `tenant: ${r.tenant}`;
     $("#wsMissing").hidden = !r.missing.length; $("#nb-ws").hidden = !r.missing.length;
     $("#wsMissing").title = "ยังไม่ได้กรอก: " + r.missing.join(", ");
-    const ro = !can("users.manage");
+    const ro = !can("governance.manage");
     f.querySelectorAll("input,select,textarea,button").forEach((el) => { el.disabled = ro; });
     renderTemplates();
   } catch (e) { $("#wsMsg").textContent = e.message; }
@@ -2327,7 +2345,7 @@ function tplRow(t = { name: "", title: "", priority: "medium", tags: [], tasks: 
 }
 function renderTemplates() {
   $("#tplList").innerHTML = WS.templates.map(tplRow).join("") || '<p class="muted small">ยังไม่มี — เช่น "Phishing": เก็บ header อีเมล, ค้นผู้รับรายอื่น, บล็อกโดเมนผู้ส่ง, รีเซ็ตรหัสผ่าน</p>';
-  const ro = !can("rules.manage"); $("#tplList").querySelectorAll("input,select,textarea,button").forEach((el) => { el.disabled = ro; });
+  const ro = !can("governance.manage"); $("#tplList").querySelectorAll("input,select,textarea,button").forEach((el) => { el.disabled = ro; });
 }
 $("#tplAdd").onclick = () => { if (!$("#tplList .tpl")) $("#tplList").innerHTML = ""; $("#tplList").insertAdjacentHTML("beforeend", tplRow()); };
 $("#tplList").addEventListener("click", (ev) => { if (ev.target.closest(".tpl-del")) ev.target.closest(".tpl").remove(); });
@@ -2341,3 +2359,123 @@ $("#tplSave").onclick = async () => {
     WS.templates = r.templates; renderTemplates(); $("#tplMsg").textContent = "บันทึกแล้ว"; } catch (e) { $("#tplMsg").textContent = e.message; }
 };
 $("#recentCases").addEventListener("click", (ev) => { const tr = ev.target.closest("tr[data-inc]"); if (tr) location.hash = "#inc-" + tr.dataset.inc; });
+
+
+// ---------- roles & permission matrix ----------
+const RL = { data: null };
+async function loadRoles() {
+  try {
+    const d = RL.data = await api("/api/roles");
+    const roles = d.roles;
+    const head = `<thead><tr><th>สิทธิ์</th>${roles.map((r) => `<th class="rc ${r.custom ? "custom" : ""}" data-role="${esc(r.name)}" title="${esc(r.description || "")}">${esc(r.label)}<div class="sub">${esc(r.name)}${r.custom ? " ✎" : ""}</div></th>`).join("")}</tr></thead>`;
+    const body = d.permissions.map((g) => `<tr class="grp"><td colspan="${roles.length + 1}">${esc(g.group)}</td></tr>` + g.items.map((p) =>
+      `<tr><td><span class="mono">${esc(p.id)}</span><div class="sub">${esc(p.description)}</div></td>${roles.map((r) => `<td class="ck">${r.perms.includes(p.id) ? "✓" : ""}</td>`).join("")}</tr>`).join("")).join("");
+    $("#permMatrix").innerHTML = head + "<tbody>" + body + "</tbody>";
+    const f = $("#roleForm");
+    f.hidden = !can("roles.manage");
+    f.base.innerHTML = '<option value="">— ว่าง —</option>' + roles.map((r) => `<option value="${esc(r.name)}">${esc(r.label)}</option>`).join("");
+    renderRolePerms(new Set());
+  } catch (e) { $("#permMatrix").innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; }
+}
+function renderRolePerms(sel) {
+  const mine = new Set(RL.data.mine);
+  $("#rolePerms").innerHTML = RL.data.permissions.map((g) => `<fieldset><legend>${esc(g.group)}</legend>${g.items.map((p) =>
+    `<label class="chk" title="${esc(p.description)}"><input type="checkbox" value="${esc(p.id)}" ${sel.has(p.id) ? "checked" : ""} ${mine.has(p.id) ? "" : "disabled"}> ${esc(p.id)}</label>`).join("")}</fieldset>`).join("");
+}
+$("#roleForm").base.onchange = (ev) => { const r = RL.data.roles.find((x) => x.name === ev.target.value); renderRolePerms(new Set(r ? r.perms : [])); };
+$("#permMatrix").addEventListener("click", (ev) => {
+  const th = ev.target.closest("th.custom"); if (!th || !can("roles.manage")) return;
+  const r = RL.data.roles.find((x) => x.name === th.dataset.role);
+  const f = $("#roleForm"); f.name.value = r.name; f.label.value = r.label; renderRolePerms(new Set(r.perms)); f.scrollIntoView({ behavior: "smooth", block: "center" });
+});
+$("#roleForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target, perms = [...f.querySelectorAll("#rolePerms input:checked")].map((x) => x.value);
+  try { await api(`/api/roles/${encodeURIComponent(f.name.value.trim())}`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: f.label.value.trim(), permissions: perms }) });
+    $("#roleMsg").textContent = "บันทึกแล้ว"; $("#newRole").innerHTML = ""; loadUsers(); } catch (e) { $("#roleMsg").textContent = e.message; }
+});
+$("#roleDel").onclick = async () => {
+  const name = $("#roleForm").name.value.trim(); if (!name || !confirm(`ลบบทบาท ${name}?`)) return;
+  try { await api(`/api/roles/${encodeURIComponent(name)}`, { method: "DELETE" }); $("#roleMsg").textContent = "ลบแล้ว"; $("#newRole").innerHTML = ""; loadUsers(); }
+  catch (e) { $("#roleMsg").textContent = e.message; }
+};
+
+// ---------- governance policies ----------
+async function loadPolicies() {
+  try {
+    const r = await api("/api/soc/policies");
+    const f = $("#polForm");
+    for (const k of Object.keys(r.policies)) if (f[k]) { f[k].checked = r.policies[k]; f[k].disabled = !can("governance.manage"); }
+  } catch { $("#polForm").hidden = true; }
+}
+$("#polForm").addEventListener("change", async () => {
+  const f = $("#polForm"), body = Object.fromEntries(["four_eyes_response", "four_eyes_agents", "four_eyes_rules"].map((k) => [k, f[k].checked]));
+  try { await api("/api/soc/policies", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); $("#polMsg").textContent = "บันทึกแล้ว"; loadApprovals(); }
+  catch (e) { $("#polMsg").textContent = e.message; loadPolicies(); }
+});
+
+// ---------- approvals ----------
+const ACT_TH = { contain: "กักกัน (contain)", release: "ปล่อย (release)" };
+async function loadApprovals() {
+  let n = 0;
+  const row = (r, kind) => {
+    const pending = r.status === "pending";
+    if (pending) n++;
+    const mine = state.me?.named && r.requested_by === state.me.name;
+    const perm = kind === "resp" ? "respond.approve" : "agents.approve";
+    const what = kind === "resp" ? `${ACT_TH[r.action] || r.action} <span class="mono">${esc(r.agent)}</span> — ${esc(r.reason)}`
+      : `${r.change === "new" ? "เพิ่ม" : "แก้"} agent <span class="mono">${esc(r.spec.id)}</span> · scopes: ${esc((r.spec.scopes || []).join(", ") || "-")}${r.spec.shell ? " · shell" : ""}${(r.spec.egress || []).length ? " · egress: " + esc(r.spec.egress.join(", ")) : ""}`;
+    return `<li class="${pending ? "" : "read"}"><div>#${r.id} ${what}</div><small class="muted">ขอโดย ${esc(r.requested_by)} · ${ago(r.requested_at)}ที่แล้ว
+      ${pending ? "" : ` · <b>${r.status === "approved" ? "อนุมัติ" : "ปฏิเสธ"}</b> โดย ${esc(r.decided_by)}${r.comment ? " — " + esc(r.comment) : ""}`}</small>
+      ${pending && can(perm) ? (mine ? '<div class="small muted">คุณเป็นผู้ขอ — ต้องให้คนอื่นอนุมัติ</div>'
+        : `<div><button class="sm ap-ok" data-k="${kind}" data-id="${r.id}">อนุมัติ</button> <button class="ghost sm ap-no" data-k="${kind}" data-id="${r.id}">ปฏิเสธ</button></div>`) : ""}</li>`;
+  };
+  try {
+    const r = await api("/api/soc/response-requests");
+    $("#apprRespNote").textContent = r.four_eyes ? "เปิด four-eyes" : "ปิด four-eyes — ปฏิบัติการทันที";
+    $("#apprResp").innerHTML = r.requests.slice(0, 20).map((x) => row(x, "resp")).join("") || '<li class="muted">ไม่มีคำขอ</li>';
+  } catch { $("#apprResp").innerHTML = '<li class="muted">ไม่มีสิทธิ์ดู</li>'; }
+  try {
+    const r = await api("/api/soc/agents/requests");
+    $("#apprAgNote").textContent = r.four_eyes ? "เปิด four-eyes" : "ปิด four-eyes — มีผลทันที";
+    $("#apprAg").innerHTML = r.requests.slice(0, 20).map((x) => row(x, "ag")).join("") || '<li class="muted">ไม่มีคำขอ</li>';
+  } catch { $("#apprAg").innerHTML = '<li class="muted">ไม่มีสิทธิ์ดู</li>'; }
+  $("#nb-appr").textContent = n;
+}
+$("#apprCard").addEventListener("click", async (ev) => {
+  const b = ev.target.closest(".ap-ok, .ap-no"); if (!b) return;
+  const approve = b.classList.contains("ap-ok");
+  const comment = prompt(approve ? "หมายเหตุการอนุมัติ (ไม่บังคับ)" : "เหตุผลที่ปฏิเสธ") ?? null;
+  if (comment === null) return;
+  const url = b.dataset.k === "resp" ? `/api/soc/response-requests/${b.dataset.id}/decision` : `/api/soc/agents/requests/${b.dataset.id}/decision`;
+  try { await api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approve, comment }) }); loadApprovals(); }
+  catch (e) { alert(e.message); }
+});
+$("#agents").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-life]"); if (!b) return;
+  const reason = prompt(b.dataset.state === "retired" ? `เหตุผลที่ปลด ${b.dataset.life} ออกจากการใช้งาน` : `เหตุผลที่นำ ${b.dataset.life} กลับมาใช้`);
+  if (!reason || reason.length < 5) return;
+  try { await api(`/api/soc/agents/${encodeURIComponent(b.dataset.life)}/lifecycle`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ state: b.dataset.state, reason }) }); alert("บันทึกแล้ว"); } catch (e) { alert(e.message); }
+});
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadApprovals(); }, 60000);
+
+// ---------- alert actions (alerts list) ----------
+$("#alTbl").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-aa]"); if (!b) return;
+  ev.stopPropagation();
+  const tr = b.closest("tr"), body = { title: tr.dataset.title, host: tr.dataset.host || null, action: b.dataset.aa };
+  if (body.action === "assign") {
+    const who = prompt(`มอบหมายให้ (username)${TS.users.length ? " — " + TS.users.join(", ") : ""}`, state.me?.name || ""); if (!who) return;
+    body.assignee = who;
+  }
+  if (body.action === "close") {
+    body.reason = prompt("เหตุผลที่ปิด alert (จำเป็น)") || ""; if (body.reason.trim().length < 3) return;
+    body.verdict = confirm("เป็น false positive / benign หรือไม่? (OK = benign, Cancel = ไม่ระบุ)") ? "benign" : "";
+  }
+  if (body.action === "escalate") { body.reason = prompt("เหตุผลที่ยกระดับ") || ""; }
+  try { const r = await api("/api/soc/alerts/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (r.incident_id) location.hash = "#inc-" + r.incident_id; loadAlertsList(); loadOverview(); }
+  catch (e) { alert(e.message); }
+});

@@ -32,7 +32,14 @@ def urgency(severity: str, occurrences: int, cti: bool, coordinated: bool) -> in
     return min(100, score)
 
 
-def alert_summary(events: list[dict], incidents: dict[int, dict], limit: int = 50) -> list[dict]:
+ALERT_KEY_SEP = "\x1f"
+
+
+def alert_key(title, host) -> str:
+    return f"{title}{ALERT_KEY_SEP}{host}"
+
+
+def alert_summary(events: list[dict], incidents: dict[int, dict], limit: int = 50, states: dict | None = None) -> list[dict]:
     """Group alerts by (title, host) like a SIEM alert list: occurrences, first/last seen, urgency, case status."""
     groups: dict[tuple, dict] = {}
     for e in events:
@@ -54,6 +61,16 @@ def alert_summary(events: list[dict], incidents: dict[int, dict], limit: int = 5
         inc = incidents.get(g["incident_id"]) if g["incident_id"] else None
         g["status"] = inc["status"] if inc else "new"
         g["assignee"] = inc.get("assignee") if inc else None
+        g["case_status"] = inc["status"] if inc else None
+        st = (states or {}).get(alert_key(g["title"], g["host"]))
+        if st:
+            if st["status"] == "closed" and g["last_ts"] > st["ts"]:
+                g["status"] = "new"  # it happened again after being closed
+                g["reoccurred"] = True
+            else:
+                g["status"] = st["status"]
+            g["assignee"] = st.get("assignee") or g["assignee"]
+            g["alert_state"] = st
         g["urgency"] = urgency(g["severity"], g["occurrences"], g["cti"], bool(inc and inc.get("coordinated")))
         out.append(g)
     out.sort(key=lambda g: (-g["urgency"], -g["last_ts"]))

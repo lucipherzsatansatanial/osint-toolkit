@@ -36,6 +36,7 @@
     <a href="#entitiesCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V8l8-5 8 5v13"/><path d="M9 21v-6h6v6"/></svg><span>Entities</span></a>
     <a href="#assetsCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 20h10"/><circle cx="17" cy="10" r="2"/></svg><span>Assets</span><em id="nb-asset">0</em></a>
     <a href="#catalogCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10"/><circle cx="19" cy="19" r="2"/></svg><span>Rules catalog</span></a>
+    <a href="#apprCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12l2 2 4-4"/><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/></svg><span>รออนุมัติ</span><em id="nb-appr">0</em></a>
     <a href="#tasksCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M9 4V2.8h6V4M8 11l2 2 4-4M8 17h8"/></svg><span>Tasks</span><em id="nb-task">0</em></a>
     <a href="#sec-edr"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>EDR · Endpoints</span><em id="nb-ep">0</em></a>
     <a href="#sec-xdr"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5l2.8 8M16 7.5l-2.8 8M8.5 6h7"/></svg><span>XDR · Incidents</span><em id="nb-inc">0</em></a>
@@ -49,8 +50,8 @@
     <div class="nav-h">Workspace</div>
     <a href="#hunting"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span>Threat hunting</span></a>
     <a href="#wsCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>Workspace settings</span><em id="nb-ws" hidden>!</em></a>
-    <a href="#usersCard" id="navUsers" data-perm="users.manage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14c2.2.6 3.5 2.6 3.5 6"/></svg><span>ผู้ใช้และสิทธิ์</span></a>
-    <a href="#govCard" data-perm="users.manage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-6 9 6"/><path d="M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18"/></svg><span>Governance & AI Eval</span></a>
+    <a href="#usersCard" id="navUsers" data-perm="users.read" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14c2.2.6 3.5 2.6 3.5 6"/></svg><span>ผู้ใช้และสิทธิ์</span></a>
+    <a href="#govCard" data-perm="governance.read" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-6 9 6"/><path d="M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18"/></svg><span>Governance & AI Eval</span></a>
     <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l6-6M14 4h6v6M20 4l-9 9"/></svg><span>OSINT Toolkit</span></a>
   </nav>
   <div class="me-box" id="meBox" hidden><b id="meName"></b><small id="meRole"></small>
@@ -65,7 +66,7 @@
     <span id="live" class="pill off"><i></i><span>offline</span></span>
     <span id="modePill" class="pill warn" title="SIMULATED = demo generator · LIVE = only real logs sent to /api/soc/ingest">Telemetry: SIMULATED</span>
     <span id="ctiStatus" class="pill">CTI: …</span>
-    <button id="aiBtn" class="pill ai-btn" type="button" data-perm="ai.use">✦ ถาม AI</button>
+    <button id="aiBtn" class="pill ai-btn" type="button" data-perm="ai.copilot">✦ ถาม AI</button>
     <span class="bell-wrap"><button id="bellBtn" class="pill bell" type="button" title="งานและ incident ที่ต้องดำเนินการ" aria-expanded="false" aria-controls="bellPanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/></svg><span>ต้องดำเนินการ</span><b id="bellN" hidden>0</b></button>
       <div id="bellPanel" class="bell-panel" hidden>
         <h3>การแจ้งเตือนจากกฎ <button id="inboxRead" type="button" class="link">อ่านทั้งหมด</button></h3><ul id="inboxList"></ul>
@@ -124,7 +125,7 @@
 
   <section class="card span2" id="tasksCard">
     <h2>Tasks <small class="muted" id="taskCounts"></small>
-      <button id="taskNew" class="sm" data-perm="incident.write">+ สร้างงาน</button></h2>
+      <button id="taskNew" class="sm" data-perm="cases.update">+ สร้างงาน</button></h2>
     <div class="task-bar">
       <input id="taskQ" type="search" placeholder="ค้นหาชื่องาน / รายละเอียด" aria-label="ค้นหางาน">
       <select id="taskStatus" aria-label="กรองสถานะ"><option value="">ทุกสถานะ</option></select>
@@ -180,7 +181,7 @@
       <span id="cbType" class="cb-type"></span>
       <label>Priority <select id="cbPrio" data-perm-dis="incident.write"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label>
       <label class="grow">Tags <input id="cbTags" placeholder="คั่นด้วย , เช่น phishing, vip" maxlength="400" data-perm-dis="incident.write"></label>
-      <button id="cbSave" class="sm" data-perm="incident.write">บันทึก</button>
+      <button id="cbSave" class="sm" data-perm="cases.update">บันทึก</button>
       <span id="cbMsg" class="muted small"></span>
     </div>
     <div class="impact" id="cbImpact"></div>
@@ -197,7 +198,7 @@
       <svg id="graph" viewBox="0 0 720 300" role="img" aria-label="Correlation graph"></svg>
       <ol id="timeline" class="timeline"></ol>
     </div>
-      <div class="wf" data-perm="incident.write">
+      <div class="wf" data-perm="cases.read">
       <label>สถานะ <select id="wfStatus">
         <option value="open">open — เปิด</option><option value="investigating">investigating — กำลังสอบสวน</option>
         <option value="resolved">resolved — แก้ไขแล้ว</option><option value="false_positive">false positive — แจ้งเตือนผิด</option>
@@ -215,11 +216,11 @@
     <div class="copilot" id="copilot">
       <div class="cp-head">
         <h3>✦ AI SOC Copilot <small class="muted" id="aiStatus"></small></h3>
-        <span><button id="aiSummBtn" type="button" data-perm="ai.use">สรุปด้วย AI</button>
-          <button id="aiRefresh" type="button" class="ghost sm" data-perm="ai.use" hidden>สร้างใหม่</button></span>
+        <span><button id="aiSummBtn" type="button" data-perm="ai.copilot">สรุปด้วย AI</button>
+          <button id="aiRefresh" type="button" class="ghost sm" data-perm="ai.copilot" hidden>สร้างใหม่</button></span>
       </div>
       <div id="aiOut" class="ai-out"><p class="muted">กด "สรุปด้วย AI" เพื่อสรุปเหตุการณ์ ไทม์ไลน์ และขั้นตอนรับมือ</p></div>
-      <div class="chat" data-perm="ai.use">
+      <div class="chat" data-perm="ai.copilot">
         <ul id="chatLog" class="chat-log"></ul>
         <form id="chatForm" class="hunt"><input id="chatQ" maxlength="4000" autocomplete="off"
           placeholder="ถาม Copilot เช่น เครื่องไหนควร isolate ก่อน? มีหลักฐาน exfiltration ไหม?"><button>ถาม</button></form>
@@ -228,11 +229,11 @@
     </div>
       </div>
     <div class="tabpane" data-pane="alerts" hidden><div class="tbl-wrap tall"><table class="tbl" id="caseAlerts"><thead><tr><th>เวลา</th><th>Alert</th><th>Host</th><th>User</th><th>Rule</th><th>CTI</th></tr></thead><tbody></tbody></table></div></div>
-    <div class="tabpane" data-pane="tasks" hidden><p><button id="caseTaskNew" class="sm" data-perm="incident.write">+ สร้างงานใน case นี้</button></p>
+    <div class="tabpane" data-pane="tasks" hidden><p><button id="caseTaskNew" class="sm" data-perm="cases.update">+ สร้างงานใน case นี้</button></p>
       <div class="tbl-wrap"><table class="tbl" id="caseTasks"><thead><tr><th>#</th><th>ชื่องาน</th><th>ผู้รับผิดชอบ</th><th>สถานะ</th><th>กำหนดส่ง</th></tr></thead><tbody></tbody></table></div></div>
     <div class="tabpane" data-pane="events" hidden><p class="muted small" id="caseEvMeta"></p>
       <div class="tbl-wrap tall"><table class="tbl ev-tbl" id="caseEvents"><thead><tr><th>เวลา</th><th>ชนิด</th><th>Host</th><th>Description</th></tr></thead><tbody></tbody></table></div></div>
-    <div class="tabpane" data-pane="notebooks" hidden><p><button id="caseNbNew" class="sm" data-perm="incident.write">+ สร้าง notebook ของ case นี้</button></p><ul class="list" id="caseNbs"></ul></div>
+    <div class="tabpane" data-pane="notebooks" hidden><p><button id="caseNbNew" class="sm" data-perm="notebooks.write">+ สร้าง notebook ของ case นี้</button></p><ul class="list" id="caseNbs"></ul></div>
   </section>
 
   <section class="card span3" id="agentCard">
@@ -300,7 +301,7 @@
       <small class="muted">AI ร่าง → ระบบตรวจรูปแบบ รันกรณีทดสอบ และย้อนทดสอบกับข้อมูลล่าสุด → หัวหน้าทีมเปิดใช้</small></h2>
     <div class="agent-grid">
       <div>
-        <form id="ruleForm" data-perm="ai.use">
+        <form id="ruleForm" data-perm="rules.edit">
           <textarea id="ruleDesc" rows="3" maxlength="3000" placeholder="อธิบายสิ่งที่อยากตรวจจับ เช่น เครื่องที่ใช้ certutil ดาวน์โหลดไฟล์จากอินเทอร์เน็ต หรือ AI agent ที่อ่านไฟล์ .env มากกว่า 3 ครั้งใน 5 นาที"></textarea>
           <div class="row-btns"><button>ให้ AI ร่างกฎ</button>
             <button id="ruleManual" type="button" class="ghost">เขียนกฎเอง</button>
@@ -323,7 +324,7 @@
     <div id="chains" class="chains"></div>
     <div id="chainDetail" class="chain-detail" hidden>
       <div class="cp-head"><h3 id="chTitle"></h3>
-        <span><button id="chAiBtn" type="button" data-perm="ai.use">เล่าเส้นทางด้วย AI</button>
+        <span><button id="chAiBtn" type="button" data-perm="ai.copilot">เล่าเส้นทางด้วย AI</button>
         <button id="chClose" type="button" class="ghost sm">ปิด</button></span></div>
       <svg id="chGraph" viewBox="0 0 900 220" role="img" aria-label="Attack chain timeline"></svg>
       <div id="chAi" class="ai-out"></div>
@@ -336,7 +337,7 @@
     <div class="agent-grid">
       <div>
         <h3>Natural Language Hunting</h3>
-        <form id="nlForm" class="hunt" data-perm="ai.use"><input id="nlQ" maxlength="1000" autocomplete="off"
+        <form id="nlForm" class="hunt" data-perm="ai.hunt"><input id="nlQ" maxlength="1000" autocomplete="off"
           placeholder="เช่น หาเซิร์ฟเวอร์ที่ติดต่อ AI ของจีนในชั่วโมงที่ผ่านมา"><button>ค้นหา</button></form>
         <div class="presets" id="nlPresets"></div>
         <div id="nlPlan" class="nl-plan"></div>
@@ -344,14 +345,14 @@
       </div>
       <div>
         <h3>AI Threat Enrichment <small class="muted">IP · domain · URL · hash · CVE · user-agent</small></h3>
-        <form id="enForm" class="hunt" data-perm="ai.use"><input id="enQ" maxlength="500" autocomplete="off"
+        <form id="enForm" class="hunt" data-perm="ai.enrich"><input id="enQ" maxlength="500" autocomplete="off"
           placeholder="เช่น api.deepseek.com หรือ CVE-2025-7775"><button>วิเคราะห์</button></form>
         <div id="enOut" class="en-out"><p class="muted">ค้นในฟีด CTI ทุกแหล่ง และเหตุการณ์ในระบบ แล้วให้ AI อธิบายจากหลักฐานที่พบเท่านั้น</p></div>
       </div>
     </div>
   </section>
 
-  <section class="card span3" id="govCard" data-perm="users.manage" hidden>
+  <section class="card span3" id="govCard" data-perm="governance.read" hidden>
     <h2>Governance &amp; AI Evaluation <small class="muted" id="govTenant"></small>
       <button id="govRefresh" class="ghost sm" type="button">รีเฟรช</button></h2>
     <div class="agent-grid">
@@ -362,7 +363,14 @@
         <div id="aiUsageFoot" class="ai-foot"></div>
       </div>
       <div>
-        <h3>Audit log <small class="muted">กันการแก้ไขย้อนหลังด้วย hash chain</small></h3>
+        <h3>นโยบายแยกหน้าที่ (four-eyes)</h3>
+        <form id="polForm" class="pol">
+          <label class="chk"><input type="checkbox" name="four_eyes_response"> การตอบสนอง (กักกัน/ปล่อย agent) ต้องให้อีกคนที่มี <code>respond.approve</code> อนุมัติ</label>
+          <label class="chk"><input type="checkbox" name="four_eyes_agents"> การเพิ่ม/แก้สิทธิ์ AI agent ต้องให้อีกคนที่มี <code>agents.approve</code> อนุมัติ</label>
+          <label class="chk"><input type="checkbox" name="four_eyes_rules"> ผู้แก้ rule ล่าสุดเผยแพร่ rule เองไม่ได้</label>
+          <span id="polMsg" class="muted small"></span>
+        </form>
+        <h3 class="mt">Audit log <small class="muted">กันการแก้ไขย้อนหลังด้วย hash chain</small></h3>
         <div class="row-btns"><button id="auditVerify" type="button" class="ghost" data-plat="1">ตรวจความครบถ้วน (hash chain)</button>
           <button id="auditCsv" type="button" class="ghost">Export CSV</button>
           <button id="dbBackup" type="button" class="ghost" data-plat="1">ดาวน์โหลด backup</button></div>
@@ -372,9 +380,9 @@
     </div>
   </section>
 
-  <section class="card span3" id="usersCard" data-perm="users.manage" hidden>
+  <section class="card span3" id="usersCard" data-perm="users.read" hidden>
     <h2>ผู้ใช้และสิทธิ์ (RBAC) <small class="muted">token ส่วนตัวต่อคน · audit log บันทึกชื่อผู้ใช้จริง</small></h2>
-    <form id="userForm" class="hunt user-form" autocomplete="off">
+    <form id="userForm" class="hunt user-form" autocomplete="off" data-perm="users.manage">
       <input id="newUser" placeholder="username เช่น somchai.k" maxlength="63" required>
       <select id="newRole"></select>
       <button>สร้างผู้ใช้</button>
@@ -386,13 +394,30 @@
     <div class="tbl-wrap"><table class="tbl" id="usersTbl">
       <thead><tr><th>Username</th><th>บทบาท</th><th>สถานะ</th><th>ใช้งานล่าสุด</th><th>สร้างโดย</th><th></th></tr></thead><tbody></tbody>
     </table></div>
-    <details class="roles"><summary>สิทธิ์ของแต่ละบทบาท</summary><ul id="rolesList"></ul></details>
+    <h3 class="mt">บทบาทและสิทธิ์ <small class="muted">สิทธิ์ตั้งชื่อตามการกระทำ · คลิกหัวคอลัมน์บทบาทที่สร้างเองเพื่อแก้ไข</small></h3>
+    <div class="tbl-wrap tall"><table class="tbl perm-matrix" id="permMatrix"></table></div>
+    <form id="roleForm" class="role-form" data-perm="roles.manage" hidden>
+      <h3>บทบาทที่สร้างเอง <small class="muted">มอบได้เฉพาะสิทธิ์ที่คุณมีอยู่เอง</small></h3>
+      <div class="row3"><label>ชื่อ (a-z 0-9 _ -) <input name="name" required pattern="[a-z][a-z0-9_-]{1,30}" placeholder="เช่น tier1"></label>
+        <label>ชื่อที่แสดง <input name="label" maxlength="60" placeholder="เช่น SOC Tier 1"></label>
+        <label>เริ่มจากบทบาท <select name="base"><option value="">— ว่าง —</option></select></label></div>
+      <div id="rolePerms" class="role-perms"></div>
+      <div><button>บันทึกบทบาท</button> <button type="button" id="roleDel" class="ghost">ลบบทบาท</button> <span id="roleMsg" class="muted small"></span></div>
+    </form>
+  </section>
+
+  <section class="card span3" id="apprCard">
+    <h2>รออนุมัติ <small class="muted">แยกผู้ขอออกจากผู้อนุมัติ — ผู้ขออนุมัติคำขอของตัวเองไม่ได้</small></h2>
+    <div class="appr">
+      <div><h3>การตอบสนอง <small class="muted" id="apprRespNote"></small></h3><ul class="list" id="apprResp"></ul></div>
+      <div><h3>สิทธิ์ AI agent <small class="muted" id="apprAgNote"></small></h3><ul class="list" id="apprAg"></ul></div>
+    </div>
   </section>
 
   <section class="card span3" id="casesCard">
     <h2>Cases <small class="muted" id="csTotal"></small>
-      <button id="cfEdit" class="ghost sm" data-perm="rules.manage">Custom fields</button>
-      <button id="csNew" class="sm" data-perm="incident.write">+ New case</button></h2>
+      <button id="cfEdit" class="ghost sm" data-perm="governance.manage">Custom fields</button>
+      <button id="csNew" class="sm" data-perm="cases.create">+ New case</button></h2>
     <div class="task-bar">
       <input id="csQ" type="search" placeholder="ค้นหาชื่อ case / host / tag / เลข case" aria-label="ค้นหา case">
       <select id="csStatus" aria-label="สถานะ"><option value="">ทุกสถานะ</option><option value="open,investigating" selected>กำลังดำเนินการ</option><option value="open">open</option>
@@ -423,7 +448,7 @@
       <label class="chk"><input id="alReal" type="checkbox"> log จริงเท่านั้น</label>
     </div>
     <div class="tbl-wrap tall"><table class="tbl alerts-tbl" id="alTbl">
-      <thead><tr><th class="num">Occu.</th><th>Case</th><th>วันที่</th><th>Alert</th><th>สถานะ</th><th>Verdict</th><th>ผู้รับผิดชอบ</th><th>Entity</th><th>Urgency</th><th>Detection type</th><th>Type</th><th>Threats</th></tr></thead>
+      <thead><tr><th class="num">Occu.</th><th>Case</th><th>วันที่</th><th>Alert</th><th>สถานะ</th><th>จัดการ</th><th>Verdict</th><th>ผู้รับผิดชอบ</th><th>Entity</th><th>Urgency</th><th>Detection type</th><th>Type</th><th>Threats</th></tr></thead>
       <tbody></tbody></table></div>
     <div class="pager"><button id="alPrev" class="ghost sm">‹ ก่อนหน้า</button><span id="alPage" class="muted"></span><button id="alNext" class="ghost sm">ถัดไป ›</button></div>
   </section>
@@ -468,7 +493,7 @@
         <div class="task-bar">
           <select id="qbRange" aria-label="ช่วงเวลา"><option value="15">15 นาที</option><option value="60" selected>1 ชม.</option><option value="1440">24 ชม.</option><option value="10080">7 วัน</option></select>
           <button id="qbRun">▶ Run query</button>
-          <button id="qbSave" class="ghost" data-perm="incident.write">บันทึก query</button>
+          <button id="qbSave" class="ghost" data-perm="query.run">บันทึก query</button>
           <button id="qbCsv" class="ghost">Export CSV</button>
           <span id="qbMeta" class="muted small"></span>
         </div>
@@ -488,7 +513,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
     <h2>Notebooks <small class="muted">บันทึกการสืบสวน (Markdown) แชร์ในทีม tenant เดียวกัน</small></h2>
     <div class="nb">
       <aside class="nb-side">
-        <button id="nbNew" class="sm" data-perm="incident.write">+ New notebook</button>
+        <button id="nbNew" class="sm" data-perm="notebooks.write">+ New notebook</button>
         <div class="seg"><button data-trash="0" class="on">Notebooks</button><button data-trash="1">ถังขยะ</button></div>
         <input id="nbQ" type="search" placeholder="ค้นหา notebook" aria-label="ค้นหา notebook">
         <ul id="nbList" class="nb-list"></ul>
@@ -501,7 +526,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
 
   <section class="card span3" id="intelCard">
     <h2>Intelligence <small class="muted" id="ciTotal">ค้นหา IOC จาก CTI feed สาธารณะ และ IOC ของ tenant · ดูว่าเคยเห็นใน log ของเราหรือไม่</small>
-      <button id="iocAdd" class="sm" data-perm="rules.manage">+ เพิ่ม IOC ของเรา</button></h2>
+      <button id="iocAdd" class="sm" data-perm="threatintel.curate">+ เพิ่ม IOC ของเรา</button></h2>
     <textarea id="ciQ" class="ci-q" rows="2" placeholder="ค้นหา IP, domain, URL, hash, CVE, ชื่อ malware — หลายค่าคั่นด้วยบรรทัดใหม่หรือ , (Ctrl+Enter เพื่อค้นหา)" aria-label="ค้นหา intelligence"></textarea>
     <div class="task-bar">
       <select id="ciType" aria-label="ชนิด"><option value="">ทุกชนิด</option></select>
@@ -518,7 +543,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
 
   <section class="card span3" id="colCard">
     <h2>IOC Collections <small class="muted">ชุด IOC ของเรา (เช่น ตามแคมเปญ / incident) · ใช้ตรวจ log ด้วย rule IOC-001</small>
-      <button id="colNew" class="sm" data-perm="rules.manage">+ New collection</button></h2>
+      <button id="colNew" class="sm" data-perm="threatintel.curate">+ New collection</button></h2>
     <div class="nb">
       <aside class="nb-side"><ul id="colList" class="nb-list"></ul></aside>
       <div class="nb-main" id="colMain"><p class="muted">เลือกหรือสร้าง collection</p></div>
@@ -529,7 +554,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
     <h2>Graph explorations <small class="muted">ไล่ความเชื่อมโยง host ↔ บัญชี ↔ IOC ↔ case ↔ rule จาก alert และ log จริงของ tenant · ดับเบิลคลิก node เพื่อขยาย</small></h2>
     <div class="graph-ui">
       <aside class="nb-side">
-        <button id="grNew" class="sm" data-perm="incident.write">+ New graph</button>
+        <button id="grNew" class="sm" data-perm="notebooks.write">+ New graph</button>
         <ul id="grList" class="nb-list"></ul>
       </aside>
       <div class="graph-main">
@@ -539,7 +564,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
             <option value="incident">Case (เลข)</option><option value="threat">Threat / malware</option><option value="rule">Rule ID</option></select>
           <input id="grValue" placeholder="ค่า เช่น SRV-WEB-01" aria-label="ค่า node">
           <button id="grAdd" class="ghost">เพิ่ม + ขยาย</button>
-          <button id="grSave" data-perm="incident.write">บันทึก</button>
+          <button id="grSave" data-perm="notebooks.write">บันทึก</button>
           <span id="grMsg" class="muted small"></span>
         </div>
         <svg id="grSvg" class="gr-svg" role="img" aria-label="Investigation graph"></svg>
@@ -563,20 +588,20 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
         <label>ขนาดทีม security *</label>
         <div class="seg" id="wsTeam"><button type="button" data-v="0">0</button><button type="button" data-v="1-10">1-10</button><button type="button" data-v="11-50">11-50</button><button type="button" data-v="51-200">51-200</button><button type="button" data-v="200+">200+</button></div>
         <label>ผู้ติดต่อ DPO (PDPA) <input name="dpo_contact" maxlength="200" placeholder="ชื่อ / อีเมล เจ้าหน้าที่คุ้มครองข้อมูลส่วนบุคคล"></label>
-        <div><button id="wsSave" data-perm="users.manage">บันทึก</button> <span id="wsMsg" class="muted small"></span></div>
+        <div><button id="wsSave" data-perm="governance.manage">บันทึก</button> <span id="wsMsg" class="muted small"></span></div>
       </form>
       <div class="ws-tpl">
         <h3>Case templates <small class="muted">ใช้ตอนสร้าง case ด้วยมือ — เติม priority, tag และสร้างงาน (Tasks) ให้อัตโนมัติ</small></h3>
         <div id="tplList"></div>
-        <p><button id="tplAdd" type="button" class="ghost sm" data-perm="rules.manage">+ เพิ่ม template</button>
-          <button id="tplSave" type="button" class="sm" data-perm="rules.manage">บันทึก templates</button> <span id="tplMsg" class="muted small"></span></p>
+        <p><button id="tplAdd" type="button" class="ghost sm" data-perm="governance.manage">+ เพิ่ม template</button>
+          <button id="tplSave" type="button" class="sm" data-perm="governance.manage">บันทึก templates</button> <span id="tplMsg" class="muted small"></span></p>
       </div>
     </div>
   </section>
 
   <section class="card span3" id="feedsCard">
     <h2>Feeds (ส่งออก) <small class="muted">ให้ไฟร์วอลล์ / CTI platform อื่นดึง IOC ไปใช้ — STIX 2.1, ข้อความบรรทัดละรายการ, CSV</small>
-      <button id="fdNew" class="sm" data-perm="rules.manage">+ New feed</button></h2>
+      <button id="fdNew" class="sm" data-perm="threatintel.curate">+ New feed</button></h2>
     <div class="tbl-wrap"><table class="tbl" id="fdTbl"><thead><tr><th>ชื่อ</th><th>รูปแบบ</th><th>เงื่อนไข</th><th class="num">จำนวน IOC</th><th>ถูกดึงล่าสุด</th><th>สถานะ</th><th></th></tr></thead><tbody></tbody></table></div>
   </section>
 
@@ -596,19 +621,19 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
   <section class="card span3" id="intakesCard">
     <h2>Intakes <small class="muted" id="inTotal">แหล่ง log แต่ละตัวมี key ของตัวเอง ส่งเข้า <code>POST /api/soc/intake</code></small>
       <span class="seg" id="inDays"><button data-d="1" class="on">24 ชม.</button><button data-d="7">7 วัน</button><button data-d="30">30 วัน</button></span>
-      <button id="inNew" class="sm" data-perm="rules.manage">+ New intake</button></h2>
+      <button id="inNew" class="sm" data-perm="ingest.sources.manage">+ New intake</button></h2>
     <div class="intake-list" id="inList"></div>
   </section>
 
   <section class="card span3" id="entitiesCard">
     <h2>Entities <small class="muted">กลุ่มองค์กร / สาขา / หน่วยธุรกิจ ที่เป็นเจ้าของ intake · กำหนดได้ว่าจะสร้าง alert หรือเก็บ log อย่างเดียว</small>
-      <button id="enNew" class="sm" data-perm="rules.manage">+ New entity</button></h2>
+      <button id="enNew" class="sm" data-perm="ingest.sources.manage">+ New entity</button></h2>
     <div class="tbl-wrap"><table class="tbl" id="enTbl"><thead><tr><th>ชื่อ</th><th>รายละเอียด</th><th class="num">Intakes</th><th>Alert generation</th><th></th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section class="card span3" id="assetsCard">
     <h2>Assets <small class="muted" id="asTotal">ค้นพบอัตโนมัติจาก log (host / บัญชีผู้ใช้ / AI agent) และเพิ่มเองได้</small>
-      <button id="asNew" class="sm" data-perm="agents.manage">+ New asset</button></h2>
+      <button id="asNew" class="sm" data-perm="assets.manage">+ New asset</button></h2>
     <div class="tabs" id="asTabs" role="tablist"><button data-t="" class="on">ทั้งหมด <em id="asAll">0</em></button><button data-t="host">Hosts <em id="asHost">0</em></button>
       <button data-t="account">Accounts / Users <em id="asAccount">0</em></button><button data-t="ai_agent">AI agents <em id="asAgent">0</em></button></div>
     <div class="task-bar">
@@ -652,7 +677,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
 
   <section class="card span3" id="nrulesCard">
     <h2>กฎการแจ้งเตือน <small class="muted">เลือกว่า incident แบบไหนควรแจ้งใคร ผ่านช่องทางไหน</small>
-      <button id="nrNew" class="sm" data-perm="rules.manage">+ สร้างกฎ</button></h2>
+      <button id="nrNew" class="sm" data-perm="integrations.manage">+ สร้างกฎ</button></h2>
     <p class="muted small" id="nrChannels"></p>
     <div class="tbl-wrap"><table class="tbl" id="nrTbl"><thead><tr><th>#</th><th>ชื่อกฎ</th><th>เงื่อนไข</th><th>ช่องทาง</th><th>เปิดใช้</th><th></th></tr></thead><tbody></tbody></table></div>
   </section>
@@ -781,7 +806,7 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
 </dialog>
 
 <dialog id="enDlg" class="dlg">
-  <form method="dialog" id="enForm">
+  <form method="dialog" id="entForm">
     <h2 id="enDlgTitle">New entity</h2>
     <label>ชื่อ <input name="name" required maxlength="120" placeholder="เช่น สาขาบางนา, บริษัทลูก ABC"></label>
     <label>รายละเอียด <input name="description" maxlength="1000"></label>
