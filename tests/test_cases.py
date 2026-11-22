@@ -46,7 +46,7 @@ def test_catalog_counts_quality_and_disabled():
     assert r["OAI-001"]["alerts_7d"] == 2 and r["OAI-001"]["rejected_7d"] == 1 and r["OAI-001"]["quality"] == 50
     assert r["OAI-001"]["exports"] and r["AGT-011"]["enabled"] is False and r["CUS-001"]["alerts_7d"] == 1
     assert r["OAI-003"]["quality"] is None
-    assert c["summary"]["total"] == 14 + 12 + 1 and c["summary"]["enabled"] == c["summary"]["total"] - 1
+    assert c["summary"]["total"] == 14 + 12 + 2 + 1 and c["summary"]["enabled"] == c["summary"]["total"] - 1
     assert any(t["id"] == "T1059" for m in c["mitre"] for t in m["techniques"])
 
 

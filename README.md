@@ -188,6 +188,21 @@ poll ได้ ส่วน POST/PATCH และการสแกน OSINT ย�
 - **Rules catalog** เพิ่ม: ชนิด log ที่แต่ละ rule ต้องใช้ + กรองเฉพาะ rule ที่มี log เข้าระบบแล้ว, จำนวน IOC ที่ใช้งานอยู่จาก CTI,
   ปุ่ม "แจ้งเตือนเมื่อเจอ" สร้างกฎแจ้งเตือนของ rule นั้น
 
+### Intelligence, IOC ของ tenant, Feeds (ส่งออก) และ Integrations
+
+- **Intelligence** (`GET /api/soc/intel`): ค้น IOC รวมจาก ThreatFox, Feodo Tracker, CISA KEV, ThreatDefence agentic indicators
+  และ IOC ของ tenant — ค้นหลายค่าพร้อมกัน (บรรทัดใหม่ / ,) รองรับแบบ defang, แสดง TLP, ความเชื่อมั่น, แหล่ง, threat และ
+  **การพบใน tenant** (จำนวน log / alert / host ใน 7 วัน) พร้อมบอกค่าที่ไม่พบในฐานข้อมูล
+- **IOC ของ tenant** (`POST /api/soc/iocs`, `POST /api/soc/iocs/delete`, สิทธิ์ `rules.manage`): เพิ่มทีละมาก ๆ พร้อม TLP,
+  ความเชื่อมั่น, threat, ความรุนแรง, วันหมดอายุ
+- **ตรวจจับ IOC ใน log จริง**: rule **IOC-001** (IOC ของ tenant) และ **IOC-002** (CTI feed สาธารณะ) เทียบ IP / IP:port / domain /
+  URL / hash / user-agent ใน log ที่ ingest; 1 alert ต่อ indicator ต่อ host ต่อ 10 นาที; เปิด/ปิดได้ใน Rules catalog
+- **Feeds (ส่งออก)** (`/api/soc/feeds`): เลือกชนิด, แหล่ง, ความเชื่อมั่นขั้นต่ำ, TLP สูงสุด (ไม่เกิน AMBER+STRICT — RED ไม่ถูกส่งออก),
+  รูปแบบ STIX 2.1 / Text (บรรทัดละรายการ สำหรับ FortiGate Threat Feed, Palo Alto EDL) / CSV; URL `GET /feeds/<key>.<txt|json|csv>`
+  มี key ในตัว (เก็บเป็น SHA-256, แสดงครั้งเดียว, หมุนได้), นับจำนวนครั้งที่ถูกดึงและ IP ล่าสุด, จำกัด 60 ครั้ง/นาที/IP
+- **Integrations** (`GET /api/soc/integrations`): รายการสิ่งที่ระบบเชื่อมได้จริง (intake formats, CTI feeds, feeds ส่งออก,
+  ช่องทางแจ้งเตือน, AI, enrichment, ไฟล์ KQL/SPL/Sigma) พร้อมสถานะที่คำนวณจากการตั้งค่าบนเซิร์ฟเวอร์และวิธีตั้งค่า
+
 ### แจ้งเตือน incident ออกนอกระบบ (Teams / LINE / Slack / Email / Webhook)
 
 ตั้งค่าผ่าน environment variables (บน Render: service → **Environment**) — ไม่ต้องแก้โค้ด, secret ไม่ถูกเก็บใน repo

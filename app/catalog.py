@@ -4,7 +4,7 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from app import agent_detect, offensive_ai
+from app import agent_detect, intel, offensive_ai
 from app.workspace import TECHNIQUES
 
 DETECTIONS = Path(__file__).resolve().parent.parent / "detections"
@@ -32,7 +32,7 @@ def _exports() -> dict[str, list[dict]]:
 P, W, N, L, D, X, A = "EDR process", "Web / proxy", "Network flow", "Identity logon", "Database audit", "DLP", "AI agent audit"
 RULE_SOURCES = {"OAI-001": [P], "OAI-002": [N, W], "OAI-003": [P], "OAI-004": [W], "OAI-005": [P, W], "OAI-006": [P, W, N],
                 "OAI-007": [N], "OAI-008": [W], "OAI-009": [L, N], "OAI-010": [D], "OAI-011": [D, X, N], "OAI-012": [P],
-                "OAI-013": [P], "OAI-014": [P]}
+                "OAI-013": [P], "OAI-014": [P], "IOC-001": [N, W, P], "IOC-002": [N, W, P]}
 CUSTOM_KIND = {"process": P, "http": W, "net": N, "logon": L, "db": D, "dlp": X, "agent": A}
 
 _EXPORTS = None
@@ -43,7 +43,7 @@ def builtin_rules() -> list[dict]:
     if _EXPORTS is None:
         _EXPORTS = _exports()
     rows = []
-    for rules, kind in ((offensive_ai.RULES, "builtin"), (agent_detect.RULES, "builtin")):
+    for rules, kind in ((offensive_ai.RULES, "builtin"), (agent_detect.RULES, "builtin"), (intel.IOC_RULES, "builtin")):
         for rid, (title, sev, tech, tactic) in rules.items():
             rows.append({"id": rid, "title": title, "severity": sev, "technique": tech, "tactic": tactic,
                          "category": src_label(rid, kind), "source": "built-in", "exports": _EXPORTS.get(rid, []),
@@ -52,7 +52,8 @@ def builtin_rules() -> list[dict]:
 
 
 def src_label(rid: str, kind: str) -> str:
-    return "Offensive-AI behaviour" if rid.startswith("OAI") else "AI-agent policy" if rid.startswith("AGT") else "Custom"
+    return ("Offensive-AI behaviour" if rid.startswith("OAI") else "AI-agent policy" if rid.startswith("AGT")
+            else "IOC / CTI match" if rid.startswith("IOC") else "Custom")
 
 
 def catalog(custom: list[dict], disabled: set[str], events: list[dict], incidents: dict, now: float) -> dict:

@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, catalog, explorer, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, catalog, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -61,6 +61,7 @@ async def lifespan(_: FastAPI):
         e.custom.load(soc_store.list_rules(e.tenant))
         e.disabled_rules = set(soc_store.get_setting("disabled_rules", [], e.tenant))
         e.assets.update({(a["type"], a["name"]): a for a in soc_store.assets(e.tenant)})
+        e.ioc_lookup = lambda t=e.tenant: _intel_index(t)
         e.sources.update({k[4:]: n for k, n in soc_store.counts(e.tenant).items() if k.startswith("src:")})
         e.persist = True
         e.on_incident = lambda inc, t=e.tenant: _on_incident(t, inc)
@@ -413,6 +414,238 @@ async def soc_intake_ingest(request: Request, host: str | None = None, x_intake_
     intake["last_event_at"] = time.time()
     soc_store.save_intake(intake, _key_hash(x_intake_key), tenant)
     return {**result, "rejected": rejected, "warnings": warn, "intake": intake["name"]}
+
+
+# ---------- intelligence database, tenant IOCs, outgoing feeds ----------
+_INTEL_CACHE: dict[str, tuple[float, list, dict]] = {}
+
+
+def _feed_stamp() -> tuple:
+    return tuple((n, (threatintel._cache.get(n) or {}).get("fetched_at")) for n in ("threatfox", "feodo", "kev", "agentic"))
+
+
+def _indicators(tenant: str) -> list[dict]:
+    """All indicators for a tenant (public feeds + own IOCs), cached until a feed refreshes or the tenant edits IOCs."""
+    stamp = hash(_feed_stamp())
+    hit = _INTEL_CACHE.get(tenant)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    now = time.time()
+    own = [i for i in soc_store.iocs(tenant) if not i.get("revoked") and not (i.get("expires") and i["expires"] < now)]
+    rows = intel.from_feeds(threatintel.feed_index("threatfox"), threatintel.feed_index("feodo"),
+                            threatintel.feed_index("kev"), threatintel.agentic_index()) + own
+    _INTEL_CACHE[tenant] = (stamp, rows, intel.build_index(rows))
+    return rows
+
+
+def _intel_index(tenant: str) -> dict:
+    _indicators(tenant)
+    return _INTEL_CACHE[tenant][2]
+
+
+def _sightings(who: rbac.Principal, values: list[str], days: int = 7) -> dict[str, dict]:
+    """How often each indicator value appears in this tenant's raw logs and alerts (last `days`)."""
+    want = {v.lower() for v in values}
+    if not want:
+        return {}
+    end = time.time()
+    start = end - days * 86400
+    eng = E(who)
+    recs = [r for r in eng.raw if (r.get("ts") or 0) >= start and not (eng.persist and r.get("simulated") is False)]
+    if eng.persist:
+        recs += soc_store.raw_between(start, end, who.tenant, limit=50000)
+    out = {v: {"logs": 0, "alerts": 0, "last_seen": None, "hosts": set()} for v in want}
+    for r in recs:
+        for o in intel.observables(r) & want:
+            x = out[o]
+            x["logs"] += 1
+            x["last_seen"] = max(x["last_seen"] or 0, r.get("ts") or 0)
+            if r.get("host") or r.get("dest_host"):
+                x["hosts"].add(r.get("host") or r.get("dest_host"))
+    for e in _tenant_events(who, start, end):
+        v = str(e.get("indicator") or e.get("remote_ip") or "").lower()
+        if v in out:
+            out[v]["alerts"] += 1
+            out[v]["last_seen"] = max(out[v]["last_seen"] or 0, e["ts"])
+    return {k: {**v, "hosts": sorted(h for h in v["hosts"] if h)[:5]} for k, v in out.items()}
+
+
+@app.get("/api/soc/intel")
+async def soc_intel(q: str = "", types: str = "", sources: str = "", min_conf: int = 0, page: int = 1, size: int = 25,
+                    who: rbac.Principal = Depends(require("soc.read"))):
+    rows = _indicators(who.tenant)
+    size = max(10, min(size, 100))
+    res = intel.search(rows, q[:20000], [t for t in types.split(",") if t], [s for s in sources.split(",") if s],
+                       min_conf, limit=size, offset=(max(1, page) - 1) * size)
+    sight = _sightings(who, [i["value"] for i in res["items"]])
+    res["items"] = [{**i, "sightings": sight.get(i["value"].lower())} for i in res["items"]]
+    res.update(page=max(1, page), pages=max(1, -(-res["total"] // size)), indexed=len(rows),
+               sources=intel.SOURCES, types=list(intel.TYPES), tlp=intel.TLP)
+    return res
+
+
+class IocIn(BaseModel):
+    values: str = Field(min_length=1, max_length=200_000)  # one per line or comma separated
+    tlp: Literal["clear", "green", "amber", "amber+strict", "red"] = "amber"
+    confidence: int = Field(default=80, ge=0, le=100)
+    severity: Literal["low", "medium", "high", "critical"] | None = None
+    threat: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=1000)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    expires_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+@app.post("/api/soc/iocs")
+async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("rules.manage"))):
+    """Add the tenant's own IOCs (bulk). They are searched with the CTI feeds, matched in logs (IOC-001) and can be
+    published through outgoing feeds."""
+    now = time.time()
+    good, bad = [], []
+    for raw in re.split(r"[\n,]", req.values):
+        raw = raw.strip()
+        if not raw:
+            continue
+        typ, v = intel.classify(raw)
+        if typ is None:
+            bad.append(raw[:100])
+            continue
+        good.append({**intel._ind(v, typ, "tenant", req.confidence, req.tlp, req.threat or None, time.strftime("%Y-%m-%d"),
+                                  None, _clean_tags(req.tags), req.description or None),
+                     "severity": req.severity, "added_by": who.name, "added_at": now,
+                     "expires": now + req.expires_days * 86400 if req.expires_days else None, "revoked": False})
+    if len(good) > 10000:
+        raise HTTPException(413, "max 10,000 IOCs per request")
+    soc_store.save_iocs(good, who.tenant)
+    _INTEL_CACHE.pop(who.tenant, None)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ioc", target=f"{len(good)} IOCs",
+                 purpose=f"add tlp={req.tlp} conf={req.confidence} threat={req.threat[:60]}", legal_basis="own_asset",
+                 case_ref=None, result={"added": len(good), "invalid": len(bad)})
+    return {"added": len(good), "invalid": bad[:50], "by_type": dict(Counter(i["type"] for i in good))}
+
+
+@app.get("/api/soc/iocs")
+async def soc_iocs_list(who: rbac.Principal = Depends(require("soc.read"))):
+    rows = sorted(soc_store.iocs(who.tenant), key=lambda i: -(i.get("added_at") or 0))
+    return {"iocs": rows[:2000], "total": len(rows)}
+
+
+class IocDelete(BaseModel):
+    values: list[str] = Field(min_length=1, max_length=5000)
+
+
+@app.post("/api/soc/iocs/delete")
+async def soc_iocs_delete(req: IocDelete, who: rbac.Principal = Depends(require("rules.manage"))):
+    n = soc_store.delete_iocs([intel.classify(v)[1] for v in req.values], who.tenant)
+    _INTEL_CACHE.pop(who.tenant, None)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ioc", target=f"{n} IOCs",
+                 purpose="delete", legal_basis="own_asset", case_ref=None, result={"deleted": n})
+    return {"deleted": n}
+
+
+class FeedIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1000)
+    types: list[Literal["ipv4", "ipv6", "domain", "url", "md5", "sha1", "sha256", "email", "cve", "user_agent"]] = Field(default_factory=list)
+    sources: list[Literal["threatfox", "feodo", "kev", "agentic", "tenant"]] = Field(default_factory=list)
+    min_confidence: int = Field(default=50, ge=0, le=100)
+    max_tlp: Literal["clear", "green", "amber", "amber+strict"] = "green"
+    format: Literal["stix", "text", "csv"] = "stix"
+    sort: Literal["newest", "oldest"] = "newest"
+    max_size: int = Field(default=2000, ge=1, le=100000)
+    enabled: bool = True
+
+
+def _feed_url(request: Request, key: str, fmt: str) -> str:
+    base = notifier.public_url or str(request.base_url).rstrip("/")
+    return f"{base}/feeds/{key}.{ {'stix': 'json', 'text': 'txt', 'csv': 'csv'}[fmt] }"
+
+
+@app.get("/api/soc/feeds")
+async def soc_feeds(who: rbac.Principal = Depends(require("soc.read"))):
+    rows = _indicators(who.tenant)
+    out = []
+    for f in soc_store.feeds(who.tenant):
+        f.pop("_key_hash", None)
+        out.append({**f, "would_export": len(intel.select(rows, f))})
+    return {"feeds": out}
+
+
+@app.post("/api/soc/feeds/preview")
+async def soc_feed_preview(req: FeedIn, who: rbac.Principal = Depends(require("soc.read"))):
+    rows = intel.select(_indicators(who.tenant), req.model_dump())
+    return {"count": len(rows), "sample": rows[:10], "by_type": dict(Counter(i["type"] for i in rows))}
+
+
+@app.post("/api/soc/feeds")
+async def soc_feed_create(req: FeedIn, request: Request, who: rbac.Principal = Depends(require("rules.manage"))):
+    key = "fd_" + secrets.token_urlsafe(32)
+    feed = soc_store.save_feed({"id": None, **req.model_dump(), "created_by": who.name, "created_at": time.time(),
+                                "key_hint": key[:7] + "…" + key[-4:], "pulls": 0, "last_pull": None}, _key_hash(key), who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.feed", target=f"feed:{feed['id']}",
+                 purpose=f"create: {feed['name']} format={feed['format']} max_tlp={feed['max_tlp']}", legal_basis="own_asset",
+                 case_ref=None, result={})
+    return {**feed, "url": _feed_url(request, key, feed["format"]),
+            "note": "URL นี้มี key อยู่ในตัว — แสดงครั้งเดียว ใครมี URL ก็ดึงได้ จึงจำกัด TLP สูงสุดไว้ที่ amber+strict"}
+
+
+@app.put("/api/soc/feeds/{feed_id}")
+async def soc_feed_update(feed_id: int, req: FeedIn, request: Request, rotate_key: bool = False,
+                          who: rbac.Principal = Depends(require("rules.manage"))):
+    cur = next((f for f in soc_store.feeds(who.tenant) if f["id"] == feed_id), None)
+    if cur is None:
+        raise HTTPException(404, "feed not found")
+    key_hash = cur.pop("_key_hash")
+    cur.update(req.model_dump(), updated_by=who.name, updated_at=time.time())
+    key = None
+    if rotate_key:
+        key = "fd_" + secrets.token_urlsafe(32)
+        key_hash = _key_hash(key)
+        cur["key_hint"] = key[:7] + "…" + key[-4:]
+    soc_store.save_feed(cur, key_hash, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.feed", target=f"feed:{feed_id}",
+                 purpose="rotate key" if key else f"update enabled={cur['enabled']}", legal_basis="own_asset", case_ref=None, result={})
+    return {**cur, **({"url": _feed_url(request, key, cur["format"])} if key else {})}
+
+
+@app.get("/feeds/{token}.{ext}")
+async def public_feed(token: str, ext: str, request: Request):
+    """Pull endpoint for firewalls / CTI platforms. The token in the URL is the credential (stored as SHA-256)."""
+    if len(token) > 100 or ext not in ("json", "txt", "csv"):
+        raise HTTPException(404, "not found")
+    found = soc_store.feed_by_key(_key_hash(token))
+    if not found or not found[1].get("enabled", True):
+        raise HTTPException(404, "not found")  # same answer for wrong and disabled keys
+    tenant, feed = found
+    client = request.client.host if request.client else "unknown"
+    q = _hits[(("feed", client), True)]
+    now_m = time.monotonic()
+    while q and now_m - q[0] > 60:
+        q.popleft()
+    if len(q) >= 60:
+        raise HTTPException(429, "rate limit exceeded")
+    q.append(now_m)
+    rows = intel.select(_indicators(tenant), feed)
+    feed.update(pulls=feed.get("pulls", 0) + 1, last_pull=time.time(), last_pull_ip=client)
+    soc_store.save_feed(feed, _key_hash(token), tenant)
+    fmt = feed["format"]
+    if fmt == "stix":
+        return JSONResponse(intel.to_stix(rows, feed["name"]), media_type="application/stix+json;version=2.1")
+    if fmt == "csv":
+        return Response(intel.to_csv(rows), media_type="text/csv; charset=utf-8")
+    return Response(intel.to_text(rows), media_type="text/plain; charset=utf-8")
+
+
+@app.get("/api/soc/integrations")
+async def soc_integrations(who: rbac.Principal = Depends(require("soc.read"))):
+    ins = soc_store.intakes(who.tenant)
+    fds = soc_store.feeds(who.tenant)
+    state = {"notify_channels": notifier.channels(), "ai_enabled": ai.status()["enabled"],
+             "hibp": bool(settings.hibp_api_key), "ipinfo": bool(settings.ipinfo_token),
+             "feeds_ok": {n: (threatintel._cache.get(n) or {}).get("ok") for n in ("threatfox", "feodo", "kev", "agentic")},
+             "intakes": dict(Counter(i["format"] for i in ins if not i.get("disabled"))),
+             "feeds_out": dict(Counter(f["format"] for f in fds if f.get("enabled", True)))}
+    return {"integrations": integrations.catalog(state), "categories": list(integrations.CATEGORIES),
+            "content_types": integrations.CONTENT_TYPES}
 
 
 # ---------- entities and intakes ----------

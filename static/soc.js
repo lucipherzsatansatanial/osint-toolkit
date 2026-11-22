@@ -1141,7 +1141,8 @@ window.addEventListener("hashchange", () => {
   if (t) openTask(t); else $("#tasksCard").scrollIntoView({ behavior: "smooth" });
 });
 function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); loadAlertsList(); loadEvents(); loadLandscape(); loadNotifyRules();
-  loadCases(); loadSavedQueries(); loadNotebooks(); loadCatalog(); loadCaseMeta(); loadIntakes(); loadEntities(); loadAssets(); }
+  loadCases(); loadSavedQueries(); loadNotebooks(); loadCatalog(); loadCaseMeta(); loadIntakes(); loadEntities(); loadAssets();
+  loadIntel(); loadFeeds(); loadIntegrations(); }
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);
 
@@ -1902,3 +1903,167 @@ $("#asForm").addEventListener("submit", async (ev) => {
   } catch (e) { $("#asErr").textContent = e.message; }
 });
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) { loadIntakes(); loadAssets(); } }, 60000);
+
+
+// ---------- intelligence ----------
+const CI = { page: 1, meta: null };
+const TLP_CLS = { clear: "clear", green: "green", amber: "amber", "amber+strict": "amber", red: "red" };
+async function loadIntel() {
+  const p = new URLSearchParams({ page: CI.page, size: 25, min_conf: $("#ciConf").value });
+  if ($("#ciQ").value.trim()) p.set("q", $("#ciQ").value.trim());
+  if ($("#ciType").value) p.set("types", $("#ciType").value);
+  if ($("#ciSrc").value) p.set("sources", $("#ciSrc").value);
+  try {
+    const r = await api("/api/soc/intel?" + p);
+    if (!CI.meta) {
+      CI.meta = r;
+      $("#ciType").insertAdjacentHTML("beforeend", r.types.map((t) => `<option>${t}</option>`).join(""));
+      $("#ciSrc").insertAdjacentHTML("beforeend", Object.entries(r.sources).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
+    }
+    CI.page = r.page;
+    $("#nb-intel").textContent = big(r.indexed);
+    $("#ciMeta").textContent = `${r.total.toLocaleString()} รายการ จาก ${r.indexed.toLocaleString()} indicators · ` +
+      Object.entries(r.by_source).map(([k, n]) => `${r.sources[k] || k} ${n}`).join(" · ");
+    $("#ciMissing").textContent = r.not_found.length ? `ไม่พบในฐานข้อมูล: ${r.not_found.join(", ")}` : "";
+    $("#ciPage").textContent = `หน้า ${r.page} / ${r.pages}`;
+    $("#ciPrev").disabled = r.page <= 1; $("#ciNext").disabled = r.page >= r.pages;
+    $("#ciTbl tbody").innerHTML = r.items.map((i) => {
+      const s = i.sightings;
+      const seen = s && (s.logs || s.alerts) ? `<b class="bad-ink">${s.logs} logs · ${s.alerts} alerts</b><div class="sub">${esc(s.hosts.join(", "))}${s.last_seen ? " · ล่าสุด " + ago(s.last_seen) + "ที่แล้ว" : ""}</div>`
+        : '<span class="muted">ไม่พบ</span>';
+      return `<tr><td><span class="tlp ${TLP_CLS[i.tlp] || ""}">${esc(i.tlp.toUpperCase())}</span></td><td><span class="kindtag">${esc(i.type)}</span></td>
+        <td class="mono ci-val" title="${esc(i.value)}">${esc(i.value)}</td>
+        <td><span class="conf" style="--c:${i.confidence}" title="confidence ${i.confidence}">${i.confidence}</span></td>
+        <td class="small">${i.reference ? `<a href="${esc(i.reference)}" target="_blank" rel="noopener noreferrer">${esc(i.source_name)}</a>` : esc(i.source_name)}</td>
+        <td class="a-title small">${i.threat ? `<b>${esc(i.threat)}</b> ` : ""}${esc((i.description || "").slice(0, 120))}${(i.tags || []).map((t) => ` <span class="thr">${esc(t)}</span>`).join("")}</td>
+        <td class="small">${esc(String(i.first_seen || "—").slice(0, 10))}</td><td class="small">${seen}</td></tr>`;
+    }).join("") || '<tr><td colspan="8" class="muted">ไม่พบ indicator</td></tr>';
+  } catch (e) { $("#ciTbl tbody").innerHTML = `<tr><td colspan="8" class="err">${esc(e.message)}</td></tr>`; }
+}
+$("#ciGo").onclick = () => { CI.page = 1; loadIntel(); };
+$("#ciQ").addEventListener("keydown", (ev) => { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") { CI.page = 1; loadIntel(); } });
+["#ciType", "#ciSrc", "#ciConf"].forEach((x) => { $(x).onchange = () => { CI.page = 1; loadIntel(); }; });
+$("#ciPrev").onclick = () => { CI.page--; loadIntel(); };
+$("#ciNext").onclick = () => { CI.page++; loadIntel(); };
+$("#iocAdd").onclick = () => { $("#iocForm").reset(); $("#iocErr").textContent = ""; $("#iocDlg").showModal(); };
+$("#iocForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  const f = ev.target;
+  try {
+    const r = await api("/api/soc/iocs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      values: f.values.value, tlp: f.tlp.value, confidence: Number(f.confidence.value || 80), threat: f.threat.value.trim(),
+      description: f.description.value.trim(), tags: splitList(f.tags.value), severity: f.severity.value || null,
+      expires_days: f.expires_days.value ? Number(f.expires_days.value) : null }) });
+    if (r.invalid.length && !confirm(`เพิ่มแล้ว ${r.added} รายการ\nไม่ใช่ IOC ที่รองรับ ${r.invalid.length} รายการ: ${r.invalid.slice(0, 5).join(", ")}\nปิดหน้าต่าง?`)) return;
+    $("#iocDlg").close(); $("#ciSrc").value = "tenant"; CI.page = 1; loadIntel(); loadFeeds();
+  } catch (e) { $("#iocErr").textContent = e.message; }
+});
+
+// ---------- outgoing feeds ----------
+const FD = { items: [], edit: null };
+const FMT_OUT = { stix: "STIX 2.1", text: "Text", csv: "CSV" };
+async function loadFeeds() {
+  try {
+    FD.items = (await api("/api/soc/feeds")).feeds;
+    const edit = can("rules.manage");
+    $("#fdTbl tbody").innerHTML = FD.items.map((f) => `<tr data-id="${f.id}"><td><b>${esc(f.name)}</b><div class="sub">${esc(f.description || "")} <span class="mono">${esc(f.key_hint)}</span></div></td>
+      <td><span class="dt">${FMT_OUT[f.format]}</span></td>
+      <td class="small">${f.types.length ? esc(f.types.join(", ")) : "ทุกชนิด"} · ${f.sources.length ? esc(f.sources.join(", ")) : "ทุกแหล่ง"} · conf ≥ ${f.min_confidence} · TLP ≤ ${esc(f.max_tlp.toUpperCase())}</td>
+      <td class="num">${f.would_export.toLocaleString()}</td>
+      <td class="small">${f.last_pull ? `${ago(f.last_pull)}ที่แล้ว · ${f.pulls} ครั้ง<div class="sub mono">${esc(f.last_pull_ip || "")}</div>` : '<span class="muted">ยังไม่เคยถูกดึง</span>'}</td>
+      <td>${f.enabled ? '<span class="vd true_positive" style="background:var(--ok-bg);color:var(--ok-ink)">เปิด</span>' : '<span class="ist">ปิด</span>'}</td>
+      <td>${edit ? '<button class="ghost sm fd-edit">แก้ไข</button> <button class="ghost sm fd-rot">สร้าง URL ใหม่</button>' : ""}</td></tr>`).join("")
+      || '<tr><td colspan="7" class="muted">ยังไม่มี feed — เช่น สร้าง feed แบบ Text ให้ FortiGate ใช้เป็น External Block List</td></tr>';
+  } catch (e) { $("#fdTbl tbody").innerHTML = `<tr><td colspan="7" class="err">${esc(e.message)}</td></tr>`; }
+}
+function fdBody() {
+  const f = $("#fdForm");
+  return { name: f.name.value.trim(), description: f.description.value.trim(), format: f.format.value, max_tlp: f.max_tlp.value,
+    min_confidence: Number(f.min_confidence.value || 0), sort: f.sort.value, max_size: Number(f.max_size.value || 2000), enabled: f.enabled.checked,
+    types: [...f.querySelectorAll("#fdTypes input:checked")].map((x) => x.value), sources: [...f.querySelectorAll("#fdSrcs input:checked")].map((x) => x.value) };
+}
+async function openFeed(feed) {
+  FD.edit = feed;
+  if (!CI.meta) await loadIntel();
+  const f = $("#fdForm"); f.reset(); $("#fdErr").textContent = ""; $("#fdPreview").textContent = "";
+  $("#fdDlgTitle").textContent = feed ? `แก้ไข ${feed.name}` : "New feed";
+  $("#fdTypes").innerHTML = CI.meta.types.map((t) => `<label class="chk"><input type="checkbox" value="${t}" ${feed?.types.includes(t) ? "checked" : ""}> ${t}</label>`).join("");
+  $("#fdSrcs").innerHTML = Object.entries(CI.meta.sources).map(([k, v]) => `<label class="chk"><input type="checkbox" value="${k}" ${feed?.sources.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("");
+  if (feed) for (const k of ["name", "description", "format", "max_tlp", "min_confidence", "sort", "max_size"]) f[k].value = feed[k];
+  if (feed) f.enabled.checked = feed.enabled;
+  $("#fdDlg").showModal();
+}
+function showFeedUrl(name, url) {
+  $("#keyFor").textContent = name; $("#keyVal").textContent = url;
+  $("#keyDlg h2").firstChild.textContent = "Feed URL "; $("#keyExLabel").textContent = "ทดสอบ / ตั้งค่าในไฟร์วอลล์:"; $("#keyCopy").textContent = "คัดลอก";
+  $("#keyCurl").textContent = `curl -s "${url}" | head\n\nFortiGate: Security Fabric → External Connectors → Threat Feeds → IP Address / Domain Name\n  URI of external resource = URL ด้านบน (ใช้ feed แบบ Text)`;
+  $("#keyDlg").showModal();
+}
+$("#fdNew").onclick = () => openFeed(null);
+$("#fdPrev").onclick = async () => {
+  try {
+    const r = await api("/api/soc/feeds/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...fdBody(), name: fdBody().name || "preview" }) });
+    $("#fdPreview").innerHTML = `จะส่งออก <b>${r.count.toLocaleString()}</b> รายการ (${Object.entries(r.by_type).map(([k, n]) => `${k} ${n}`).join(", ") || "-"}) · ตัวอย่าง: <span class="mono">${r.sample.slice(0, 5).map((i) => esc(i.value)).join(", ")}</span>`;
+  } catch (e) { $("#fdPreview").textContent = e.message; }
+};
+$("#fdForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  try {
+    const r = await api(FD.edit ? `/api/soc/feeds/${FD.edit.id}` : "/api/soc/feeds", { method: FD.edit ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(fdBody()) });
+    $("#fdDlg").close(); loadFeeds(); loadIntegrations();
+    if (r.url) showFeedUrl(r.name, r.url);
+  } catch (e) { $("#fdErr").textContent = e.message; }
+});
+$("#fdTbl").addEventListener("click", async (ev) => {
+  const tr = ev.target.closest("tr[data-id]"); if (!tr) return;
+  const feed = FD.items.find((x) => x.id === Number(tr.dataset.id));
+  if (ev.target.closest(".fd-edit")) openFeed(feed);
+  if (ev.target.closest(".fd-rot") && confirm(`สร้าง URL ใหม่ให้ ${feed.name}? URL เดิมจะใช้ไม่ได้ทันที`)) {
+    try {
+      const body = Object.fromEntries(["name", "description", "format", "max_tlp", "min_confidence", "sort", "max_size", "enabled", "types", "sources"].map((k) => [k, feed[k]]));
+      const r = await api(`/api/soc/feeds/${feed.id}?rotate_key=true`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      loadFeeds(); showFeedUrl(feed.name, r.url);
+    } catch (e) { alert(e.message); }
+  }
+});
+// the intake-key dialog is shared: restore its title when used for intakes
+const _showKey = showKey;
+showKey = function (name, key) {
+  $("#keyDlg h2").firstChild.textContent = "Intake key "; $("#keyExLabel").textContent = "ตัวอย่างการส่ง log:"; $("#keyCopy").textContent = "คัดลอก";
+  _showKey(name, key);
+};
+
+// ---------- integrations ----------
+const IG = { items: [], meta: null };
+const IG_ST = { configured: "ตั้งค่าแล้ว", active: "ทำงานอยู่", built_in: "มีในระบบ", available: "พร้อมให้ตั้งค่า", error: "เชื่อมต่อไม่ได้" };
+const IG_ICON = { intake: "📥", feed_in: "🛰", feed_out: "📤", notify: "🔔", enrich: "🔎", ai: "✦", export: "🧾" };
+async function loadIntegrations() {
+  try {
+    const r = await api("/api/soc/integrations");
+    IG.items = r.integrations;
+    if (!IG.meta) {
+      IG.meta = r;
+      const chk = (id, entries) => { $(id).innerHTML = entries.map(([v, t]) => `<label class="chk"><input type="checkbox" value="${esc(v)}"> ${esc(t)}</label>`).join(""); };
+      chk("#igStatus", Object.entries(IG_ST));
+      chk("#igCat", r.categories.map((c) => [c, c]));
+      chk("#igType", Object.entries(r.content_types));
+    }
+    renderIntegrations();
+  } catch (e) { $("#igGrid").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+function renderIntegrations() {
+  const sel = (id) => new Set([...document.querySelectorAll(`${id} input:checked`)].map((x) => x.value));
+  const st = sel("#igStatus"), cat = sel("#igCat"), ty = sel("#igType"), q = $("#igQ").value.trim().toLowerCase();
+  const rows = IG.items.filter((i) => (!st.size || st.has(i.status)) && (!cat.size || cat.has(i.category)) && (!ty.size || ty.has(i.content_type))
+    && (!q || `${i.name} ${i.description} ${i.category}`.toLowerCase().includes(q)));
+  $("#igGrid").innerHTML = rows.map((i) => `<div class="ig-card st-${i.status}"><div class="ig-h"><span class="ig-ico">${IG_ICON[i.content_type] || "•"}</span><b>${esc(i.name)}</b></div>
+    <div class="cr-m"><span class="dt">${esc(i.category)}</span><span class="thr">${esc(i.content_type_name)}</span></div>
+    <p class="small">${esc(i.description)}</p>
+    <div class="ig-f"><span class="ig-st">${esc(IG_ST[i.status] || i.status)}${i.count ? ` · ${i.count} intake` : ""}</span></div>
+    <p class="small muted ig-how">${esc(i.setup)}</p></div>`).join("") || '<p class="muted">ไม่พบ</p>';
+}
+$("#igQ").addEventListener("input", renderIntegrations);
+["#igStatus", "#igCat", "#igType"].forEach((x) => $(x).addEventListener("change", renderIntegrations));

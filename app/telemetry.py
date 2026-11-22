@@ -16,7 +16,7 @@ import time
 from collections import Counter, deque
 from typing import Any
 
-from app import soc_store
+from app import intel, soc_store
 from app.agent_detect import AgentMonitor, _agent_state
 from app.config import settings
 from app.offensive_ai import OffensiveAIMonitor
@@ -98,7 +98,9 @@ class Engine:
         self.ingested: Counter = Counter()
         self.sources: Counter = Counter()
         self.assets: dict[tuple, dict] = {}  # (type, name) -> discovered asset
-        self.disabled_rules: set[str] = set()  # rules switched off in the rules catalog (per tenant)
+        self.disabled_rules: set[str] = set()
+        self.ioc_lookup = None  # callable -> {indicator value: indicator}; set by the app (tenant IOCs + CTI feeds)
+        self._ioc_last: dict[tuple, float] = {}  # rules switched off in the rules catalog (per tenant)
         self.suppressed: Counter = Counter()  # events received per data source, for the "events by data source" widget
         self._outbox: deque[dict] = deque(maxlen=500)
         self._agent_outbox: deque[dict] = deque(maxlen=500)
@@ -204,6 +206,8 @@ class Engine:
             if detect:
                 for a in self.offai.ingest([rec], rec["ts"], real=True):
                     events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
+        if detect and self.ioc_lookup:
+            events.extend(self._ioc_events(records))
         for rec in records:
             rec["simulated"] = False
             rec["_source"] = source or "API"
@@ -239,6 +243,33 @@ class Engine:
         return {"accepted": len(records), "alerts": len(events),
                 "by_kind": dict(Counter(r["kind"] for r in records)),
                 "alerts_by_rule": dict(Counter(e.get("rule") for e in events if e.get("rule")))}
+
+    def _ioc_events(self, records: list[dict]) -> list[dict]:
+        """IOC-001 (tenant IOC) / IOC-002 (public feed): an observable in the log equals a known indicator.
+        One alert per indicator and host per 10 minutes."""
+        index = self.ioc_lookup() or {}
+        if not index:
+            return []
+        out = []
+        for rec in records:
+            hit = intel.match(rec, index)
+            if not hit:
+                continue
+            host = rec.get("host") or rec.get("dest_host") or rec.get("dst_host") or rec.get("client_host") or "unknown"
+            key = (hit["value"], host)
+            if rec["ts"] - self._ioc_last.get(key, -1e18) < 600:
+                continue
+            self._ioc_last[key] = rec["ts"]
+            if len(self._ioc_last) > 20000:
+                self._ioc_last.clear()
+            rid = "IOC-001" if hit["source"] == "tenant" else "IOC-002"
+            sev = hit.get("severity") or ("high" if hit["confidence"] >= 80 else "medium" if hit["confidence"] >= 50 else "low")
+            domain = {"process": "endpoint", "logon": "identity", "db": "data", "dlp": "data"}.get(rec.get("kind"), "network")
+            title = f"[{rid}] Indicator seen: {hit['value'][:80]}" + (f" ({hit['threat']})" if hit.get("threat") else "")
+            out.append(self._event((domain, title, sev, "T1071.001", "Command and Control"), host, rec.get("user") or "unknown",
+                                   rec["ts"], simulated=False, rule=rid, cti_match=hit["source_name"], indicator=hit["value"],
+                                   **({"malware": hit["threat"]} if hit.get("threat") else {})))
+        return out
 
     # ---------- asset discovery (accounts, hosts, AI agents seen in logs) ----------
     def _asset(self, typ: str, name, ts: float, source: str, real: bool) -> tuple | None:

@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS soc2_intakes (tenant TEXT NOT NULL, id INTEGER NOT NU
     PRIMARY KEY (tenant, id));
 CREATE TABLE IF NOT EXISTS soc2_assets (tenant TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, doc TEXT NOT NULL,
     PRIMARY KEY (tenant, type, name));
+CREATE TABLE IF NOT EXISTS soc2_iocs (tenant TEXT NOT NULL, value TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, value));
+CREATE TABLE IF NOT EXISTS soc2_feeds (tenant TEXT NOT NULL, id INTEGER NOT NULL, key_hash TEXT NOT NULL UNIQUE, doc TEXT NOT NULL,
+    PRIMARY KEY (tenant, id));
 CREATE TABLE IF NOT EXISTS soc2_counters (tenant TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (tenant, k));
 """
 LEGACY = {  # old single-tenant table -> (new table, column list)
@@ -336,6 +339,43 @@ def save_assets(assets: list[dict], tenant: str = DEFAULT) -> None:
 def assets(tenant: str = DEFAULT, limit: int = 100000) -> list[dict]:
     with _lock, _conn() as c:
         return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_assets WHERE tenant = ? LIMIT ?", (tenant, limit))]
+
+
+def save_iocs(items: list[dict], tenant: str = DEFAULT) -> None:
+    with _lock, _conn() as c:
+        c.executemany("INSERT OR REPLACE INTO soc2_iocs (tenant, value, doc) VALUES (?,?,?)",
+                      [(tenant, i["value"].lower(), _dump(i)) for i in items])
+
+
+def delete_iocs(values: list[str], tenant: str = DEFAULT) -> int:
+    with _lock, _conn() as c:
+        return sum(c.execute("DELETE FROM soc2_iocs WHERE tenant = ? AND value = ?", (tenant, v.lower())).rowcount for v in values)
+
+
+def iocs(tenant: str = DEFAULT) -> list[dict]:
+    with _lock, _conn() as c:
+        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_iocs WHERE tenant = ?", (tenant,))]
+
+
+def save_feed(feed: dict, key_hash: str, tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        if feed.get("id") is None:
+            feed = {**feed, "id": _next_id(c, "soc2_feeds", tenant)}
+        c.execute("INSERT OR REPLACE INTO soc2_feeds (tenant, id, key_hash, doc) VALUES (?,?,?,?)",
+                  (tenant, feed["id"], key_hash, _dump(feed)))
+    return feed
+
+
+def feeds(tenant: str = DEFAULT) -> list[dict]:
+    with _lock, _conn() as c:
+        return [{**json.loads(r["doc"]), "_key_hash": r["key_hash"]}
+                for r in c.execute("SELECT doc, key_hash FROM soc2_feeds WHERE tenant = ? ORDER BY id", (tenant,))]
+
+
+def feed_by_key(key_hash: str) -> tuple[str, dict] | None:
+    with _lock, _conn() as c:
+        r = c.execute("SELECT tenant, doc FROM soc2_feeds WHERE key_hash = ?", (key_hash,)).fetchone()
+    return (r["tenant"], json.loads(r["doc"])) if r else None
 
 
 def counts_prefix(prefix: str, tenant: str = DEFAULT) -> dict:
