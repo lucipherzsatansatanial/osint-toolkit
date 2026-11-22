@@ -1,0 +1,96 @@
+{
+ "_comment": "SYNTHETIC sample for testing the ingest API. Not real telemetry.",
+ "records": [
+  {
+   "DeviceName": "dev-ws-031",
+   "ActionType": "ProcessCreated",
+   "FileName": "node.exe",
+   "ProcessId": 4100,
+   "InitiatingProcessId": 3000,
+   "AccountName": "dev.user",
+   "InitiatingProcessFileName": "powershell.exe",
+   "InitiatingProcessCommandLine": "powershell.exe",
+   "ProcessCommandLine": "node C:\\Users\\dev.user\\AppData\\Roaming\\npm\\claude.js --dangerously-skip-permissions -p \"pentest 10.0.5.0/24\""
+  },
+  {
+   "DeviceName": "dev-ws-031",
+   "ActionType": "ProcessCreated",
+   "FileName": "nmap.exe",
+   "ProcessId": 4200,
+   "InitiatingProcessId": 4100,
+   "AccountName": "dev.user",
+   "InitiatingProcessFileName": "claude",
+   "InitiatingProcessCommandLine": "claude --dangerously-skip-permissions -p \"pentest 10.0.5.0/24\"",
+   "ProcessCommandLine": "nmap.exe -sV -T4 10.0.5.0/24"
+  },
+  {
+   "DeviceName": "dev-ws-031",
+   "ActionType": "ProcessCreated",
+   "FileName": "httpx.exe",
+   "ProcessId": 4201,
+   "InitiatingProcessId": 4100,
+   "AccountName": "dev.user",
+   "InitiatingProcessFileName": "claude",
+   "InitiatingProcessCommandLine": "claude --dangerously-skip-permissions -p \"pentest 10.0.5.0/24\"",
+   "ProcessCommandLine": "httpx.exe -l hosts.txt"
+  },
+  {
+   "DeviceName": "dev-ws-031",
+   "ActionType": "ProcessCreated",
+   "FileName": "nuclei.exe",
+   "ProcessId": 4202,
+   "InitiatingProcessId": 4100,
+   "AccountName": "dev.user",
+   "InitiatingProcessFileName": "claude",
+   "InitiatingProcessCommandLine": "claude --dangerously-skip-permissions -p \"pentest 10.0.5.0/24\"",
+   "ProcessCommandLine": "nuclei.exe -l live.txt -severity high,critical"
+  },
+  {
+   "DeviceName": "dev-ws-031",
+   "ActionType": "ProcessCreated",
+   "FileName": "ffuf.exe",
+   "ProcessId": 4203,
+   "InitiatingProcessId": 4100,
+   "AccountName": "dev.user",
+   "InitiatingProcessFileName": "claude",
+   "InitiatingProcessCommandLine": "claude --dangerously-skip-permissions -p \"pentest 10.0.5.0/24\"",
+   "ProcessCommandLine": "ffuf.exe -u http://10.0.5.12/FUZZ -w common.txt"
+  },
+  {
+   "DeviceName": "dev-ws-031",
+   "ActionType": "ProcessCreated",
+   "FileName": "sqlmap.exe",
+   "ProcessId": 4204,
+   "InitiatingProcessId": 4100,
+   "AccountName": "dev.user",
+   "InitiatingProcessFileName": "claude",
+   "InitiatingProcessCommandLine": "claude --dangerously-skip-permissions -p \"pentest 10.0.5.0/24\"",
+   "ProcessCommandLine": "sqlmap.exe -u http://10.0.5.12/item?id=1 --batch"
+  },
+  {
+   "DeviceName": "dev-ws-031",
+   "ActionType": "ProcessCreated",
+   "FileName": "nxc.exe",
+   "ProcessId": 4205,
+   "InitiatingProcessId": 4100,
+   "AccountName": "dev.user",
+   "InitiatingProcessFileName": "claude",
+   "InitiatingProcessCommandLine": "claude --dangerously-skip-permissions -p \"pentest 10.0.5.0/24\"",
+   "ProcessCommandLine": "nxc.exe smb 10.0.5.0/24 -u users.txt -p pass.txt"
+  },
+  {
+   "DeviceName": "SRV-FILE-02",
+   "RemoteUrl": "api.deepseek.com",
+   "RemoteIP": "203.0.113.40",
+   "RemotePort": 443,
+   "InitiatingProcessFileName": "python3"
+  },
+  {
+   "DeviceName": "SRV-AI-01",
+   "RemoteUrl": "https://api.anthropic.com/v1/messages",
+   "RemoteIP": "203.0.113.41",
+   "RemotePort": 443,
+   "InitiatingProcessFileName": "python3"
+  }
+ ]
+}

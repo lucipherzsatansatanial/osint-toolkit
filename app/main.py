@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit
+from app import ingest
 from app.telemetry import hub
 from app.config import settings
 from app.modules import brand, domain, email, ip, threatintel, username
@@ -171,6 +172,46 @@ async def soc_agent_session(sid: str, _: str = Depends(guard)):
 @app.get("/api/soc/hunt")
 async def soc_hunt(q: str = "", limit: int = 100, _: str = Depends(guard)):
     return {"query": q[:300], "results": hub.engine.agents.hunt(q[:300], min(max(limit, 1), 500))}
+
+
+@app.post("/api/soc/ingest")
+async def soc_ingest(request: Request, format: str = "auto", host: str | None = None,
+                     client: str = Depends(guard)):
+    """Ingest real EDR / NDR / web / AI-agent telemetry. Formats: auto, native, ecs, defender, access_log."""
+    size = request.headers.get("content-length")
+    if size and size.isdigit() and int(size) > ingest.MAX_BYTES:
+        raise HTTPException(413, f"body larger than {ingest.MAX_BYTES} bytes")
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > ingest.MAX_BYTES:
+            raise HTTPException(413, f"body larger than {ingest.MAX_BYTES} bytes")
+    try:
+        records, rejected = ingest.parse(body, format, host)
+    except ingest.IngestError as e:
+        raise HTTPException(413 if "larger" in str(e) or "more than" in str(e) else 422, str(e)) from e
+    result = hub.engine.ingest_external(records)
+    if not hub.subs:  # nobody watching: new viewers get these via the snapshot, so don't re-broadcast later
+        hub.engine.drop_outbox()
+    return {**result, "rejected": rejected, "format": format}
+
+
+class AgentSpec(BaseModel):
+    id: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")
+    owner: str = Field(default="", max_length=80)
+    host: str = Field(default="", max_length=255)
+    account: str = Field(default="", max_length=120)
+    scopes: list[str] = Field(default_factory=list, max_length=200)
+    egress: list[str] = Field(default_factory=list, max_length=200)
+    shell: bool = False
+
+
+@app.post("/api/soc/agents/register")
+async def soc_register_agents(items: list[AgentSpec], _: str = Depends(guard)):
+    """Upsert real AI agents and what they are allowed to do. Unregistered agents seen in logs raise AGT-011."""
+    if len(items) > 500:
+        raise HTTPException(413, "max 500 agents per request")
+    return hub.engine.agents.register([{**a.model_dump(), "account": a.account or a.id} for a in items])
 
 
 class ContainRequest(BaseModel):

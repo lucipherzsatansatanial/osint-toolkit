@@ -51,6 +51,7 @@ RULES = {
     "AGT-008": ("Sensitive action after prompt injection", "high", "AML.T0051.001", "Execution"),
     "AGT-009": ("Bulk data read then external send (exfiltration)", "critical", "T1567", "Exfiltration"),
     "AGT-010": ("Tool-call rate anomaly", "medium", "T1119", "Collection"),
+    "AGT-011": ("Activity from unregistered AI agent (shadow AI)", "medium", "—", "Governance"),
 }
 SHELLS = {"bash", "sh", "zsh", "cmd.exe", "powershell.exe", "pwsh"}
 SENSITIVE_TOOLS = {"shell.exec", "files.read", "http.post", "email.send", "git.push", "iam.role.assign"}
@@ -86,7 +87,7 @@ class Detector:
         elif kind == "tool_call":
             tool, args = rec.get("tool", ""), rec.get("args", "")
             st["calls"].append(rec["ts"])
-            if tool not in agent["scopes"]:
+            if agent["scopes"] is not None and tool not in agent["scopes"]:
                 hits.append(("AGT-001", {}))
             if tool.startswith("iam."):
                 hits.append(("AGT-002", {}))
@@ -96,16 +97,16 @@ class Detector:
                 hits.append(("AGT-008", {}))
             if tool not in EXTERNAL_SEND:
                 st["bytes_read"] += int(rec.get("bytes") or 0)
-            elif st["bytes_read"] >= BULK_BYTES and rec.get("dest") and rec["dest"] not in agent["egress"]:
+            elif st["bytes_read"] >= BULK_BYTES and rec.get("dest") and rec["dest"] not in (agent["egress"] or ()):
                 hits.append(("AGT-009", {"bytes": st["bytes_read"]}))
             if sum(1 for t in st["calls"] if rec["ts"] - t <= 60) > RATE_LIMIT_PER_MIN:
                 hits.append(("AGT-010", {}))
-        elif kind == "process" and rec.get("image") in SHELLS and not agent["shell"]:
+        elif kind == "process" and rec.get("image") in SHELLS and agent["shell"] is False:
             hits.append(("AGT-003", {}))
-        elif kind == "network" and rec.get("dest") not in agent["egress"]:
+        elif kind == "network":
             if c2 and rec.get("ip") in c2:
                 hits.append(("AGT-006", {"cti_match": "abuse.ch Feodo Tracker C2"}))
-            else:
+            elif agent["egress"] is not None and rec.get("dest") not in agent["egress"]:
                 hits.append(("AGT-005", {}))
         elif kind == "auth" and rec.get("action") in ("scope_request", "role_assign"):
             hits.append(("AGT-002", {}))
@@ -230,10 +231,14 @@ class AgentSim:
         return recs
 
 
+def _agent_state(a: dict) -> dict:
+    return {**a, "status": "normal", "contained": False, "alerts": 0, "denied": 0, "calls": 0, "risk": 0,
+            "recent": deque(maxlen=50)}
+
+
 class AgentMonitor:
-    def __init__(self, rng):
-        self.agents = {a["id"]: {**a, "status": "normal", "contained": False, "alerts": 0, "denied": 0,
-                                 "calls": 0, "risk": 0, "recent": deque(maxlen=50)} for a in AGENTS}
+    def __init__(self, rng, demo_inventory: bool = True):
+        self.agents = {a["id"]: _agent_state({**a, "registered": True}) for a in (AGENTS if demo_inventory else [])}
         self.detector = Detector(self.agents)
         self.sim = AgentSim(rng, self.agents)
         self.records: deque[dict] = deque(maxlen=2000)
@@ -247,6 +252,30 @@ class AgentMonitor:
             self.sim.attack = None  # kill chain stops once the agent's token is revoked
         return self.public(ag)
 
+    def register(self, items: list[dict]) -> list[dict]:
+        """Upsert real agents into the inventory (scopes / egress / shell define what is allowed)."""
+        out = []
+        for a in items:
+            cur = self.agents.get(a["id"])
+            if cur is None:
+                cur = self.agents[a["id"]] = _agent_state({"owner": "", "host": "", "account": a["id"]})
+            cur.update(a, registered=True)
+            out.append(self.public(cur))
+        return out
+
+    def _unregistered(self, rec: dict, now: float) -> dict:
+        """Unknown agent seen in logs: track it with unknown permissions and raise AGT-011 once."""
+        ag = self.agents[rec["agent"]] = _agent_state({
+            "id": rec["agent"], "owner": "unknown", "host": rec.get("host") or "unknown",
+            "account": rec.get("account") or rec["agent"], "scopes": None, "egress": None, "shell": None,
+            "registered": False})
+        title, sev, tech, tactic = RULES["AGT-011"]
+        self.rule_hits["AGT-011"] += 1
+        ag["alerts"] += 1
+        ag["recent"].append((now, sev))
+        return {"spec": ("agent", f"[AGT-011] {title}", sev, tech, tactic), "host": ag["host"], "user": ag["account"],
+                "extra": {"agent": ag["id"], "session": rec["session"], "rule": "AGT-011", "record": rec["summary"]}}
+
     def step(self, now: float) -> tuple[list[dict], list[dict]]:
         """Returns (new records, alerts). Alerts are dicts ready for the XDR engine."""
         recs = self.sim.step(now)
@@ -259,10 +288,11 @@ class AgentMonitor:
         for rec in recs:
             ag = self.agents.get(rec["agent"])
             if ag is None:
-                continue
+                alerts.append(self._unregistered(rec, now))
+                ag = self.agents[rec["agent"]]
             if ag["contained"]:
                 rec["decision"] = "blocked"
-            elif rec["kind"] == "tool_call" and rec.get("tool") not in ag["scopes"]:
+            elif rec["kind"] == "tool_call" and ag["scopes"] is not None and rec.get("tool") not in ag["scopes"]:
                 rec["decision"] = "denied"  # policy gateway enforces scope
             if rec["kind"] == "tool_call":
                 ag["calls"] += 1
@@ -309,10 +339,11 @@ class AgentMonitor:
         if not recs:
             return None
         aid = recs[0]["agent"]
-        root = {"pid": self.sim.runtime_pid[aid], "ppid": None, "image": "agent-runtime",
-                "cmdline": f"python3 -m agent_runtime --agent {aid}"}
-        procs = [root] + [{k: r[k] for k in ("pid", "ppid", "image", "cmdline", "ts", "rules")}
-                          for r in recs if r["kind"] == "process"]
+        procs = [{k: r.get(k) for k in ("pid", "ppid", "image", "cmdline", "ts", "rules")}
+                 for r in recs if r["kind"] == "process"]
+        if aid in self.sim.runtime_pid and any(r.get("simulated") for r in recs):  # demo agents have a known runtime
+            procs.insert(0, {"pid": self.sim.runtime_pid[aid], "ppid": None, "image": "agent-runtime",
+                             "cmdline": f"python3 -m agent_runtime --agent {aid}"})
         return {"session": sid, "agent": self.public(self.agents[aid]), "records": recs, "processes": procs,
                 "network": [r for r in recs if r["kind"] == "network"],
                 "tools": [r for r in recs if r["kind"] == "tool_call"],

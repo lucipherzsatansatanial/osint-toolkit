@@ -98,6 +98,12 @@ function renderStats(s) {
   setKpi("#k-crit", `${s.severity.critical} / ${s.severity.high}`);
   $("#k-crit-s").textContent = `medium ${s.severity.medium} · low ${s.severity.low}`;
   $("#k-open-s").textContent = `${s.open_incidents - s.coordinated} single-domain`;
+  if (s.mode) {
+    const m = s.mode, el = $("#modePill");
+    el.textContent = m.simulation ? (m.ingested ? `Telemetry: SIMULATED + ${m.ingested} real` : "Telemetry: SIMULATED")
+      : `Telemetry: LIVE · ${m.ingested.toLocaleString()} records`;
+    el.className = "pill " + (m.simulation ? "warn" : "ok");
+  }
   sparkHist.push(s.events_per_min); if (sparkHist.length > 60) sparkHist.shift();
   drawSpark();
   renderTactics(s.tactics);
@@ -168,7 +174,7 @@ function addEvent(e, animate) {
   if (!animate) li.style.animation = "none";
   const extra = [e.remote_ip && `→ ${e.remote_ip}`, e.cve].filter(Boolean).map(esc).join(" ");
   li.innerHTML = `<span class="mono muted">${hhmmss(e.ts)}</span><i class="d"></i>
-    <div><span class="sev" style="--sevc:var(--${esc(e.severity)})">${esc(e.severity)}</span> ${esc(e.title)}
+    <div>${e.simulated === false ? '<span class="real">REAL</span>' : ""}<span class="sev" style="--sevc:var(--${esc(e.severity)})">${esc(e.severity)}</span> ${esc(e.title)}
     <div class="x">${esc(e.domain)} · ${esc(e.host)} · ${esc(e.user)} · ${esc(e.technique)} ${extra}
     ${e.cti_match ? `<span class="cti">⚑ CTI: ${esc(e.cti_match)}</span>` : ""}</div></div>`;
   const ul = $("#stream"); ul.prepend(li);
@@ -241,11 +247,11 @@ const RULE_SEV = {};
 function renderAgents(list) {
   state.agents = list;
   $("#agents tbody").innerHTML = list.map((a) => `<tr><td class="mono">${esc(a.id)}<div class="muted" style="font-family:inherit">owner ${esc(a.owner)}</div></td>
-    <td class="mono">${esc(a.host)}</td><td title="${esc(a.scopes.join(", "))}">${a.scopes.length}${a.shell ? ' <span class="muted">+shell</span>' : ""}</td>
+    <td class="mono">${esc(a.host)}</td><td title="${esc((a.scopes || []).join(", "))}">${a.scopes ? a.scopes.length : "?"}${a.shell ? ' <span class="muted">+shell</span>' : ""}</td>
     <td>${a.calls}</td><td style="color:var(${a.denied ? "--high" : "--muted"})">${a.denied}</td>
     <td><span class="risk"><i style="width:${a.risk}%"></i></span>${a.risk}</td>
-    <td><span class="st ${esc(a.status)}">${esc(a.status)}</span></td>
-    <td><button class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button></td></tr>`).join("");
+    <td><span class="st ${esc(a.status)}">${esc(a.status)}</span>${a.registered === false ? ' <span class="st unregistered" title="seen in logs but not in the agent inventory">unregistered</span>' : ""}</td>
+    <td><button title="บันทึกสถานะ contained และ audit log — ยังไม่มี connector สั่ง revoke token จริง" class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button></td></tr>`).join("");
 }
 function renderRules(rules) {
   rules.forEach((r) => { RULE_SEV[r.id] = r.severity; });
@@ -278,7 +284,9 @@ function buildTree(procs) {
   const node = (p) => `<li><span class="img ${p.rules?.length || (p.ppid && shells.includes(p.image) && !state.sessionShell) ? "bad" : ""}">${esc(p.image)}</span>
     <span class="muted">pid ${p.pid}</span>${(p.rules || []).map((id) => `<span class="rchip" style="--sevc:var(--${esc(RULE_SEV[id] || "medium")})">${esc(id)}</span>`).join("")}
     <span class="cmd">${esc(p.cmdline)}</span>${kids[p.pid] ? `<ul>${kids[p.pid].map(node).join("")}</ul>` : ""}</li>`;
-  return `<ul>${procs.filter((p) => p.ppid === null).map(node).join("")}</ul>`;
+  const pids = new Set(procs.map((p) => p.pid));
+  const roots = procs.filter((p) => p.ppid == null || !pids.has(p.ppid));
+  return roots.length ? `<ul>${roots.map(node).join("")}</ul>` : '<p class="muted">ไม่มี process ใน session นี้</p>';
 }
 async function openSession(sid, scroll = true) {
   try {
@@ -286,11 +294,11 @@ async function openSession(sid, scroll = true) {
     state.session = sid; state.sessionShell = d.agent.shell;
     $("#sessionBox").hidden = false;
     $("#s-title").innerHTML = `${esc(sid)} · <span class="mono">${esc(d.agent.id)}</span> @ ${esc(d.agent.host)}
-      <small class="muted">scopes: ${esc(d.agent.scopes.join(", "))} · egress: ${esc(d.agent.egress.join(", "))}</small>`;
+      <small class="muted">scopes: ${esc(d.agent.scopes ? d.agent.scopes.join(", ") : "unknown (unregistered)")} · egress: ${esc(d.agent.egress ? d.agent.egress.join(", ") : "unknown")}</small>`;
     $("#s-tree").innerHTML = buildTree(d.processes);
     $("#s-net").innerHTML = d.network.map((n) => `<li><span class="mono muted">${hhmmss(n.ts)}</span><span class="mono">${esc(n.ip)}:${n.port}</span>
       <span class="sum">${esc(n.dest)} · ${(n.bytes_out / 1e6).toFixed(2)} MB out ${(n.rules || []).map((id) => `<span class="rchip" style="--sevc:var(--${esc(RULE_SEV[id])})">${esc(id)}</span>`).join("")}</span>
-      <span class="dec ${d.agent.egress.includes(n.dest) ? "allowed" : "denied"}">${d.agent.egress.includes(n.dest) ? "allowlisted" : "unapproved"}</span></li>`).join("")
+      ${d.agent.egress ? `<span class="dec ${d.agent.egress.includes(n.dest) ? "allowed" : "denied"}">${d.agent.egress.includes(n.dest) ? "allowlisted" : "unapproved"}</span>` : '<span class="dec allowed">unknown</span>'}</li>`).join("")
       || '<li class="muted">ไม่มี</li>';
     $("#s-log").innerHTML = d.records.filter((r) => r.kind !== "network" && r.kind !== "process").map((r) => `<li style="--c:var(--${r.rules.length ? "critical" : "agent"})">
       <span class="mono muted">${hhmmss(r.ts)}</span> <span class="kind">${esc(r.kind)}</span> ${esc(r.summary)}
@@ -346,7 +354,7 @@ function addOffai(e, animate) {
   const extra = [e.provider && `${e.provider} (${e.region})`, e.indicator && `IOC: ${e.indicator}`, e.tools && e.tools.join(", "),
     e.stages && e.stages.join(" → "), e.distinct_ips && `${e.distinct_ips} IPs / ${e.requests} req`, e.agent_cmdline].filter(Boolean).map(esc).join(" · ");
   li.innerHTML = `<span class="mono muted">${hhmmss(e.ts)}</span><i class="d"></i>
-    <div><span class="sev" style="--sevc:var(--${esc(e.severity)})">${esc(e.severity)}</span> ${esc(e.title)}
+    <div>${e.simulated === false ? '<span class="real">REAL</span>' : ""}<span class="sev" style="--sevc:var(--${esc(e.severity)})">${esc(e.severity)}</span> ${esc(e.title)}
     <div class="x">${esc(e.host)} · ${esc(e.user)} · ${esc(e.technique)}${extra ? " · " + extra : ""}
     ${/^https:\/\//.test(e.source_url || "") ? ` · <a class="link" target="_blank" rel="noopener" href="${esc(e.source_url)}">source</a>` : ""}</div></div>`;
   const ul = $("#offaiLive"); ul.prepend(li);

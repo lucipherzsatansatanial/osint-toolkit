@@ -17,6 +17,7 @@ from collections import Counter, deque
 from typing import Any
 
 from app.agent_detect import AgentMonitor
+from app.config import settings
 from app.offensive_ai import OffensiveAIMonitor
 from app.modules import threatintel
 
@@ -71,7 +72,11 @@ def sev_up(s: str) -> str:
 
 
 class Engine:
-    def __init__(self, seed: int | None = None, max_events: int = 300):
+    def __init__(self, seed: int | None = None, max_events: int = 300, simulate: bool = True):
+        self.simulate = simulate
+        self.ingested: Counter = Counter()
+        self._outbox: deque[dict] = deque(maxlen=500)
+        self._agent_outbox: deque[dict] = deque(maxlen=500)
         self.rng = random.Random(seed)
         self.ids = itertools.count(1)
         self.inc_ids = itertools.count(1001)
@@ -83,8 +88,8 @@ class Engine:
         self.next_campaign_at = 0.0
         self.endpoints = {h: {"host": h, "os": os_, "user": u, "status": "healthy",
                               "realtime_protection": True, "last_seen": 0.0, "alerts": 0}
-                          for h, os_, u in HOSTS}
-        self.agents = AgentMonitor(self.rng)
+                          for h, os_, u in (HOSTS if simulate else [])}
+        self.agents = AgentMonitor(self.rng, demo_inventory=simulate)
         self.offai = OffensiveAIMonitor(self.rng)
         self.last_agent_records: list[dict] = []
 
@@ -93,7 +98,9 @@ class Engine:
         domain, title, sev, tech, tactic = spec
         ev = {"id": next(self.ids), "ts": now, "domain": domain, "title": title, "severity": sev,
               "technique": tech, "tactic": tactic, "host": host, "user": user,
-              "src_country": self.rng.choice(COUNTRIES), "simulated": True, "cti_match": None}
+              # synthetic geo only for simulated events; never invented for real telemetry
+              "src_country": self.rng.choice(COUNTRIES) if extra.get("simulated", True) else None,
+              "simulated": True, "cti_match": None}
         ev.update(extra)
         return ev
 
@@ -105,6 +112,13 @@ class Engine:
 
     def step(self, now: float | None = None) -> list[dict]:
         now = time.time() if now is None else now
+        flushed = list(self._outbox)  # events from ingested real logs, already counted
+        self._outbox.clear()
+        agent_flushed = list(self._agent_outbox)
+        self._agent_outbox.clear()
+        if not self.simulate:
+            self.last_agent_records = agent_flushed
+            return flushed
         out: list[dict] = []
         for _ in range(self.rng.choices([0, 1, 2, 3], [2, 4, 3, 1])[0]):
             spec = self.rng.choice(NOISE)
@@ -120,13 +134,50 @@ class Engine:
             out.append(self._event(EXPLOIT, extra.pop("host"), extra.pop("user"), now, **extra))
         out.extend(self._advance_campaign(now))
         recs, alerts = self.agents.step(now)
-        self.last_agent_records = recs
+        self.last_agent_records = agent_flushed + recs
         alerts += self.offai.step(now)
         for a in alerts:
             out.append(self._event(a["spec"], a["host"], a["user"], now, **a["extra"]))
         for ev in out:
             self._ingest(ev)
-        return out
+        return flushed + out
+
+    # ---------- real telemetry ----------
+    def ingest_external(self, records: list[dict]) -> dict:
+        """Run normalized real records (see app.ingest) through the detectors and the XDR correlator."""
+        events: list[dict] = []
+        agent_recs = [r for r in records if r.get("agent")]
+        telemetry = [r for r in records if not r.get("agent")]
+        if agent_recs:
+            for rec in agent_recs:
+                rec.setdefault("id", next(self.agents.sim.ids))
+            for a, rec in self._agent_alerts(agent_recs):
+                events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
+            self._agent_outbox.extend(agent_recs)
+        for rec in telemetry:
+            if rec["kind"] == "process" and rec.get("host") and rec["host"] not in self.endpoints:
+                self.endpoints[rec["host"]] = {"host": rec["host"], "os": rec.get("os") or "unknown",
+                                               "user": rec.get("user") or "", "status": "healthy",
+                                               "realtime_protection": True, "last_seen": rec["ts"], "alerts": 0}
+            for a in self.offai.ingest([rec], rec["ts"]):
+                events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
+        for ev in events:
+            self._ingest(ev)
+        self._outbox.extend(events)
+        self.ingested.update(r["kind"] for r in records)
+        self.ingested["total"] += len(records)
+        return {"accepted": len(records), "alerts": len(events),
+                "by_kind": dict(Counter(r["kind"] for r in records)),
+                "alerts_by_rule": dict(Counter(e.get("rule") for e in events if e.get("rule")))}
+
+    def drop_outbox(self) -> None:
+        self._outbox.clear()
+        self._agent_outbox.clear()
+
+    def _agent_alerts(self, recs: list[dict]):
+        for rec in recs:
+            for a in self.agents.ingest([rec], rec["ts"]):
+                yield a, rec
 
     def _advance_campaign(self, now: float) -> list[dict]:
         if self.campaign is None:
@@ -218,11 +269,12 @@ class Engine:
             "cti_hits": sum(1 for e in self.events if e.get("cti_match")),
             "endpoints": {s: sum(1 for ep in self.endpoints.values() if ep["status"] == s)
                           for s in ("healthy", "at_risk", "compromised")},
+            "mode": {"simulation": self.simulate, "ingested": self.ingested["total"]},
         }
 
     def snapshot(self) -> dict[str, Any]:
         return {"events": list(self.events)[-80:], "incidents": self.incident_list(),
-                "endpoints": list(self.endpoints.values()), "stats": self.stats(), "simulated": True,
+                "endpoints": list(self.endpoints.values()), "stats": self.stats(), "simulated": self.simulate,
                 "agents": self.agents.inventory(), "agent_records": list(self.agents.records)[-60:],
                 "rules": self.agents.rules(), "offai": self.offai.summary()}
 
@@ -234,7 +286,7 @@ class Hub:
     """One shared engine ticking in the background, fanned out to every dashboard viewer."""
 
     def __init__(self, interval: float = 1.0):
-        self.engine = Engine()
+        self.engine = Engine(simulate=settings.soc_simulation)
         self.interval = interval
         self.subs: set[asyncio.Queue] = set()
         self.task: asyncio.Task | None = None

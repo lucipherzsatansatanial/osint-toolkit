@@ -10,7 +10,7 @@ Two layers:
    A handful of high-confidence seeds from that set are bundled so the demo works offline.
 
 Record shapes (kind):
-  process: host, user, pid, ppid, image, cmdline
+  process: host, user, pid, ppid, image, cmdline, parent_image?, parent_cmdline?
   http   : dst_host, src_ip, method, uri, status, ua          (web server / WAF / reverse proxy log)
   net    : host, dest, dest_ip, port                           (EDR network / NDR / DNS / proxy egress)
 """
@@ -18,6 +18,7 @@ import itertools
 import re
 from collections import Counter, defaultdict, deque
 
+from app.config import settings
 from app.modules import threatintel
 
 SOURCE = "https://github.com/ThreatDefence/agentic-attack-detections"
@@ -86,6 +87,7 @@ RULES = {
     "OAI-007": ("Out-of-band (OAST) callback", "medium", "T1071.004", "Command and Control"),
 }
 STAGES = ["recon", "scan", "exploit", "post"]
+SERVER_PREFIXES = tuple(p.upper() for p in settings.server_prefixes) or ("SRV",)
 FANOUT_TOOLS, FANOUT_WINDOW = 4, 120
 PROXY_IPS, PROXY_WINDOW = 20, 300
 CHAIN_STAGES, CHAIN_WINDOW = 3, 900
@@ -158,7 +160,11 @@ class Detector:
         self.fired[key] = now
         return True
 
-    def _ancestor_bypass(self, host: str, pid) -> dict | None:
+    def _ancestor_bypass(self, host: str, pid, rec: dict | None = None) -> dict | None:
+        # EDR rows (Defender, ECS) carry the parent's command line, so check it before walking the tree
+        if rec and rec.get("parent_cmdline") and tool_name(rec.get("parent_image", "")) in AGENT_CLIS \
+                and APPROVAL_BYPASS.search(rec["parent_cmdline"]):
+            return {"pid": pid, "cmdline": rec["parent_cmdline"]}
         seen = 0
         while pid is not None and seen < 6:
             p = self.procs.get((host, pid))
@@ -205,7 +211,7 @@ class Detector:
             self.procs[(rec["host"], rec["pid"])] = rec
             t = tool_name(rec.get("image", ""))
             if t in OFFENSIVE:
-                parent = self._ancestor_bypass(rec["host"], rec.get("ppid"))
+                parent = self._ancestor_bypass(rec["host"], rec.get("ppid"), rec)
                 if parent and self._once(("OAI-001", rec["host"], parent["pid"]), now):
                     out.append(("OAI-001", {"agent_cmdline": parent["cmdline"][:200]}))
                 src = f'{rec["host"]}:{rec.get("ppid")}'
@@ -219,7 +225,8 @@ class Detector:
         elif k == "net":
             hit = llm_api(rec.get("dest"))
             host = rec.get("host", "")
-            if hit and host.upper().startswith("SRV") and (host, hit[0]) not in self.approved \
+            approved = (host, hit[0]) in self.approved or (host, "*") in self.approved if hit else False
+            if hit and host.upper().startswith(SERVER_PREFIXES) and not approved \
                     and self._once(("OAI-002", host, hit[0]), now, 1800):
                 provider, region = hit[1]
                 out.append(("OAI-002", {"provider": provider, "region": region, "dest": hit[0],
@@ -366,8 +373,9 @@ class OffensiveAISim:
 
 class OffensiveAIMonitor:
     def __init__(self, rng, approved: set[tuple[str, str]] | None = None):
-        self.detector = Detector(approved or {("SRV-AI-01", "api.anthropic.com"), ("SRV-AI-02", "api.openai.com"),
-                                              ("SRV-AI-01", "api.openai.com"), ("SRV-AI-02", "api.anthropic.com")})
+        if approved is None:
+            approved = {(h, "*") for h in settings.ai_approved_hosts} or {("SRV-AI-01", "*"), ("SRV-AI-02", "*")}
+        self.detector = Detector(approved)
         self.sim = OffensiveAISim(rng)
         self.rule_hits: Counter = Counter()
         self.fw_hits: Counter = Counter()

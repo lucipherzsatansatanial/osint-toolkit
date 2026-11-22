@@ -176,3 +176,5 @@ button.mini.release { background: transparent; border: 1px solid var(--line); co
 .qhead { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-size: 12px; margin-bottom: 4px; }
 .code { margin: 0; background: #060a14; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 11px/1.5 var(--mono);
   max-height: 340px; overflow: auto; white-space: pre; color: #c9d4ea; }
+.real { font-size: 9px; font-weight: 700; color: #04130d; background: var(--cti); border-radius: 3px; padding: 0 4px; margin-right: 4px; vertical-align: 1px; }
+.st.unregistered { color: var(--medium); background: #2e2610; }

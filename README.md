@@ -78,6 +78,32 @@ API: `GET /api/soc/agents`, `GET /api/soc/agents/sessions/{sid}`, `GET /api/soc/
 - Hunting query: `detections/offensive_ai/` — KQL (Defender XDR/Sentinel), SPL (Splunk), Sigma; แสดงและคัดลอก/ดาวน์โหลดได้จากหน้า dashboard — ดูสถานะการทดสอบใน `detections/offensive_ai/README.md`
 - API: `GET /api/soc/offensive-ai`
 
+### ส่ง log จริงเข้า SOC Dashboard (EDR / NDR / SIEM / AI Agent Audit Logs)
+
+```bash
+export SOC_API_KEY=<OSINT_API_KEY>
+python3 tools/ship_logs.py export.json --format defender --url https://<host>      # Defender XDR advanced hunting export
+python3 tools/ship_logs.py winlogbeat.ndjson --format ecs --url https://<host>     # Elastic / Winlogbeat / Packetbeat (ECS)
+python3 tools/ship_logs.py access.log --format access_log --host SRV-WEB-01        # Apache/Nginx combined log
+python3 tools/ship_logs.py agent_audit.ndjson --url https://<host>                 # AI agent audit log (native schema)
+```
+
+| Endpoint | ทำอะไร |
+|---|---|
+| `POST /api/soc/ingest?format=auto\|native\|ecs\|defender\|access_log` | รับ JSON array, `{"records": [...]}`, NDJSON หรือ access log (≤5 MB, ≤5,000 records ต่อครั้ง) แล้วรันผ่าน detector ทุกตัว + XDR correlation |
+| `POST /api/soc/agents/register` | ลงทะเบียน AI agent จริง พร้อม `scopes`, `egress`, `shell` — agent ที่มี log แต่ไม่ได้ลงทะเบียนจะขึ้น **AGT-011 shadow AI** |
+
+- Schema และ mapping อยู่ใน `app/ingest.py`; ตัวอย่างไฟล์ (ข้อมูลสังเคราะห์) อยู่ใน `samples/`
+- Event จาก log จริงมีป้าย **REAL** บนหน้าเว็บ และไม่มีการเติมข้อมูลสมมุติ (เช่น ประเทศต้นทาง)
+- Replay log เก่า: เวลาเหตุการณ์ใช้ timestamp ใน log; KPI "ต่อนาที" นับตามเวลาปัจจุบัน
+- ปุ่ม Contain ในโหมดจริง **บันทึกสถานะและ audit log เท่านั้น** ยังไม่ได้สั่ง revoke token ที่ระบบปลายทาง
+
+| ตัวแปร | ค่าเริ่มต้น | ความหมาย |
+|---|---|---|
+| `SOC_SIMULATION` | `on` | `off` = ใช้เฉพาะ log จริง (ไม่มี demo host/agent/event) |
+| `SOC_AI_APPROVED_HOSTS` | `SRV-AI-01,SRV-AI-02` | host ที่อนุญาตให้เรียก API โมเดล AI (OAI-002 จะไม่แจ้ง) |
+| `SOC_SERVER_PREFIXES` | `SRV` | prefix ชื่อเครื่องที่ถือเป็น server สำหรับ OAI-002 |
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -99,7 +125,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (65 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (76 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

@@ -67,7 +67,7 @@ def test_soc_endpoints(client, monkeypatch):
 
 def test_soc_agent_hunt_and_contain(client):
     r = client.get("/api/soc/agents", headers=H).json()
-    assert {a["id"] for a in r["agents"]} >= {"support-copilot", "devops-agent"} and len(r["rules"]) == 10
+    assert {a["id"] for a in r["agents"]} >= {"support-copilot", "devops-agent"} and len(r["rules"]) == 11
     assert client.get("/api/soc/hunt", headers=H, params={"q": "kind:tool_call"}).json()["results"] == []
     assert client.get("/api/soc/agents/sessions/S-99999", headers=H).status_code == 404
     body = {"contain": True, "analyst": "tester", "reason": "suspected prompt injection"}
@@ -82,3 +82,18 @@ def test_soc_offensive_ai_pack(client):
     assert len(r["rules"]) == 7 and len(r["frameworks"]) == 8
     langs = {q["lang"] for q in r["queries"]}
     assert langs == {"KQL", "SPL", "Sigma"} and all(q["title"] and "comment(" not in q["title"] for q in r["queries"])
+
+
+def test_soc_ingest_api(client):
+    import app.main
+    body = [{"kind": "net", "host": "SRV-FILE-02", "dest": "api.moonshot.cn"}, {"kind": "nope"}]
+    assert client.post("/api/soc/ingest", json=body).status_code == 401
+    r = client.post("/api/soc/ingest", headers=H, json=body).json()
+    assert r["accepted"] == 1 and r["rejected"] == 1 and r["alerts_by_rule"].get("OAI-002") == 1
+    assert client.post("/api/soc/ingest?format=xml", headers=H, json=body).status_code == 422
+    big = b"x" * (app.main.ingest.MAX_BYTES + 1)
+    assert client.post("/api/soc/ingest", headers=H, content=big).status_code == 413
+    reg = client.post("/api/soc/agents/register", headers=H,
+                      json=[{"id": "hr-bot", "scopes": ["hr.read"], "egress": [], "shell": False}]).json()
+    assert reg[0]["registered"] is True and reg[0]["account"] == "hr-bot"
+    assert client.post("/api/soc/agents/register", headers=H, json=[{"id": "bad id!"}]).status_code == 422
