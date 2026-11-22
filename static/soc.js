@@ -713,7 +713,7 @@ function analystName() {
 function renderWorkflow(inc) {
   if (state.wfFor !== inc.id) {  // only reset the form when switching incidents, never while typing
     state.wfFor = inc.id;
-    $("#wfStatus").value = inc.status; $("#wfAssignee").value = inc.assignee || ""; $("#wfNote").value = ""; $("#wfMsg").textContent = "";
+    $("#wfStatus").value = inc.status; $("#wfVerdict").value = inc.verdict || ""; $("#wfAssignee").value = inc.assignee || ""; $("#wfNote").value = ""; $("#wfMsg").textContent = "";
   }
   const items = [...(inc.notes || []).map((n) => ({ ...n, kind: "note" })), ...(inc.history || []).map((h) => ({ ...h, kind: "sys" }))]
     .sort((a, b) => b.ts - a.ts);
@@ -724,7 +724,7 @@ function renderWorkflow(inc) {
 }
 $("#wfSave").onclick = async () => {
   const id = state.selected, analyst = analystName(); if (!id || !analyst) return;
-  const body = { analyst, status: $("#wfStatus").value, assignee: $("#wfAssignee").value.trim() };
+  const body = { analyst, status: $("#wfStatus").value, assignee: $("#wfAssignee").value.trim(), verdict: $("#wfVerdict").value };
   const note = $("#wfNote").value.trim(); if (note) body.note = note;
   try {
     const inc = await api(`/api/soc/incidents/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -1114,8 +1114,13 @@ $("#taskMine").onchange = loadTasks;
 async function loadBell() {
   try {
     const r = await api("/api/soc/notifications");
-    $("#bellN").hidden = !r.items.length;
-    $("#bellN").textContent = r.items.length;
+    const cnt = r.items.length + (r.unread || 0);
+    $("#bellN").hidden = !cnt;
+    $("#bellN").textContent = cnt;
+    $("#inboxList").innerHTML = (r.inbox || []).slice(0, 10).map((n) => `<li class="${n.read ? "read" : ""} ${n.severity === "critical" ? "urgent" : ""}">
+      <a href="#inc-${n.ref}"><span class="kind">INC-${n.ref}</span><span>${n.real ? '<span class="real">REAL</span>' : ""}${esc(n.title)}
+      <small>${esc(n.rule)} · ${esc(n.severity)} · urgency ${n.urgency} · ${ago(n.ts)}ที่แล้ว</small></span></a></li>`).join("")
+      || '<li class="muted">ยังไม่มี — สร้างกฎได้ที่ “จัดการกฎการแจ้งเตือน”</li>';
     $("#bellBtn").classList.toggle("bad", r.urgent > 0);
     $("#bellList").innerHTML = r.items.map((n) => `<li class="${n.urgent ? "urgent" : ""}"><a href="${n.kind === "task" ? "#task-" + n.id : "#inc-" + n.id}">
       <span class="kind">${n.kind === "task" ? "TASK" : "INC-" + n.id}</span><span>${esc(n.title)}<small>${esc(n.detail)}</small></span></a></li>`).join("")
@@ -1134,6 +1139,231 @@ window.addEventListener("hashchange", () => {
   $("#bellPanel").hidden = true;
   if (t) openTask(t); else $("#tasksCard").scrollIntoView({ behavior: "smooth" });
 });
-function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); }
+function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); loadAlertsList(); loadEvents(); loadLandscape(); loadNotifyRules(); }
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);
+
+$("#inboxRead").onclick = async (ev) => {
+  ev.stopPropagation();
+  try { await api("/api/soc/notifications/read", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); loadBell(); } catch (e) { alert(e.message); }
+};
+
+// ---------- alerts list ----------
+const VERDICT_TH = { true_positive: "True positive", false_positive: "False positive", benign: "Benign", undetermined: "ยังสรุปไม่ได้" };
+const AL = { page: 1 };
+async function loadAlertsList() {
+  const p = new URLSearchParams({ page: AL.page, size: 25, sort: $("#alSort").value, hours: $("#alHours").value });
+  if ($("#alQ").value.trim()) p.set("q", $("#alQ").value.trim());
+  if ($("#alStatus").value) p.set("status", $("#alStatus").value);
+  if ($("#alSev").value) p.set("severity", $("#alSev").value);
+  if ($("#alReal").checked) p.set("real_only", "true");
+  try {
+    const r = await api("/api/soc/alerts?" + p);
+    AL.page = r.page;
+    $("#alTotal").textContent = `${r.total.toLocaleString()} รายการ (จัดกลุ่มตาม alert + host)`;
+    $("#alPage").textContent = `หน้า ${r.page} / ${r.pages}`;
+    $("#alPrev").disabled = r.page <= 1; $("#alNext").disabled = r.page >= r.pages;
+    $("#alTbl tbody").innerHTML = r.items.map((a) => `<tr data-inc="${a.incident_id ?? ""}" class="${a.incident_id ? "clk" : ""}">
+      <td class="num"><span class="occ sev-${esc(a.severity)}">${a.occurrences}</span></td>
+      <td>${a.incident_id ? `<a href="#inc-${a.incident_id}">INC-${a.incident_id}</a>` : '<span class="muted">—</span>'}</td>
+      <td title="${esc(t2(a.first_ts))} → ${esc(t2(a.last_ts))}">${esc(new Date(a.last_ts * 1000).toLocaleString("th-TH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }))}</td>
+      <td class="a-title">${a.real ? '<span class="real">REAL</span>' : ""}${esc(a.title)}<div class="sub">${esc(a.technique || "")}${a.rule ? " · " + esc(a.rule) : ""}</div></td>
+      <td><span class="ist ${esc(a.status)}">${esc(ALERT_ST[a.status] || a.status)}</span></td>
+      <td>${a.verdict ? `<span class="vd ${esc(a.verdict)}">${esc(VERDICT_TH[a.verdict] || a.verdict)}</span>` : '<span class="muted">—</span>'}</td>
+      <td>${a.assignee ? esc(a.assignee) : '<span class="muted">—</span>'}</td>
+      <td class="mono">${esc(a.host || "-")}</td>
+      <td>${urgRing(a.urgency)}</td>
+      <td><span class="dt">${esc(a.detection_type)}</span></td>
+      <td>${esc(a.type || "-")}</td>
+      <td>${a.threats.map((t) => `<span class="thr">${esc(t)}</span>`).join(" ") || '<span class="muted">—</span>'}</td></tr>`).join("")
+      || '<tr><td colspan="12" class="muted">ไม่พบ alert ตามเงื่อนไข</td></tr>';
+  } catch (e) { $("#alTbl tbody").innerHTML = `<tr><td colspan="12" class="err">${esc(e.message)}</td></tr>`; }
+}
+let alT;
+$("#alQ").addEventListener("input", () => { clearTimeout(alT); alT = setTimeout(() => { AL.page = 1; loadAlertsList(); }, 300); });
+["#alStatus", "#alSev", "#alSort", "#alReal", "#alHours"].forEach((s) => { $(s).onchange = () => { AL.page = 1; loadAlertsList(); }; });
+$("#alPrev").onclick = () => { AL.page--; loadAlertsList(); };
+$("#alNext").onclick = () => { AL.page++; loadAlertsList(); };
+$("#alTbl").addEventListener("click", (ev) => {
+  if (ev.target.closest("a")) return;
+  const tr = ev.target.closest("tr[data-inc]"); if (tr?.dataset.inc) location.hash = "#inc-" + tr.dataset.inc;
+});
+
+// ---------- events explorer ----------
+const svgW = (el) => Math.max(280, el.clientWidth || el.parentElement.clientWidth || 600);
+function drawHist(r) {
+  const el = $("#evHist"), w = svgW(el), h = 120, padL = 30, padB = 18;
+  const max = Math.max(1, ...r.histogram.map((b) => b.real + b.simulated));
+  const bw = (w - padL) / r.histogram.length;
+  const y = (v) => (h - padB) * (1 - v / max);
+  const span = r.end - r.start, fmt = (ts) => new Date(ts * 1000).toLocaleTimeString("th-TH", span > 86400 ? { day: "numeric", month: "short", hour: "2-digit" } : { hour12: false, hour: "2-digit", minute: "2-digit", ...(span <= 900 ? { second: "2-digit" } : {}) });
+  let out = `<line x1="${padL}" y1="${h - padB}" x2="${w}" y2="${h - padB}" class="ax"/><text x="2" y="10" class="tk">${max}</text><text x="2" y="${h - padB}" class="tk">0</text>`;
+  r.histogram.forEach((b, i) => {
+    const x = padL + i * bw, tot = b.real + b.simulated;
+    if (tot) {
+      out += `<rect x="${(x + 1).toFixed(1)}" y="${y(tot).toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${(y(b.real) - y(tot)).toFixed(1)}" class="s"><title>${fmt(b.ts)} · จำลอง ${b.simulated}</title></rect>`;
+      if (b.real) out += `<rect x="${(x + 1).toFixed(1)}" y="${y(b.real).toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${(h - padB - y(b.real)).toFixed(1)}" class="r"><title>${fmt(b.ts)} · จริง ${b.real}</title></rect>`;
+    }
+    if (i % Math.ceil(r.histogram.length / 6) === 0) out += `<text x="${x.toFixed(1)}" y="${h - 4}" class="tk">${esc(fmt(b.ts))}</text>`;
+  });
+  el.setAttribute("viewBox", `0 0 ${w} ${h}`); el.innerHTML = out;
+}
+async function loadEvents() {
+  const p = new URLSearchParams({ minutes: $("#evRange").value, limit: 200 });
+  if ($("#evQ").value.trim()) p.set("q", $("#evQ").value.trim());
+  try {
+    const r = await api("/api/soc/events?" + p);
+    drawHist(r);
+    $("#evMeta").textContent = `${r.total.toLocaleString()} events · แสดง ${r.rows.length} ล่าสุด · log จริงเก็บ ${r.retention_days} วัน`;
+    $("#evTbl tbody").innerHTML = r.rows.map((x, i) => `<tr class="clk" data-i="${i}"><td class="mono">${esc(t2(x.ts))}</td>
+      <td><span class="kindtag">${esc(x.kind)}</span>${x.real ? ' <span class="real">REAL</span>' : ""}</td><td class="mono">${esc(x.host || "-")}</td>
+      <td class="ev-desc">${esc(x.description)}${x.source ? ` <span class="muted">· ${esc(x.source)}</span>` : ""}</td></tr>
+      <tr class="ev-raw" hidden><td colspan="4"><pre>${esc(JSON.stringify(x.record, null, 2))}</pre></td></tr>`).join("")
+      || '<tr><td colspan="4" class="muted">ไม่พบ event ในช่วงเวลานี้</td></tr>';
+  } catch (e) { $("#evTbl tbody").innerHTML = `<tr><td colspan="4" class="err">${esc(e.message)}</td></tr>`; }
+}
+$("#evForm").addEventListener("submit", (ev) => { ev.preventDefault(); loadEvents(); });
+$("#evRange").onchange = loadEvents;
+$("#evTbl").addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr.clk"); if (!tr) return;
+  const raw = tr.nextElementSibling; if (raw?.classList.contains("ev-raw")) raw.hidden = !raw.hidden;
+});
+
+// ---------- threat landscape ----------
+const LCOL = ["--off", "--endpoint", "--medium", "--network", "--cloud", "--identity"];
+function lineChart(el, labels, series, fmt) {
+  const w = svgW(el), h = 170, padL = 34, padB = 20, padT = 8;
+  const max = Math.max(1, ...series.flatMap((s) => s.points));
+  const n = Math.max(1, labels.length - 1);
+  const x = (i) => padL + (w - padL - 8) * (labels.length === 1 ? 0.5 : i / n);
+  const y = (v) => padT + (h - padT - padB) * (1 - v / max);
+  let out = "";
+  for (let g = 0; g <= 2; g++) { const v = Math.round(max * g / 2); out += `<line x1="${padL}" x2="${w}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="2" y="${y(v) + 3}" class="tk">${v}</text>`; }
+  const step = Math.ceil(labels.length / 6);
+  labels.forEach((l, i) => {
+    const last = i === labels.length - 1;
+    if ((i % step === 0 && labels.length - 1 - i >= step / 2) || last) out += `<text x="${x(i)}" y="${h - 4}" class="tk" text-anchor="${last && labels.length > 1 ? "end" : i === 0 ? "start" : "middle"}">${esc(fmt(l))}</text>`;
+  });
+  series.forEach((s, k) => {
+    const col = `var(${LCOL[k % LCOL.length]})`;
+    out += `<polyline fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" points="${s.points.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}"/>`;
+    s.points.forEach((v, i) => { out += `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.6" fill="${col}"><title>${esc(s.label)} · ${esc(fmt(labels[i]))}: ${v}</title></circle>`; });
+  });
+  el.setAttribute("viewBox", `0 0 ${w} ${h}`); el.innerHTML = out || "";
+}
+function legend(el, series) {
+  el.innerHTML = series.map((s, k) => `<span><i style="background:var(${LCOL[k % LCOL.length]})"></i>${esc(s.label)} <b>${s.total}</b></span>`).join("");
+}
+function barChart(el, labels, vals, fmt) {
+  const w = svgW(el), h = 170, padL = 34, padB = 20, padT = 8, max = Math.max(1, ...vals), bw = (w - padL) / labels.length;
+  let out = `<line x1="${padL}" x2="${w}" y1="${h - padB}" y2="${h - padB}" class="grid"/><text x="2" y="${padT + 6}" class="tk">${max}</text>`;
+  vals.forEach((v, i) => {
+    const bh = (h - padT - padB) * v / max, x = padL + i * bw;
+    out += `<rect x="${x + 3}" y="${h - padB - bh}" width="${Math.max(2, bw - 6)}" height="${bh}" rx="2" class="bar"><title>${esc(fmt(labels[i]))}: ${v}</title></rect>`;
+    if (i % Math.ceil(labels.length / 6) === 0) out += `<text x="${x + bw / 2}" y="${h - 4}" class="tk" text-anchor="middle">${esc(fmt(labels[i]))}</text>`;
+  });
+  el.setAttribute("viewBox", `0 0 ${w} ${h}`); el.innerHTML = out;
+}
+const dShort = (d) => new Date(d + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short" });
+async function loadLandscape() {
+  try {
+    const r = await api("/api/soc/landscape?hours=" + $("#landHours").value);
+    const mw = r.malware_trend;
+    $("#mwSrc").textContent = r.feeds_loaded.threatfox ? `${mw.source} · IOC ต่อวัน` : "ยังโหลด ThreatFox ไม่ได้";
+    const mws = mw.series.map((s) => ({ label: s.name, points: s.points, total: s.total }));
+    if (mws.length) { lineChart($("#mwChart"), mw.days, mws, dShort); legend($("#mwLegend"), mws); }
+    else { $("#mwChart").innerHTML = ""; $("#mwLegend").innerHTML = '<span class="muted">ไม่มีข้อมูลจาก feed</span>'; }
+    const tt = r.technique_trend, hrs = r.hours;
+    const tts = tt.series.map((s) => ({ label: `${s.technique} ${s.name}`, points: s.points, total: s.total }));
+    const tf = (ts) => new Date(ts * 1000).toLocaleString("th-TH", hrs <= 48 ? { hour: "2-digit", minute: "2-digit", hour12: false } : { day: "numeric", month: "short" });
+    $("#ttSrc").textContent = `alert ของ tenant นี้ · ${hrs <= 48 ? hrs + " ชม." : hrs / 24 + " วัน"}${r.simulated ? " · รวมข้อมูลจำลอง" : ""}`;
+    if (tts.length) { lineChart($("#ttChart"), tt.buckets, tts, tf); legend($("#ttLegend"), tts); }
+    else { $("#ttChart").innerHTML = ""; $("#ttLegend").innerHTML = '<span class="muted">ยังไม่มี alert ในช่วงนี้</span>'; }
+    const k = r.kev_trend;
+    $("#kevSrc").textContent = r.feeds_loaded.kev ? `${k.total} CVE ใน 12 สัปดาห์ · ransomware ${k.ransomware}` : "ยังโหลด KEV ไม่ได้";
+    barChart($("#kevChart"), k.weeks, k.added, dShort);
+    $("#kevVendors").textContent = k.top_vendors.length ? "ผู้ผลิตที่พบมาก: " + k.top_vendors.map((v) => `${v.vendor} (${v.cves})`).join(", ") : "";
+    $("#kevLatest").innerHTML = r.latest_kev.map((v) => `<li><a href="${esc(v.url)}" target="_blank" rel="noopener noreferrer" class="mono">${esc(v.cve)}</a>
+      ${v.ransomware ? '<span class="tag">ransomware</span>' : ""}<div>${esc(v.title || "")}</div><small class="muted">${esc(v.vendor)} ${esc(v.product)} · เพิ่มเมื่อ ${esc(v.date)}</small></li>`).join("")
+      || '<li class="muted">ยังไม่มีข้อมูล</li>';
+    $("#thrTbl tbody").innerHTML = r.threats.map((t) => `<tr><td>${esc(t.threat)}</td><td class="num">${t.alerts}</td><td class="num">${t.last_7d}</td>
+      <td class="num">${t.hosts}</td><td class="num">${t.related_iocs.toLocaleString()}</td><td>${ago(t.last_ts)}ที่แล้ว</td>
+      <td>${t.reference ? `<a href="${esc(t.reference)}" target="_blank" rel="noopener noreferrer">NVD</a>` : '<span class="muted">—</span>'}</td></tr>`).join("")
+      || '<tr><td colspan="7" class="muted">ยังไม่พบ threat ที่ระบุชื่อได้ (framework / malware / CVE) ใน alert</td></tr>';
+  } catch (e) { $("#thrTbl tbody").innerHTML = `<tr><td colspan="7" class="err">${esc(e.message)}</td></tr>`; }
+}
+$("#landHours").onchange = loadLandscape;
+
+// ---------- notification rules ----------
+const NR = { rules: [], edit: null, server: [] };
+const CH_TH = { in_app: "ในระบบ (กระดิ่ง)", teams: "Microsoft Teams", line: "LINE", slack: "Slack", webhook: "Webhook", email: "Email" };
+async function loadNotifyRules() {
+  try {
+    const r = await api("/api/soc/notify-rules");
+    NR.rules = r.rules; NR.server = r.server_channels;
+    $("#nrChannels").textContent = "ช่องทางภายนอกที่ตั้งค่าบนเซิร์ฟเวอร์แล้ว: " + (r.server_channels.map((c) => CH_TH[c]).join(", ") || "ยังไม่มี (ใช้ได้เฉพาะแจ้งเตือนในระบบ)");
+    const edit = can("rules.manage");
+    $("#nrTbl tbody").innerHTML = r.rules.map((x) => `<tr data-id="${x.id}"><td>${x.id}</td><td class="a-title">${esc(x.name)}</td>
+      <td class="a-title small">≥ ${esc(x.min_severity)}${x.min_urgency ? ` · urgency ≥ ${x.min_urgency}` : ""}${x.domains.length ? " · " + x.domains.map(esc).join("/") : ""}${x.rule_prefixes.length ? " · rule " + x.rule_prefixes.map(esc).join(", ") : ""}${x.keyword ? ` · “${esc(x.keyword)}”` : ""}${x.real_only ? " · log จริง" : " · รวมจำลอง"}</td>
+      <td>${x.channels.map((c) => `<span class="thr ${c !== "in_app" && !NR.server.includes(c) ? "off" : ""}" title="${c !== "in_app" && !NR.server.includes(c) ? "ยังไม่ได้ตั้งค่าช่องทางนี้บนเซิร์ฟเวอร์" : ""}">${esc(CH_TH[c] || c)}</span>`).join(" ")}</td>
+      <td>${edit ? `<input type="checkbox" class="nr-en" ${x.enabled ? "checked" : ""} aria-label="เปิดใช้กฎ ${x.id}">` : (x.enabled ? "✓" : "—")}</td>
+      <td>${edit ? `<button class="ghost sm nr-edit">แก้ไข</button> <button class="ghost sm nr-del">ลบ</button>` : ""}</td></tr>`).join("")
+      || '<tr><td colspan="6" class="muted">ยังไม่มีกฎ — ตัวอย่าง: “critical จาก log จริง → ในระบบ + LINE”</td></tr>';
+  } catch (e) { $("#nrTbl tbody").innerHTML = `<tr><td colspan="6" class="err">${esc(e.message)}</td></tr>`; }
+}
+function nrBody() {
+  const f = $("#nrForm");
+  return { name: f.name.value.trim(), min_severity: f.min_severity.value, min_urgency: Number(f.min_urgency.value || 0),
+    keyword: f.keyword.value.trim(), real_only: f.real_only.checked, enabled: f.enabled.checked,
+    rule_prefixes: f.rule_prefixes.value.split(",").map((x) => x.trim()).filter(Boolean),
+    domains: [...f.querySelectorAll("#nrDomains input:checked")].map((x) => x.value),
+    channels: [...f.querySelectorAll("#nrChans input:checked")].map((x) => x.value) };
+}
+function openRule(rule) {
+  NR.edit = rule;
+  const f = $("#nrForm"); f.reset();
+  $("#nrDlgTitle").textContent = rule ? `แก้ไขกฎ #${rule.id}` : "สร้างกฎการแจ้งเตือน";
+  $("#nrDomains").innerHTML = DOMAINS.map((d) => `<label class="chk"><input type="checkbox" value="${d}" ${rule?.domains.includes(d) ? "checked" : ""}> ${d}</label>`).join("");
+  $("#nrChans").innerHTML = Object.entries(CH_TH).map(([c, t]) => `<label class="chk"><input type="checkbox" value="${c}" ${(rule ? rule.channels.includes(c) : c === "in_app") ? "checked" : ""}> ${t}${c !== "in_app" && !NR.server.includes(c) ? ' <span class="muted">(ยังไม่ตั้งค่า)</span>' : ""}</label>`).join("");
+  if (rule) {
+    f.name.value = rule.name; f.min_severity.value = rule.min_severity; f.min_urgency.value = rule.min_urgency;
+    f.keyword.value = rule.keyword || ""; f.rule_prefixes.value = rule.rule_prefixes.join(", ");
+    f.real_only.checked = rule.real_only; f.enabled.checked = rule.enabled;
+  }
+  $("#nrErr").textContent = ""; $("#nrTestOut").textContent = "";
+  $("#nrDlg").showModal();
+}
+$("#nrNew").onclick = () => openRule(null);
+$("#nrTest").onclick = async () => {
+  try {
+    const r = await api("/api/soc/notify-rules/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...nrBody(), name: nrBody().name || "test" }) });
+    $("#nrTestOut").textContent = r.matches.length ? `ตรงกับ ${r.matches.length} incident: ` + r.matches.slice(0, 5).map((m) => `#${m.id} ${m.severity}`).join(", ") : "ไม่ตรงกับ incident ที่มีตอนนี้";
+  } catch (e) { $("#nrTestOut").textContent = e.message; }
+};
+$("#nrForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  try {
+    await api(NR.edit ? `/api/soc/notify-rules/${NR.edit.id}` : "/api/soc/notify-rules",
+      { method: NR.edit ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nrBody()) });
+    $("#nrDlg").close(); loadNotifyRules();
+  } catch (e) { $("#nrErr").textContent = e.message; }
+});
+$("#nrTbl").addEventListener("click", async (ev) => {
+  const tr = ev.target.closest("tr[data-id]"); if (!tr) return;
+  const rule = NR.rules.find((x) => x.id === Number(tr.dataset.id));
+  if (ev.target.closest(".nr-edit")) openRule(rule);
+  if (ev.target.closest(".nr-del") && confirm(`ลบกฎ “${rule.name}”?`)) {
+    try { await api(`/api/soc/notify-rules/${rule.id}`, { method: "DELETE" }); loadNotifyRules(); } catch (e) { alert(e.message); }
+  }
+});
+$("#nrTbl").addEventListener("change", async (ev) => {
+  const cb = ev.target.closest(".nr-en"); if (!cb) return;
+  const rule = NR.rules.find((x) => x.id === Number(cb.closest("tr").dataset.id));
+  try {
+    await api(`/api/soc/notify-rules/${rule.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...rule, enabled: cb.checked }) });
+    loadNotifyRules();
+  } catch (e) { alert(e.message); loadNotifyRules(); }
+});
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) { loadAlertsList(); } }, 30000);
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) { loadLandscape(); } }, 120000);

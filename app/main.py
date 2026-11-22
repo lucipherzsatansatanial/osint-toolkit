@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, ingest, phase3, phase4, soc_report, soc_store, workspace
+from app import ai, explorer, ingest, landscape, notify_rules, phase3, phase4, soc_report, soc_store, workspace
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -32,6 +32,16 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 PERSONAL_DATA_MODULES = {"email", "username"}
 LEGAL_BASES = ["consent", "contract", "legal_obligation", "vital_interest",
                "public_task", "legitimate_interest", "own_asset"]
+
+
+def _on_incident(tenant: str, inc: dict) -> bool:
+    """Engine hook: tenant notification rules first (in-app + chosen channels), then the global channel policy.
+    Returns True when the incident changed (notified_sev / rule_fired) so the engine persists it."""
+    try:
+        fired = notify_rules.evaluate(tenant, inc, external=notifier.queue_rule)
+    except Exception:  # noqa: BLE001 - a broken rule must never stop correlation
+        fired = []
+    return bool(notifier.offer(inc)) or bool(fired)
 
 
 @asynccontextmanager
@@ -49,7 +59,7 @@ async def lifespan(_: FastAPI):
         e.custom.load(soc_store.list_rules(e.tenant))
         e.sources.update({k[4:]: n for k, n in soc_store.counts(e.tenant).items() if k.startswith("src:")})
         e.persist = True
-        e.on_incident = notifier.offer
+        e.on_incident = lambda inc, t=e.tenant: _on_incident(t, inc)
     hub.engines.clear()
     hub.setup = setup_engine
     for t in {soc_store.DEFAULT, *soc_store.tenants()}:
@@ -757,15 +767,16 @@ class IncidentUpdate(BaseModel):
     status: Literal["open", "investigating", "resolved", "false_positive", "closed"] | None = None
     assignee: str | None = Field(default=None, max_length=80)
     note: str | None = Field(default=None, max_length=4000)
+    verdict: Literal["true_positive", "false_positive", "benign", "undetermined", ""] | None = None
 
 
 @app.patch("/api/soc/incidents/{inc_id}")
 async def soc_update_incident(inc_id: int, req: IncidentUpdate, who: rbac.Principal = Depends(require("incident.write"))):
     """Analyst workflow: status, assignee and notes. Every change is written to the audit log."""
-    if not (req.status or req.assignee is not None or req.note):
+    if not (req.status or req.assignee is not None or req.note or req.verdict is not None):
         raise HTTPException(422, "nothing to update")
     name = actor(who, req.analyst)
-    inc = E(who).update_incident(inc_id, name, req.status, req.assignee, req.note)
+    inc = E(who).update_incident(inc_id, name, req.status, req.assignee, req.note, verdict=req.verdict)
     if inc is None:
         raise HTTPException(404, "incident not found")
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=name, module="soc.incident", target=f"incident:{inc_id}",
@@ -909,7 +920,140 @@ async def soc_notifications(who: rbac.Principal = Depends(require("soc.read"))):
     unassigned critical incidents from the last 24 h."""
     incs = list(E(who).incidents.values())
     items = workspace.notifications(who.name, soc_store.list_tasks(who.tenant), incs, time.time())
-    return {"items": items, "urgent": sum(1 for n in items if n["urgent"])}
+    inbox = soc_store.inbox(who.name, who.tenant, 30)
+    return {"items": items, "urgent": sum(1 for n in items if n["urgent"]), "inbox": inbox,
+            "unread": sum(1 for n in inbox if not n["read"])}
+
+
+class InboxRead(BaseModel):
+    ids: list[int] | None = Field(default=None, max_length=500)  # None = all
+
+
+@app.post("/api/soc/notifications/read")
+async def soc_notifications_read(req: InboxRead, who: rbac.Principal = Depends(require("soc.read"))):
+    return {"marked": soc_store.mark_inbox_read(who.name, who.tenant, req.ids)}
+
+
+# ---------- notification rules (the "notification creation tool") ----------
+class NotifyRule(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    enabled: bool = True
+    min_severity: Literal["info", "low", "medium", "high", "critical"] = "high"
+    min_urgency: int = Field(default=0, ge=0, le=100)
+    domains: list[Literal["endpoint", "identity", "email", "network", "cloud", "data", "agent"]] = Field(default_factory=list)
+    rule_prefixes: list[str] = Field(default_factory=list, max_length=20)
+    keyword: str = Field(default="", max_length=120)
+    real_only: bool = True
+    channels: list[Literal["in_app", "teams", "line", "slack", "webhook", "email"]] = Field(default_factory=lambda: ["in_app"])
+
+
+@app.get("/api/soc/notify-rules")
+async def soc_notify_rules(who: rbac.Principal = Depends(require("soc.read"))):
+    return {"rules": notify_rules.rules(who.tenant), "server_channels": notifier.channels(),
+            "channels": list(notify_rules.CHANNELS)}
+
+
+@app.post("/api/soc/notify-rules/test")
+async def soc_notify_rule_test(req: NotifyRule, who: rbac.Principal = Depends(require("soc.read"))):
+    return {"matches": notify_rules.test_rule(req.model_dump(), list(E(who).incidents.values()))}
+
+
+@app.post("/api/soc/notify-rules")
+async def soc_notify_rule_create(req: NotifyRule, who: rbac.Principal = Depends(require("rules.manage"))):
+    rule = req.model_dump()
+    errs = notify_rules.validate(rule)
+    if errs:
+        raise HTTPException(422, "; ".join(errs))
+    rule = soc_store.save_notify_rule({**rule, "id": None, "created_by": who.name, "created_at": time.time()}, who.tenant)
+    notify_rules.invalidate(who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.notify_rule", target=f"notify_rule:{rule['id']}",
+                 purpose=f"create: {rule['name']}", legal_basis="own_asset", case_ref=None,
+                 result={k: rule[k] for k in ("min_severity", "min_urgency", "channels", "real_only")})
+    return rule
+
+
+@app.put("/api/soc/notify-rules/{rule_id}")
+async def soc_notify_rule_update(rule_id: int, req: NotifyRule, who: rbac.Principal = Depends(require("rules.manage"))):
+    old = next((r for r in notify_rules.rules(who.tenant) if r["id"] == rule_id), None)
+    if old is None:
+        raise HTTPException(404, "rule not found")
+    rule = {**old, **req.model_dump(), "id": rule_id, "updated_by": who.name, "updated_at": time.time()}
+    errs = notify_rules.validate(rule)
+    if errs:
+        raise HTTPException(422, "; ".join(errs))
+    soc_store.save_notify_rule(rule, who.tenant)
+    notify_rules.invalidate(who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.notify_rule", target=f"notify_rule:{rule_id}",
+                 purpose=f"update: {rule['name']} enabled={rule['enabled']}", legal_basis="own_asset", case_ref=None,
+                 result={k: rule[k] for k in ("min_severity", "min_urgency", "channels", "real_only", "enabled")})
+    return rule
+
+
+@app.delete("/api/soc/notify-rules/{rule_id}")
+async def soc_notify_rule_delete(rule_id: int, who: rbac.Principal = Depends(require("rules.manage"))):
+    if not soc_store.delete_notify_rule(rule_id, who.tenant):
+        raise HTTPException(404, "rule not found")
+    notify_rules.invalidate(who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.notify_rule", target=f"notify_rule:{rule_id}",
+                 purpose="delete", legal_basis="own_asset", case_ref=None, result={})
+    return {"deleted": rule_id}
+
+
+# ---------- threat landscape, events explorer, alerts list ----------
+def _tenant_events(who: rbac.Principal, start: float, end: float) -> list[dict]:
+    """Alert events in a window: persisted real ones from the database plus the in-memory (simulated) window."""
+    seen, out = set(), []
+    for e in soc_store.events_between(start, end, who.tenant) + list(E(who).events):
+        if start <= e["ts"] <= end and (e["id"], e.get("simulated")) not in seen:
+            seen.add((e["id"], e.get("simulated")))
+            out.append(e)
+    return out
+
+
+@app.get("/api/soc/landscape")
+async def soc_landscape(hours: int = 24, who: rbac.Principal = Depends(require("soc.read"))):
+    hours = max(1, min(hours, 24 * 30))
+    now = time.time()
+    tf, kev = threatintel.feed_index("threatfox"), threatintel.feed_index("kev")
+    events = _tenant_events(who, now - max(hours, 7 * 24) * 3600, now)
+    return {"malware_trend": landscape.malware_trend(tf), "kev_trend": landscape.kev_trend(kev),
+            "latest_kev": landscape.latest_kev(kev),
+            "technique_trend": landscape.technique_trend(events, now, hours, 12 if hours <= 48 else min(30, hours // 24)),
+            "threats": landscape.threats_table(events, now, tf, kev), "hours": hours,
+            "feeds_loaded": {"threatfox": bool(tf), "kev": bool(kev)}, "simulated": E(who).simulate}
+
+
+@app.get("/api/soc/events")
+async def soc_events(q: str = "", minutes: int = 15, end: float | None = None, limit: int = 200,
+                     who: rbac.Principal = Depends(require("soc.read"))):
+    """Raw telemetry explorer: real records from the database (kept SOC_RAW_RETENTION_DAYS) plus the in-memory window."""
+    minutes = max(1, min(minutes, 7 * 24 * 60))
+    end = min(end or time.time(), time.time())
+    start = end - minutes * 60
+    eng = E(who)
+    mem = [r for r in eng.raw if start <= (r.get("ts") or 0) <= end]
+    real_mem = {id(r) for r in mem if r.get("simulated") is False}
+    records = [r for r in mem if id(r) not in real_mem] if eng.persist else mem
+    if eng.persist:
+        records += soc_store.raw_between(start, end, who.tenant)
+    out = explorer.explore(records, q[:300], start, end, limit=min(max(limit, 1), 1000))
+    return {**out, "start": start, "end": end, "query": q[:300],
+            "retention_days": soc_store.RAW_RETENTION_DAYS, "memory_window": eng.raw.maxlen}
+
+
+@app.get("/api/soc/alerts")
+async def soc_alerts(status: str = "", severity: str = "", q: str = "", real_only: bool = False, sort: str = "recent",
+                     page: int = 1, size: int = 25, hours: int = 24, who: rbac.Principal = Depends(require("soc.read"))):
+    now = time.time()
+    events = _tenant_events(who, now - max(1, min(hours, 24 * 90)) * 3600, now)
+    incs = dict(E(who).incidents)
+    for e in events:  # older persisted incidents that are no longer in memory
+        iid = e.get("incident_id")
+        if iid and iid not in incs and e.get("simulated") is False:
+            inc = soc_store.incident(iid, who.tenant)
+            if inc:
+                incs[iid] = inc
+    return explorer.alerts_page(events, incs, status, severity, q[:200], real_only, sort, page, size)
 
 
 def _find_incident(inc_id: int, who: rbac.Principal) -> dict:

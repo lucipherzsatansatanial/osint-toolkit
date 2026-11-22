@@ -126,7 +126,9 @@ class Engine:
     def _c2(self) -> dict:
         ips = threatintel.c2_ips()
         if ips:
-            return {"remote_ip": self.rng.choice(ips), "cti_match": "abuse.ch Feodo Tracker C2"}
+            ip = self.rng.choice(ips)
+            fam = (threatintel.feed_index("feodo").get(ip) or {}).get("malware")
+            return {"remote_ip": ip, "cti_match": "abuse.ch Feodo Tracker C2", **({"malware": fam} if fam else {})}
         return {"remote_ip": f"203.0.113.{self.rng.randint(2, 250)}"}  # RFC 5737 doc range
 
     def step(self, now: float | None = None) -> list[dict]:
@@ -186,6 +188,8 @@ class Engine:
             for a in self.offai.ingest([rec], rec["ts"], real=True):
                 events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
         for rec in records:
+            rec["simulated"] = False
+            rec["_source"] = source or "API"
             self.raw.append(rec)
             events.extend(self._custom_events(rec, rec["ts"], simulated=False))
         for ev in events:
@@ -194,6 +198,7 @@ class Engine:
         if self.persist:
             soc_store.save_events(events, self.tenant)
             soc_store.save_agent_records(agent_recs, self.tenant)
+            soc_store.save_raw(records, self.tenant)
             touched = {r.get("host") for r in telemetry} | {e["host"] for e in events}
             soc_store.save_endpoints([self.endpoints[h] for h in touched if h in self.endpoints], self.tenant)
             soc_store.save_agents([self.agents.agents[a] for a in {r["agent"] for r in agent_recs}
@@ -260,7 +265,7 @@ class Engine:
         self.agents.sim.ids = itertools.count(max((r.get("id") or 0 for r in data["agent_records"]), default=0) + 1)
 
     def update_incident(self, inc_id: int, analyst: str, status: str | None = None, assignee: str | None = None,
-                        note: str | None = None, now: float | None = None) -> dict | None:
+                        note: str | None = None, now: float | None = None, verdict: str | None = None) -> dict | None:
         inc = self.incidents.get(inc_id) or (soc_store.incident(inc_id, self.tenant) if self.persist else None)
         if inc is None:
             return None
@@ -276,6 +281,9 @@ class Engine:
         if assignee is not None and assignee != inc.get("assignee"):
             inc["history"].append({"ts": now, "analyst": analyst, "change": f"assignee → {assignee or '-'}"})
             inc["assignee"] = assignee or None
+        if verdict is not None and verdict != inc.get("verdict"):
+            inc["history"].append({"ts": now, "analyst": analyst, "change": f"verdict → {verdict or '-'}"})
+            inc["verdict"] = verdict or None
         if note:
             inc["notes"].append({"ts": now, "analyst": analyst, "text": note})
         if inc.get("real"):
@@ -358,7 +366,7 @@ class Engine:
             if val not in inc[key]:
                 inc[key].append(val)
         inc["alerts"].append({k: ev.get(k) for k in ("id", "ts", "domain", "title", "severity", "technique",
-                                                     "host", "cti_match", "agent", "session", "rule",
+                                                     "host", "cti_match", "agent", "session", "rule", "malware", "cve",
                                                      "framework", "detector", "simulated", "user",
                                                      "record", "indicator", "source_url", "provider",
                                                      "region")})

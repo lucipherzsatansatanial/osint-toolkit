@@ -21,6 +21,9 @@
   <nav class="nav" id="nav">
     <div class="nav-h">ศูนย์ปฏิบัติการ</div>
     <a href="#top" class="on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>ภาพรวม</span></a>
+    <a href="#alertsListCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><span>Alerts</span></a>
+    <a href="#eventsCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M9 19V5M14 19v-7M19 19V8"/></svg><span>Events</span></a>
+    <a href="#landCard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l5-6 4 4 7-9"/><path d="M14 6h5v5"/></svg><span>Threat Landscape</span></a>
     <a href="#tasksCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M9 4V2.8h6V4M8 11l2 2 4-4M8 17h8"/></svg><span>Tasks</span><em id="nb-task">0</em></a>
     <a href="#sec-edr"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>EDR · Endpoints</span><em id="nb-ep">0</em></a>
     <a href="#sec-xdr"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5l2.8 8M16 7.5l-2.8 8M8.5 6h7"/></svg><span>XDR · Incidents</span><em id="nb-inc">0</em></a>
@@ -50,7 +53,10 @@
     <span id="modePill" class="pill warn" title="SIMULATED = demo generator · LIVE = only real logs sent to /api/soc/ingest">Telemetry: SIMULATED</span>
     <span id="ctiStatus" class="pill">CTI: …</span>
     <span class="bell-wrap"><button id="bellBtn" class="pill bell" type="button" title="งานและ incident ที่ต้องดำเนินการ" aria-expanded="false" aria-controls="bellPanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/></svg><span>ต้องดำเนินการ</span><b id="bellN" hidden>0</b></button>
-      <div id="bellPanel" class="bell-panel" hidden><h3>รายการที่ต้องดำเนินการ</h3><ul id="bellList"></ul></div></span>
+      <div id="bellPanel" class="bell-panel" hidden>
+        <h3>การแจ้งเตือนจากกฎ <button id="inboxRead" type="button" class="link">อ่านทั้งหมด</button></h3><ul id="inboxList"></ul>
+        <h3>รายการที่ต้องดำเนินการ</h3><ul id="bellList"></ul>
+        <a href="#nrulesCard" class="bell-foot">จัดการกฎการแจ้งเตือน →</a></div></span>
     <button id="notifyPill" class="pill" type="button" title="ช่องทางแจ้งเตือน incident — คลิกเพื่อส่งข้อความทดสอบ">แจ้งเตือน: …</button>
   </div>
   <span id="clock" class="clock"></span>
@@ -154,6 +160,8 @@
         <option value="open">open — เปิด</option><option value="investigating">investigating — กำลังสอบสวน</option>
         <option value="resolved">resolved — แก้ไขแล้ว</option><option value="false_positive">false positive — แจ้งเตือนผิด</option>
         <option value="closed">closed — ปิด</option></select></label>
+      <label>Verdict <select id="wfVerdict"><option value="">—</option><option value="true_positive">True positive</option>
+        <option value="false_positive">False positive</option><option value="benign">Benign (ถูกต้องตามธุรกิจ)</option><option value="undetermined">ยังสรุปไม่ได้</option></select></label>
       <label>ผู้รับผิดชอบ <input id="wfAssignee" maxlength="80" autocomplete="off"></label>
       <label class="grow">บันทึกของ analyst <input id="wfNote" maxlength="4000" autocomplete="off" placeholder="สิ่งที่ตรวจพบ / ขั้นตอนที่ทำแล้ว"></label>
       <button id="wfSave">บันทึก</button>
@@ -332,6 +340,59 @@
     <details class="roles"><summary>สิทธิ์ของแต่ละบทบาท</summary><ul id="rolesList"></ul></details>
   </section>
 
+  <section class="card span3" id="alertsListCard">
+    <h2>Alerts <small class="muted" id="alTotal"></small></h2>
+    <div class="task-bar">
+      <input id="alQ" type="search" placeholder="ค้นหา alert / host / rule / technique / ผู้รับผิดชอบ" aria-label="ค้นหา alert">
+      <select id="alStatus" aria-label="สถานะ"><option value="">ทุกสถานะ</option><option value="new">ใหม่ (ยังไม่เป็น case)</option><option value="open">open</option>
+        <option value="investigating">investigating</option><option value="resolved,closed">resolved / closed</option><option value="false_positive">false positive</option></select>
+      <select id="alSev" aria-label="ความรุนแรง"><option value="">ทุกความรุนแรง</option><option value="critical">critical</option><option value="high">high</option>
+        <option value="critical,high">critical + high</option><option value="medium">medium</option></select>
+      <select id="alHours" aria-label="ช่วงเวลา"><option value="1">1 ชม.</option><option value="24" selected>24 ชม.</option><option value="168">7 วัน</option><option value="720">30 วัน</option></select>
+      <select id="alSort" aria-label="เรียงตาม"><option value="recent">ล่าสุด</option><option value="urgency">Urgency</option><option value="occurrences">Occurrences</option></select>
+      <label class="chk"><input id="alReal" type="checkbox"> log จริงเท่านั้น</label>
+    </div>
+    <div class="tbl-wrap tall"><table class="tbl alerts-tbl" id="alTbl">
+      <thead><tr><th class="num">Occu.</th><th>Case</th><th>วันที่</th><th>Alert</th><th>สถานะ</th><th>Verdict</th><th>ผู้รับผิดชอบ</th><th>Entity</th><th>Urgency</th><th>Detection type</th><th>Type</th><th>Threats</th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="pager"><button id="alPrev" class="ghost sm">‹ ก่อนหน้า</button><span id="alPage" class="muted"></span><button id="alNext" class="ghost sm">ถัดไป ›</button></div>
+  </section>
+
+  <section class="card span3" id="eventsCard">
+    <h2>Events <small class="muted">ค้นหา log ดิบที่ส่งเข้ามา (EDR / NDR / web / identity / DB / AI agent)</small></h2>
+    <form class="task-bar" id="evForm">
+      <input id="evQ" type="search" placeholder="เช่น  kind:logon  user:admin  -host:DC-01  nmap" aria-label="ค้นหา event">
+      <select id="evRange" aria-label="ช่วงเวลา"><option value="5">5 นาทีล่าสุด</option><option value="15" selected>15 นาที</option><option value="60">1 ชม.</option>
+        <option value="1440">24 ชม.</option><option value="10080">7 วัน</option></select>
+      <button>ค้นหา</button>
+    </form>
+    <svg id="evHist" class="ev-hist" role="img" aria-label="Events over time"></svg>
+    <div class="ev-legend"><span><i class="r"></i>log จริง</span><span><i class="s"></i>จำลอง</span><span id="evMeta" class="muted"></span></div>
+    <div class="tbl-wrap tall"><table class="tbl ev-tbl" id="evTbl"><thead><tr><th>เวลา</th><th>ชนิด</th><th>Host</th><th>Description</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card span3" id="landCard">
+    <h2>Threat Landscape <small class="muted">แนวโน้มจาก CTI สาธารณะ และจาก alert ของ tenant นี้</small>
+      <select id="landHours" class="sm-sel" aria-label="ช่วงเวลา alert"><option value="24">24 ชม.</option><option value="168">7 วัน</option><option value="720">30 วัน</option></select></h2>
+    <div class="land">
+      <div><h3>Malware prevalence <small class="muted" id="mwSrc"></small></h3><svg id="mwChart" class="lchart"></svg><div class="clegend" id="mwLegend"></div></div>
+      <div><h3>MITRE technique prevalence <small class="muted" id="ttSrc">alert ของ tenant นี้</small></h3><svg id="ttChart" class="lchart"></svg><div class="clegend" id="ttLegend"></div></div>
+      <div><h3>Known exploited vulnerabilities ที่เพิ่มต่อสัปดาห์ <small class="muted" id="kevSrc"></small></h3><svg id="kevChart" class="lchart"></svg>
+        <div class="muted small" id="kevVendors"></div></div>
+      <div><h3>CVE ที่ถูกใช้โจมตีจริงล่าสุด <small class="muted">CISA KEV</small></h3><ul class="list" id="kevLatest"></ul></div>
+      <div class="wide"><h3>Threats ที่พบใน alert <small class="muted">พร้อมจำนวน IOC ที่เกี่ยวข้องใน ThreatFox ตอนนี้</small></h3>
+        <div class="tbl-wrap"><table class="tbl" id="thrTbl"><thead><tr><th>Threat</th><th class="num">Alerts</th><th class="num">7 วันล่าสุด</th>
+          <th class="num">Hosts</th><th class="num">Related IOCs</th><th>ล่าสุด</th><th>อ้างอิง</th></tr></thead><tbody></tbody></table></div></div>
+    </div>
+  </section>
+
+  <section class="card span3" id="nrulesCard">
+    <h2>กฎการแจ้งเตือน <small class="muted">เลือกว่า incident แบบไหนควรแจ้งใคร ผ่านช่องทางไหน</small>
+      <button id="nrNew" class="sm" data-perm="rules.manage">+ สร้างกฎ</button></h2>
+    <p class="muted small" id="nrChannels"></p>
+    <div class="tbl-wrap"><table class="tbl" id="nrTbl"><thead><tr><th>#</th><th>ชื่อกฎ</th><th>เงื่อนไข</th><th>ช่องทาง</th><th>เปิดใช้</th><th></th></tr></thead><tbody></tbody></table></div>
+  </section>
+
   <section class="card span3" id="sec-cti">
     <h2><span class="c-cti">Cyber Threat Intelligence</span> · แหล่งข้อมูลจริง
       <button id="ctiRefresh" class="ghost sm">รีเฟรช</button></h2>
@@ -342,6 +403,26 @@
     </div>
   </section>
 </main>
+
+<dialog id="nrDlg" class="dlg">
+  <form method="dialog" id="nrForm">
+    <h2 id="nrDlgTitle">สร้างกฎการแจ้งเตือน</h2>
+    <label>ชื่อกฎ <input name="name" required maxlength="120" placeholder="เช่น Critical จาก log จริง → LINE ทีม SOC"></label>
+    <div class="row3">
+      <label>ความรุนแรงขั้นต่ำ <select name="min_severity"><option>critical</option><option selected>high</option><option>medium</option><option>low</option><option>info</option></select></label>
+      <label>Urgency ขั้นต่ำ (0–100) <input name="min_urgency" type="number" min="0" max="100" value="0"></label>
+      <label>คำในชื่อ alert <input name="keyword" maxlength="120" placeholder="ไม่บังคับ"></label>
+    </div>
+    <fieldset><legend>โดเมน (ไม่เลือก = ทุกโดเมน)</legend><div class="chks" id="nrDomains"></div></fieldset>
+    <label>Rule ID ขึ้นต้นด้วย (คั่นด้วย ,) <input name="rule_prefixes" placeholder="เช่น OAI-, AGT-011, CUS-"></label>
+    <fieldset><legend>ช่องทาง</legend><div class="chks" id="nrChans"></div></fieldset>
+    <div class="chks"><label class="chk"><input name="real_only" type="checkbox" checked> เฉพาะ incident จาก log จริง</label>
+      <label class="chk"><input name="enabled" type="checkbox" checked> เปิดใช้งาน</label></div>
+    <div><button type="button" id="nrTest" class="ghost sm">ทดสอบกับ incident ที่มีตอนนี้</button> <span id="nrTestOut" class="muted small"></span></div>
+    <p id="nrErr" class="err"></p>
+    <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button id="nrSave" value="save">บันทึก</button></div>
+  </form>
+</dialog>
 
 <dialog id="taskDlg" class="dlg">
   <form method="dialog" id="taskForm">

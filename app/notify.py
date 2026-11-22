@@ -37,6 +37,7 @@ class Notifier:
     def __init__(self):
         self.reload()
         self.pending: dict[int, dict] = {}  # incident id -> live incident (latest state is sent)
+        self.rule_pending: dict[int, tuple[dict, set]] = {}  # from notification rules: incident -> chosen channels
         self.wake: asyncio.Event | None = None
         self.task: asyncio.Task | None = None
         self.sent_times: deque = deque()
@@ -97,6 +98,16 @@ class Notifier:
             self.suppressed += 1
             return False
         self.pending[inc["id"]] = inc  # coalesced: the flush sends whatever state it has by then
+        self.wake.set()
+        return True
+
+    def queue_rule(self, inc: dict, channels: list[str]) -> bool:
+        """A tenant notification rule matched: send this incident to the rule's channels (if configured here)."""
+        chans = set(channels) & set(self.channels())
+        if not chans or self.wake is None:
+            return False
+        prev = self.rule_pending.get(inc["id"], (inc, set()))[1]
+        self.rule_pending[inc["id"]] = (inc, prev | chans)
         self.wake.set()
         return True
 
@@ -182,22 +193,24 @@ class Notifier:
         except (OSError, smtplib.SMTPException) as e:
             return "email", False, type(e).__name__
 
-    async def deliver(self, s: dict) -> list[tuple]:
+    async def deliver(self, s: dict, only: set | None = None) -> list[tuple]:
+        """Send to every configured channel, or only to those in `only` (notification rules pick channels)."""
         text = self.text(s)
         jobs = []
+        want = (lambda ch: only is None or ch in only)
         async with httpx.AsyncClient(timeout=15) as client:
-            if self.teams:
+            if self.teams and want("teams"):
                 jobs.append(self._post(client, "teams", self.teams, self.teams_card(s)))
-            if self.slack:
+            if self.slack and want("slack"):
                 jobs.append(self._post(client, "slack", self.slack, {"text": text}))
-            if self.line_token and self.line_to:
+            if self.line_token and self.line_to and want("line"):
                 jobs.append(self._post(client, "line", "https://api.line.me/v2/bot/message/push",
                                        {"to": self.line_to, "messages": [{"type": "text", "text": text[:4900]}]},
                                        {"Authorization": f"Bearer {self.line_token}"}))
-            if self.webhook:
+            if self.webhook and want("webhook"):
                 jobs.append(self._post(client, "webhook", self.webhook, {"event": "soc.incident", "incident": s}))
             results = list(await asyncio.gather(*jobs))
-        if "email" in self.channels():
+        if "email" in self.channels() and want("email"):
             results.append(await asyncio.to_thread(self._email, s))
         self.history.append({"ts": time.time(), "incident": s["id"], "severity": s["severity"],
                              "results": {n: ("ok" if ok else f"failed ({detail})") for n, ok, detail in results}})
@@ -209,10 +222,14 @@ class Notifier:
             await asyncio.sleep(self.debounce)
             self.wake.clear()
             batch, self.pending = list(self.pending.values()), {}
+            ruled, self.rule_pending = self.rule_pending, {}
             for inc in batch:
                 await self._send_one(self.summary(inc))
+            for inc_id, (inc, chans) in ruled.items():
+                if not any(i["id"] == inc_id for i in batch):  # already sent to every channel above
+                    await self._send_one(self.summary(inc), chans)
 
-    async def _send_one(self, s: dict) -> None:
+    async def _send_one(self, s: dict, only: set | None = None) -> None:
         now = time.time()
         while self.sent_times and now - self.sent_times[0] > 600:
             self.sent_times.popleft()
@@ -224,7 +241,7 @@ class Notifier:
             self.suppressed = 0
         self.sent_times.append(now)
         try:
-            await self.deliver(s)
+            await (self.deliver(s) if only is None else self.deliver(s, only))
         except Exception as e:  # noqa: BLE001 - never let a bad channel kill the loop
             self.history.append({"ts": now, "incident": s.get("id"), "error": type(e).__name__})
 

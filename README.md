@@ -144,6 +144,21 @@ API: `GET /api/soc/overview`, `GET|POST /api/soc/tasks`, `PATCH /api/soc/tasks/{
 `GET /api/soc/notifications`. Rate limit แยก: GET ใช้ `OSINT_READ_RATE_LIMIT` (ค่าเริ่ม 300/นาที/IP) เพื่อให้ widget
 poll ได้ ส่วน POST/PATCH และการสแกน OSINT ยังใช้ `OSINT_RATE_LIMIT` (30/นาที/IP)
 
+### Alerts, Events explorer, Threat Landscape และกฎการแจ้งเตือน
+
+- **Alerts** (ทั้งหมด): Occurrences, Case, วันที่, สถานะ, **Verdict** (True/False positive, Benign — ตั้งได้ในหน้า incident),
+  ผู้รับผิดชอบ, Entity, Urgency, **Detection type** (Built-in / CTI / Offensive-AI / AI-agent policy / Custom rule), Type (tactic),
+  Threats; กรองตามสถานะ/ความรุนแรง/ช่วงเวลา/log จริง, เรียงตามล่าสุด/urgency/occurrences, แบ่งหน้า — `GET /api/soc/alerts`
+- **Events**: ค้น log ดิบด้วย `field:value`, `-field:value` และคำค้นอิสระ พร้อม histogram (จริง vs จำลอง) และคำอธิบาย
+  ที่อ่านง่ายต่อบรรทัด; log จริงเก็บใน `soc2_raw` ตาม `SOC_RAW_RETENTION_DAYS` (ค่าเริ่ม 7 วัน) — `GET /api/soc/events`
+- **Threat Landscape**: Malware prevalence (ThreatFox — เฉพาะช่วงที่ export "recent" ครอบคลุม), CISA KEV ที่เพิ่มต่อสัปดาห์
+  + CVE ล่าสุด, MITRE technique prevalence จาก alert ของ tenant และตาราง threat ที่พบ (framework / malware / CVE) พร้อมจำนวน
+  IOC ที่เกี่ยวข้องใน ThreatFox — `GET /api/soc/landscape`. ไม่ใช่ telemetry ระดับโลก
+- **กฎการแจ้งเตือน**: ความรุนแรงขั้นต่ำ, urgency ขั้นต่ำ, โดเมน, rule ID prefix, คำในชื่อ, เฉพาะ log จริง → ช่องทาง
+  ในระบบ (กระดิ่ง) / Teams / LINE / Slack / webhook / email (เฉพาะที่ตั้งค่าบนเซิร์ฟเวอร์); ยิงครั้งเดียวต่อ incident ต่อระดับ
+  ความรุนแรง, ทดสอบกับ incident ปัจจุบันได้ก่อนบันทึก — `GET|POST /api/soc/notify-rules`, `PUT|DELETE /api/soc/notify-rules/{id}`,
+  `POST /api/soc/notify-rules/test`, `POST /api/soc/notifications/read` (สร้าง/แก้กฎต้องมีสิทธิ์ `rules.manage`)
+
 ### แจ้งเตือน incident ออกนอกระบบ (Teams / LINE / Slack / Email / Webhook)
 
 ตั้งค่าผ่าน environment variables (บน Render: service → **Environment**) — ไม่ต้องแก้โค้ด, secret ไม่ถูกเก็บใน repo

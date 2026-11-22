@@ -17,6 +17,8 @@ from app.config import settings
 
 _lock = threading.Lock()
 RETENTION_DAYS = int(os.getenv("SOC_RETENTION_DAYS", "90"))
+RAW_RETENTION_DAYS = int(os.getenv("SOC_RAW_RETENTION_DAYS", "7"))  # raw logs for the events explorer
+INBOX_KEEP = 500
 DEFAULT = "default"
 
 SCHEMA = """
@@ -35,6 +37,14 @@ CREATE TABLE IF NOT EXISTS soc2_rules (tenant TEXT NOT NULL, id TEXT NOT NULL, s
     updated_at REAL, PRIMARY KEY (tenant, id));
 CREATE TABLE IF NOT EXISTS soc2_tasks (tenant TEXT NOT NULL, id INTEGER NOT NULL, status TEXT NOT NULL, doc TEXT NOT NULL,
     updated_at REAL, PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_raw (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, ts REAL NOT NULL,
+    doc TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_soc2_raw_ts ON soc2_raw(tenant, ts);
+CREATE TABLE IF NOT EXISTS soc2_notify_rules (tenant TEXT NOT NULL, id INTEGER NOT NULL, doc TEXT NOT NULL,
+    PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_inbox (rowid INTEGER PRIMARY KEY AUTOINCREMENT, tenant TEXT NOT NULL, ts REAL NOT NULL,
+    read_by TEXT NOT NULL DEFAULT '[]', doc TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_soc2_inbox_ts ON soc2_inbox(tenant, ts);
 CREATE TABLE IF NOT EXISTS soc2_counters (tenant TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (tenant, k));
 """
 LEGACY = {  # old single-tenant table -> (new table, column list)
@@ -167,6 +177,74 @@ def list_tasks(tenant: str = DEFAULT, limit: int = 1000) -> list[dict]:
         return [json.loads(r["doc"]) for r in rows]
 
 
+def save_raw(records: list[dict], tenant: str = DEFAULT) -> None:
+    if not records:
+        return
+    with _lock, _conn() as c:
+        c.executemany("INSERT INTO soc2_raw (tenant, ts, doc) VALUES (?,?,?)",
+                      [(tenant, r.get("ts") or time.time(), _dump(r)) for r in records])
+
+
+def raw_between(start: float, end: float, tenant: str = DEFAULT, limit: int = 50000) -> list[dict]:
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT doc FROM soc2_raw WHERE tenant = ? AND ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?",
+                         (tenant, start, end, limit))
+        return [json.loads(r["doc"]) for r in rows]
+
+
+def events_between(start: float, end: float, tenant: str = DEFAULT, limit: int = 100000) -> list[dict]:
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT doc FROM soc2_events WHERE tenant = ? AND ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT ?",
+                         (tenant, start, end, limit))
+        return [json.loads(r["doc"]) for r in rows]
+
+
+def list_notify_rules(tenant: str = DEFAULT) -> list[dict]:
+    with _lock, _conn() as c:
+        return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_notify_rules WHERE tenant = ? ORDER BY id", (tenant,))]
+
+
+def save_notify_rule(rule: dict, tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        if rule.get("id") is None:
+            rule = {**rule, "id": c.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM soc2_notify_rules WHERE tenant = ?",
+                                            (tenant,)).fetchone()[0]}
+        c.execute("INSERT OR REPLACE INTO soc2_notify_rules (tenant, id, doc) VALUES (?,?,?)", (tenant, rule["id"], _dump(rule)))
+    return rule
+
+
+def delete_notify_rule(rule_id: int, tenant: str = DEFAULT) -> bool:
+    with _lock, _conn() as c:
+        return c.execute("DELETE FROM soc2_notify_rules WHERE tenant = ? AND id = ?", (tenant, rule_id)).rowcount > 0
+
+
+def add_inbox(item: dict, tenant: str = DEFAULT) -> None:
+    with _lock, _conn() as c:
+        c.execute("INSERT INTO soc2_inbox (tenant, ts, doc) VALUES (?,?,?)", (tenant, item["ts"], _dump(item)))
+        c.execute("DELETE FROM soc2_inbox WHERE tenant = ? AND rowid NOT IN (SELECT rowid FROM soc2_inbox WHERE tenant = ? "
+                  "ORDER BY rowid DESC LIMIT ?)", (tenant, tenant, INBOX_KEEP))
+
+
+def inbox(user: str, tenant: str = DEFAULT, limit: int = 50) -> list[dict]:
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT rowid, read_by, doc FROM soc2_inbox WHERE tenant = ? ORDER BY rowid DESC LIMIT ?", (tenant, limit))
+        return [{**json.loads(r["doc"]), "id": r["rowid"], "read": user in json.loads(r["read_by"])} for r in rows]
+
+
+def mark_inbox_read(user: str, tenant: str = DEFAULT, ids: list[int] | None = None) -> int:
+    n = 0
+    with _lock, _conn() as c:
+        q = "SELECT rowid, read_by FROM soc2_inbox WHERE tenant = ?"
+        for r in c.execute(q, (tenant,)).fetchall():
+            if ids is not None and r["rowid"] not in ids:
+                continue
+            who = json.loads(r["read_by"])
+            if user not in who:
+                c.execute("UPDATE soc2_inbox SET read_by = ? WHERE rowid = ?", (json.dumps(who + [user]), r["rowid"]))
+                n += 1
+    return n
+
+
 def add_counts(counts: dict, tenant: str = DEFAULT) -> None:
     if not counts:
         return
@@ -193,6 +271,7 @@ def purge_expired(now: float | None = None) -> int:
     with _lock, _conn() as c:
         n = c.execute("DELETE FROM soc2_events WHERE ts < ?", (cutoff,)).rowcount
         n += c.execute("DELETE FROM soc2_agent_records WHERE ts < ?", (cutoff,)).rowcount
+        n += c.execute("DELETE FROM soc2_raw WHERE ts < ?", ((now or time.time()) - RAW_RETENTION_DAYS * 86400,)).rowcount
         n += c.execute("DELETE FROM soc2_incidents WHERE last_ts < ? AND status NOT IN ('open', 'investigating')",
                        (cutoff,)).rowcount
     return n
