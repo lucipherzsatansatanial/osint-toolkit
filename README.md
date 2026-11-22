@@ -149,6 +149,22 @@ API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/in
 - ปุ่ม "แจ้งเตือน: …" บนแถบด้านบนของ `/soc` = ส่งข้อความทดสอบ (บันทึกใน audit log); `GET /api/soc/notify` แสดงช่องทางและผลส่งล่าสุด (ไม่แสดง URL/token)
 - ลิงก์ `…/soc#inc-<id>` เปิดหน้ารายละเอียด incident นั้นโดยตรง
 
+### ผู้ใช้และสิทธิ์ (RBAC)
+
+| บทบาท | ทำอะไรได้ |
+|---|---|
+| `viewer` ผู้ดู | ดู dashboard, incident, รายงาน, hunting |
+| `analyst` นักวิเคราะห์ | + สแกน OSINT และดูประวัติสแกน, จัดการ incident (สถานะ/ผู้รับผิดชอบ/บันทึก) |
+| `lead` หัวหน้าทีม SOC | + ส่ง log (ingest), ลงทะเบียน agent, Contain/Release, ทดสอบช่องทางแจ้งเตือน |
+| `admin` ผู้ดูแลระบบ | + จัดการผู้ใช้ |
+| `ingest` บัญชีส่ง log | ส่ง log เข้า `/api/soc/ingest` ได้อย่างเดียว (ใช้กับ `tools/ship_logs.py`) |
+
+- แต่ละคนมี **token ส่วนตัว** (เก็บเฉพาะ hash, แสดงครั้งเดียวตอนสร้าง/ออกใหม่) — ใส่ในช่อง API key ของหน้าเว็บ
+- audit log บันทึก**ชื่อผู้ใช้จาก token** ไม่ใช่ชื่อที่พิมพ์เอง → ใช้เป็นหลักฐานได้
+- `OSINT_API_KEY` ยังใช้ได้ในฐานะ **break-glass admin** (สร้างผู้ใช้คนแรก) แต่การกระทำที่ต้อง audit ต้องพิมพ์ชื่อผู้ปฏิบัติงาน — ควรเก็บ key นี้ไว้กับผู้บริหาร/ทีมดูแลระบบเท่านั้น
+- เริ่มใช้งาน: เปิด `/soc` ด้วย `OSINT_API_KEY` → เมนู **ผู้ใช้และสิทธิ์** → สร้าง admin ตัวจริง → ใช้ token นั้นแทน
+- API: `GET /api/me`, `GET/POST /api/users`, `POST /api/users/{u}/rotate`, `PATCH /api/users/{u}` (role / disabled)
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -170,7 +186,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (97 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (98 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

@@ -29,8 +29,11 @@
     <a href="#sec-cti"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg><span>Threat Intelligence</span></a>
     <div class="nav-h">Workspace</div>
     <a href="#hunting"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><span>Threat hunting</span></a>
+    <a href="#usersCard" id="navUsers" data-perm="users.manage" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.5a3.5 3.5 0 010 7M18 14c2.2.6 3.5 2.6 3.5 6"/></svg><span>ผู้ใช้และสิทธิ์</span></a>
     <a href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l6-6M14 4h6v6M20 4l-9 9"/></svg><span>OSINT Toolkit</span></a>
   </nav>
+  <div class="me-box" id="meBox" hidden><b id="meName"></b><small id="meRole"></small>
+    <button id="logoutBtn" type="button" class="link">เปลี่ยนผู้ใช้</button></div>
   <button id="themeBtn" class="theme-btn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z"/></svg><span>Dark Mode</span></button>
 </aside>
 
@@ -101,7 +104,7 @@
       <svg id="graph" viewBox="0 0 720 300" role="img" aria-label="Correlation graph"></svg>
       <ol id="timeline" class="timeline"></ol>
     </div>
-      <div class="wf">
+      <div class="wf" data-perm="incident.write">
       <label>สถานะ <select id="wfStatus">
         <option value="open">open — เปิด</option><option value="investigating">investigating — กำลังสอบสวน</option>
         <option value="resolved">resolved — แก้ไขแล้ว</option><option value="false_positive">false positive — แจ้งเตือนผิด</option>
@@ -173,6 +176,23 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <section class="card span3" id="usersCard" data-perm="users.manage" hidden>
+    <h2>ผู้ใช้และสิทธิ์ (RBAC) <small class="muted">token ส่วนตัวต่อคน · audit log บันทึกชื่อผู้ใช้จริง</small></h2>
+    <form id="userForm" class="hunt user-form" autocomplete="off">
+      <input id="newUser" placeholder="username เช่น somchai.k" maxlength="63" required>
+      <select id="newRole"></select>
+      <button>สร้างผู้ใช้</button>
+    </form>
+    <div id="tokenBox" class="token-box" hidden>
+      <b>Token ของ <span id="tokenUser"></span> (แสดงครั้งเดียว — คัดลอกส่งให้ผู้ใช้ทางช่องทางที่ปลอดภัย)</b>
+      <code id="tokenVal"></code> <button id="tokenCopy" class="mini" type="button">คัดลอก</button>
+    </div>
+    <div class="tbl-wrap"><table class="tbl" id="usersTbl">
+      <thead><tr><th>Username</th><th>บทบาท</th><th>สถานะ</th><th>ใช้งานล่าสุด</th><th>สร้างโดย</th><th></th></tr></thead><tbody></tbody>
+    </table></div>
+    <details class="roles"><summary>สิทธิ์ของแต่ละบทบาท</summary><ul id="rolesList"></ul></details>
   </section>
 
   <section class="card span3" id="sec-cti">

@@ -118,3 +118,8 @@ button.mini.release { background: var(--panel); border: 1px solid var(--line); c
   .keybar { margin: 12px 16px 0; }
   .page-head h1 { font-size: 22px; }
 }
+.me-box { margin-top: auto; padding: 10px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+.me-box small { color: var(--muted); }
+.me-box .link { background: none; border: 0; color: var(--accent); padding: 0; font-size: 12px; text-align: left; cursor: pointer; font-weight: 400; }
+.me-box + .theme-btn { margin-top: 4px; }
+@media (max-width: 860px) { .me-box { display: none; } }

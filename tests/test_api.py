@@ -9,8 +9,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("OSINT_DB_PATH", str(tmp_path / "t.db"))
     monkeypatch.setenv("OSINT_API_KEY", "secret")
     monkeypatch.setenv("SOC_AUTOSTART", "off")
-    import app.config, app.audit, app.soc_store, app.main
-    for m in (app.config, app.audit, app.soc_store, app.main):
+    import app.config, app.audit, app.soc_store, app.rbac, app.main
+    for m in (app.config, app.audit, app.soc_store, app.rbac, app.main):
         importlib.reload(m)
 
     async def fake_scan(target, *a):
@@ -124,3 +124,41 @@ def test_soc_notify_api(client):
     st = client.get("/api/soc/notify", headers=H).json()
     assert st["channels"] == [] and st["min_severity"] == "high"
     assert client.post("/api/soc/notify/test", headers=H, json={"analyst": "tester"}).status_code == 409
+
+
+def test_rbac_roles_and_audit_identity(client):
+    mk = lambda u, r: client.post("/api/users", headers=H, json={"username": u, "role": r}).json()["token"]
+    tv, ta, tl, ti = mk("view.er", "viewer"), mk("ana.lyst", "analyst"), mk("lead.one", "lead"), mk("shipper", "ingest")
+    V, A, L, I = ({"X-API-Key": t} for t in (tv, ta, tl, ti))
+    assert client.get("/api/me", headers=A).json()["role"] == "analyst"
+    assert client.get("/api/me", headers={"X-API-Key": "soc_wrong"}).status_code == 401
+    # viewer: read only
+    assert client.get("/api/soc/snapshot", headers=V).status_code == 200
+    assert client.get("/api/history", headers=V).status_code == 403            # OSINT history has personal data
+    assert client.post("/api/soc/ingest", headers=V, json=[]).status_code == 403
+    # ingest account: ingest only
+    r = client.post("/api/soc/ingest", headers=I, json=[{"kind": "net", "host": "SRV-Q", "dest": "api.deepseek.com"}])
+    assert r.status_code == 200 and client.get("/api/soc/snapshot", headers=I).status_code == 403
+    inc_id = client.get("/api/soc/incidents", headers=A).json()[0]["id"]
+    # analyst: incident workflow, audit shows the real user even if a different name is typed
+    up = client.patch(f"/api/soc/incidents/{inc_id}", headers=A, json={"analyst": "someone.else", "note": "checked"})
+    assert up.status_code == 200 and up.json()["notes"][-1]["analyst"] == "ana.lyst"
+    assert client.post("/api/soc/agents/support-copilot/contain", headers=A,
+                       json={"contain": True, "reason": "test containment"}).status_code == 403
+    # lead: response actions, no user management
+    assert client.post("/api/soc/agents/support-copilot/contain", headers=L,
+                       json={"contain": False, "reason": "release after test"}).status_code == 200
+    assert client.get("/api/users", headers=L).status_code == 403
+    hist = client.get("/api/history", headers=H).json()
+    assert hist[0]["analyst"] == "lead.one" and hist[0]["module"] == "soc.release"
+    # admin: rotate + disable; old token stops working
+    new = client.post("/api/users/ana.lyst/rotate", headers=H).json()["token"]
+    assert client.get("/api/me", headers=A).status_code == 401 and client.get("/api/me", headers={"X-API-Key": new}).status_code == 200
+    assert client.patch("/api/users/view.er", headers=H, json={"disabled": True}).status_code == 200
+    assert client.get("/api/soc/snapshot", headers=V).status_code == 401
+    users = client.get("/api/users", headers=H).json()["users"]
+    assert all("token_hash" not in u for u in users) and len(users) == 4
+    assert client.post("/api/users", headers=H, json={"username": "Bad Name!", "role": "viewer"}).status_code == 422
+    assert client.post("/api/users", headers=H, json={"username": "lead.one", "role": "viewer"}).status_code == 422
+    # shared bootstrap key still needs a typed analyst name for audited actions
+    assert client.patch(f"/api/soc/incidents/{inc_id}", headers=H, json={"note": "x"}).status_code == 422

@@ -134,6 +134,18 @@ async function init() {
   $("#apiKey").value = store.get("apiKey");
   selectModule("domain");
   loadHistory();
+  loadMe();
+}
+
+async function loadMe() {
+  try {
+    const me = await api("/api/me");
+    if (me.named) { $("#analyst").value = me.name; $("#analyst").readOnly = true; $("#analyst").title = "ชื่อจาก token ของคุณ"; }
+    if (!me.permissions.includes("osint.scan")) {
+      $("#runBtn").disabled = true;
+      $("#summary").textContent = `บทบาท ${me.role_th} ไม่มีสิทธิ์สแกน OSINT — ติดต่อผู้ดูแลระบบ`;
+    }
+  } catch { /* not logged in yet */ }
 }
 
 $("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-module]"); if (b) selectModule(b.dataset.module); });
@@ -170,6 +182,7 @@ $("#scanForm").addEventListener("submit", async (e) => {
   $("#cards").innerHTML = "";
   store.set("analyst", $("#analyst").value);
   store.set("apiKey", $("#apiKey").value);
+  loadMe();
   try {
     const res = await api("/api/scan", { method: "POST", body: JSON.stringify({
       module, target: $("#target").value, keyword: $("#keyword").value || null,

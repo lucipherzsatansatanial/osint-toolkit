@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import audit
+from app import audit, rbac
 from app import ingest, soc_report, soc_store
 from app.notify import notifier
 from app.telemetry import hub
@@ -33,6 +33,7 @@ LEGAL_BASES = ["consent", "contract", "legal_obligation", "vital_interest",
 async def lifespan(_: FastAPI):
     audit.init()
     audit.purge_expired()
+    rbac.init()
     soc_store.init()
     soc_store.purge_expired()
     hub.engine.restore(soc_store.load())
@@ -52,9 +53,7 @@ app = FastAPI(title="OSINT Toolkit", version="0.1.0", lifespan=lifespan)
 _hits: dict[str, deque] = defaultdict(deque)
 
 
-def guard(request: Request, x_api_key: str = Header(default="")) -> str:
-    if settings.api_key and not hmac.compare_digest(x_api_key, settings.api_key):
-        raise HTTPException(401, "invalid or missing X-API-Key")
+def _authenticate(request: Request, x_api_key: str) -> rbac.Principal:
     client = request.client.host if request.client else "unknown"
     now = time.monotonic()
     q = _hits[client]
@@ -63,14 +62,40 @@ def guard(request: Request, x_api_key: str = Header(default="")) -> str:
     if len(q) >= settings.rate_limit_per_min:
         raise HTTPException(429, "rate limit exceeded")
     q.append(now)
-    return client
+    if settings.api_key and x_api_key and hmac.compare_digest(x_api_key, settings.api_key):
+        return rbac.Principal("admin (bootstrap key)", "admin", client, False, set(rbac.ROLES["admin"]))
+    user = rbac.authenticate(x_api_key, client)
+    if user:
+        return user
+    if not settings.api_key and not rbac.has_users():  # local development: no credentials configured at all
+        return rbac.Principal("anonymous", "admin", client, False, set(rbac.ROLES["admin"]))
+    raise HTTPException(401, "invalid or missing X-API-Key")
+
+
+def require(perm: str):
+    """Dependency: authenticated principal holding `perm` (see app.rbac.ROLES)."""
+    def dep(request: Request, x_api_key: str = Header(default="")) -> rbac.Principal:
+        who = _authenticate(request, x_api_key)
+        if not who.can(perm):
+            raise HTTPException(403, f"role '{who.role}' lacks permission '{perm}'")
+        return who
+    return dep
+
+
+def actor(who: rbac.Principal, typed: str | None) -> str:
+    """Name written to the audit log: the authenticated user; a typed name only for the shared bootstrap key."""
+    if who.named:
+        return who.name
+    if not typed or len(typed.strip()) < 2:
+        raise HTTPException(422, "analyst: required when using the shared key")
+    return typed.strip()[:80]
 
 
 class ScanRequest(BaseModel):
     module: Literal["domain", "ip", "email", "brand", "username"]
     target: str = Field(min_length=1, max_length=300)
     keyword: str | None = Field(default=None, max_length=40)
-    analyst: str = Field(min_length=2, max_length=80)
+    analyst: str | None = Field(default=None, max_length=80)  # ignored for named users
     purpose: str = Field(min_length=5, max_length=500)
     legal_basis: str | None = None
     case_ref: str | None = Field(default=None, max_length=80)
@@ -95,7 +120,7 @@ async def run_scan(req: ScanRequest) -> tuple[str, dict]:
 
 
 @app.post("/api/scan")
-async def scan(req: ScanRequest, client: str = Depends(guard)):
+async def scan(req: ScanRequest, who: rbac.Principal = Depends(require("osint.scan"))):
     if req.module in PERSONAL_DATA_MODULES and req.legal_basis not in LEGAL_BASES:
         raise HTTPException(422, "this module processes personal data: choose a PDPA legal basis")
     if req.legal_basis and req.legal_basis not in LEGAL_BASES:
@@ -104,19 +129,19 @@ async def scan(req: ScanRequest, client: str = Depends(guard)):
         target, result = await run_scan(req)
     except ValidationError as e:
         raise HTTPException(422, str(e)) from e
-    scan_id = audit.record(client_ip=client, analyst=req.analyst, module=req.module, target=target,
+    scan_id = audit.record(client_ip=who.ip, analyst=actor(who, req.analyst), module=req.module, target=target,
                            purpose=req.purpose, legal_basis=req.legal_basis, case_ref=req.case_ref,
                            result=result)
     return {"id": scan_id, "module": req.module, "target": target, "result": result}
 
 
 @app.get("/api/history")
-def history(limit: int = 50, _: str = Depends(guard)):
+def history(limit: int = 50, _: rbac.Principal = Depends(require("osint.history"))):
     return audit.history(min(max(limit, 1), 500))
 
 
 @app.get("/api/scan/{scan_id}")
-def get_scan(scan_id: int, _: str = Depends(guard)):
+def get_scan(scan_id: int, _: rbac.Principal = Depends(require("osint.history"))):
     row = audit.get(scan_id)
     if not row:
         raise HTTPException(404, "not found")
@@ -126,7 +151,7 @@ def get_scan(scan_id: int, _: str = Depends(guard)):
 @app.get("/api/meta")
 def meta():
     return {
-        "auth_required": bool(settings.api_key),
+        "auth_required": bool(settings.api_key) or rbac.has_users(),
         "legal_bases": LEGAL_BASES,
         "personal_data_modules": sorted(PERSONAL_DATA_MODULES),
         "integrations": {"hibp": bool(settings.hibp_api_key), "ipinfo": bool(settings.ipinfo_token)},
@@ -137,18 +162,79 @@ def meta():
 # ---------- SOC dashboard: EDR / XDR / CTI ----------
 # Engine state is mutated by the background tick on the event loop, so these handlers are
 # async (run on the same loop) rather than sync (threadpool) to avoid concurrent mutation.
+# ---------- identity & user management ----------
+@app.get("/api/me")
+def me(request: Request, x_api_key: str = Header(default="")):
+    who = _authenticate(request, x_api_key)
+    return {"name": who.name, "role": who.role, "role_th": rbac.ROLE_TH.get(who.role, who.role),
+            "named": who.named, "permissions": sorted(who.perms)}
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=2, max_length=63)
+    role: Literal["viewer", "analyst", "lead", "admin", "ingest"]
+
+
+class UserUpdate(BaseModel):
+    role: Literal["viewer", "analyst", "lead", "admin", "ingest"] | None = None
+    disabled: bool | None = None
+
+
+@app.get("/api/users")
+def users_list(_: rbac.Principal = Depends(require("users.manage"))):
+    return {"users": rbac.list_users(), "roles": [{"id": r, "th": rbac.ROLE_TH[r], "permissions": sorted(p)}
+                                                  for r, p in rbac.ROLES.items()]}
+
+
+@app.post("/api/users")
+def users_create(req: UserCreate, who: rbac.Principal = Depends(require("users.manage"))):
+    try:
+        token = rbac.create_user(req.username.strip().lower(), req.role, who.name)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    audit.record(client_ip=who.ip, analyst=who.name, module="rbac.create", target=req.username, purpose=f"role={req.role}",
+                 legal_basis="own_asset", case_ref=None, result={"role": req.role})
+    return {"username": req.username.strip().lower(), "role": req.role, "token": token,
+            "note": "token แสดงครั้งเดียว — เก็บไว้ในที่ปลอดภัย"}
+
+
+@app.post("/api/users/{username}/rotate")
+def users_rotate(username: str, who: rbac.Principal = Depends(require("users.manage"))):
+    token = rbac.rotate(username)
+    if token is None:
+        raise HTTPException(404, "user not found")
+    audit.record(client_ip=who.ip, analyst=who.name, module="rbac.rotate", target=username, purpose="rotate token",
+                 legal_basis="own_asset", case_ref=None, result={})
+    return {"username": username, "token": token}
+
+
+@app.patch("/api/users/{username}")
+def users_update(username: str, req: UserUpdate, who: rbac.Principal = Depends(require("users.manage"))):
+    if who.named and username == who.name and (req.disabled or (req.role and req.role != "admin")):
+        raise HTTPException(409, "cannot disable or demote your own account")
+    try:
+        ok = rbac.update(username, req.role, req.disabled)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    if not ok:
+        raise HTTPException(404, "user not found")
+    audit.record(client_ip=who.ip, analyst=who.name, module="rbac.update", target=username, purpose=str(req.model_dump()),
+                 legal_basis="own_asset", case_ref=None, result=req.model_dump())
+    return {"username": username, **{k: v for k, v in req.model_dump().items() if v is not None}}
+
+
 @app.get("/api/soc/snapshot")
-async def soc_snapshot(_: str = Depends(guard)):
+async def soc_snapshot(_: rbac.Principal = Depends(require("soc.read"))):
     return hub.engine.snapshot()
 
 
 @app.get("/api/soc/cti")
-async def soc_cti(refresh: bool = False, _: str = Depends(guard)):
+async def soc_cti(refresh: bool = False, _: rbac.Principal = Depends(require("soc.read"))):
     return threatintel.public(await threatintel.get_all(force=refresh))
 
 
 @app.get("/api/soc/offensive-ai")
-async def soc_offensive_ai(_: str = Depends(guard)):
+async def soc_offensive_ai(_: rbac.Principal = Depends(require("soc.read"))):
     """Offensive AI-agent framework coverage, rule hit counts and the hunting query library."""
     return {**hub.engine.offai.summary(), "queries": hunting_pack()}
 
@@ -168,13 +254,13 @@ def hunting_pack() -> list[dict]:
 
 
 @app.get("/api/soc/agents")
-async def soc_agents(_: str = Depends(guard)):
+async def soc_agents(_: rbac.Principal = Depends(require("soc.read"))):
     m = hub.engine.agents
     return {"agents": m.inventory(), "rules": m.rules()}
 
 
 @app.get("/api/soc/agents/sessions/{sid}")
-async def soc_agent_session(sid: str, _: str = Depends(guard)):
+async def soc_agent_session(sid: str, _: rbac.Principal = Depends(require("soc.read"))):
     data = hub.engine.agents.session(sid[:20])
     if not data:
         raise HTTPException(404, "session not found")
@@ -182,13 +268,13 @@ async def soc_agent_session(sid: str, _: str = Depends(guard)):
 
 
 @app.get("/api/soc/hunt")
-async def soc_hunt(q: str = "", limit: int = 100, _: str = Depends(guard)):
+async def soc_hunt(q: str = "", limit: int = 100, _: rbac.Principal = Depends(require("soc.read"))):
     return {"query": q[:300], "results": hub.engine.agents.hunt(q[:300], min(max(limit, 1), 500))}
 
 
 @app.post("/api/soc/ingest")
 async def soc_ingest(request: Request, format: str = "auto", host: str | None = None,
-                     client: str = Depends(guard)):
+                     who: rbac.Principal = Depends(require("ingest"))):
     """Ingest real EDR / NDR / web / AI-agent telemetry. Formats: auto, native, ecs, defender, access_log."""
     size = request.headers.get("content-length")
     if size and size.isdigit() and int(size) > ingest.MAX_BYTES:
@@ -220,7 +306,7 @@ class AgentSpec(BaseModel):
 
 
 @app.post("/api/soc/agents/register")
-async def soc_register_agents(items: list[AgentSpec], _: str = Depends(guard)):
+async def soc_register_agents(items: list[AgentSpec], who: rbac.Principal = Depends(require("agents.manage"))):
     """Upsert real AI agents and what they are allowed to do. Unregistered agents seen in logs raise AGT-011."""
     if len(items) > 500:
         raise HTTPException(413, "max 500 agents per request")
@@ -232,53 +318,55 @@ async def soc_register_agents(items: list[AgentSpec], _: str = Depends(guard)):
 
 class ContainRequest(BaseModel):
     contain: bool = True
-    analyst: str = Field(min_length=2, max_length=80)
+    analyst: str | None = Field(default=None, max_length=80)  # ignored for named users
     reason: str = Field(min_length=5, max_length=500)
 
 
 @app.get("/api/soc/notify")
-async def soc_notify_status(_: str = Depends(guard)):
+async def soc_notify_status(_: rbac.Principal = Depends(require("soc.read"))):
     """Which alert channels are configured (never returns URLs or tokens) and recent delivery results."""
     return notifier.status()
 
 
 class NotifyTest(BaseModel):
-    analyst: str = Field(min_length=2, max_length=80)
+    analyst: str | None = Field(default=None, max_length=80)  # ignored for named users
 
 
 @app.post("/api/soc/notify/test")
-async def soc_notify_test(req: NotifyTest, client: str = Depends(guard)):
+async def soc_notify_test(req: NotifyTest, who: rbac.Principal = Depends(require("notify.test"))):
     if not notifier.channels():
         raise HTTPException(409, "no alert channel configured (set SOC_NOTIFY_* environment variables)")
     now = time.time()
-    sample = {"id": 0, "title": f"ทดสอบการแจ้งเตือน — ส่งโดย {req.analyst}", "severity": "high", "status": "open",
-              "coordinated": False, "real": True, "hosts": ["TEST-HOST"], "users": [req.analyst], "domains": ["test"],
+    name = actor(who, req.analyst)
+    sample = {"id": 0, "title": f"ทดสอบการแจ้งเตือน — ส่งโดย {name}", "severity": "high", "status": "open",
+              "coordinated": False, "real": True, "hosts": ["TEST-HOST"], "users": [name], "domains": ["test"],
               "tactics": [], "rules": ["TEST"], "alerts": 0, "first_seen": now, "last_seen": now,
               "latest": "ข้อความทดสอบ ไม่ใช่เหตุการณ์จริง",
               "url": f"{notifier.public_url}/soc" if notifier.public_url else None}
     results = await notifier.deliver(sample)
-    audit.record(client_ip=client, analyst=req.analyst, module="soc.notify_test", target=",".join(notifier.channels()),
+    audit.record(client_ip=who.ip, analyst=name, module="soc.notify_test", target=",".join(notifier.channels()),
                  purpose="test alert channels", legal_basis="own_asset", case_ref=None,
                  result={n: ok for n, ok, _ in results})
     return {"results": {n: {"ok": ok, "detail": str(d)} for n, ok, d in results}}
 
 
 class IncidentUpdate(BaseModel):
-    analyst: str = Field(min_length=2, max_length=80)
+    analyst: str | None = Field(default=None, max_length=80)  # ignored for named users
     status: Literal["open", "investigating", "resolved", "false_positive", "closed"] | None = None
     assignee: str | None = Field(default=None, max_length=80)
     note: str | None = Field(default=None, max_length=4000)
 
 
 @app.patch("/api/soc/incidents/{inc_id}")
-async def soc_update_incident(inc_id: int, req: IncidentUpdate, client: str = Depends(guard)):
+async def soc_update_incident(inc_id: int, req: IncidentUpdate, who: rbac.Principal = Depends(require("incident.write"))):
     """Analyst workflow: status, assignee and notes. Every change is written to the audit log."""
     if not (req.status or req.assignee is not None or req.note):
         raise HTTPException(422, "nothing to update")
-    inc = hub.engine.update_incident(inc_id, req.analyst, req.status, req.assignee, req.note)
+    name = actor(who, req.analyst)
+    inc = hub.engine.update_incident(inc_id, name, req.status, req.assignee, req.note)
     if inc is None:
         raise HTTPException(404, "incident not found")
-    audit.record(client_ip=client, analyst=req.analyst, module="soc.incident", target=f"incident:{inc_id}",
+    audit.record(client_ip=who.ip, analyst=name, module="soc.incident", target=f"incident:{inc_id}",
                  purpose=req.note or f"status={req.status} assignee={req.assignee}", legal_basis="own_asset",
                  case_ref=f"INC-{inc_id}", result={k: v for k, v in req.model_dump().items() if v is not None})
     return inc
@@ -293,7 +381,7 @@ def _find_incident(inc_id: int) -> dict:
 
 @app.get("/api/soc/incidents")
 async def soc_incidents(status: str | None = None, real_only: bool = True, limit: int = 200,
-                        _: str = Depends(guard)):
+                        _: rbac.Principal = Depends(require("soc.read"))):
     """Incident list. real_only (default) reads persisted cases from SQLite; otherwise the live in-memory set."""
     limit = min(max(limit, 1), 1000)
     if real_only:
@@ -303,33 +391,33 @@ async def soc_incidents(status: str | None = None, real_only: bool = True, limit
 
 
 @app.get("/api/soc/incidents/{inc_id}")
-async def soc_incident(inc_id: int, _: str = Depends(guard)):
+async def soc_incident(inc_id: int, _: rbac.Principal = Depends(require("soc.read"))):
     return _find_incident(inc_id)
 
 
 @app.get("/api/soc/incidents/{inc_id}/report", response_class=HTMLResponse)
-async def soc_incident_report(inc_id: int, analyst: str = "", _: str = Depends(guard)):
-    html = soc_report.html_report(_find_incident(inc_id), analyst[:80])
+async def soc_incident_report(inc_id: int, analyst: str = "", _: rbac.Principal = Depends(require("soc.read"))):
+    html = soc_report.html_report(_find_incident(inc_id), _.name if _.named else analyst[:80])
     return HTMLResponse(html, headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
                                                                   "script-src 'unsafe-inline'"})
 
 
 @app.get("/api/soc/incidents.csv")
-async def soc_incidents_csv(status: str | None = None, real_only: bool = True, _: str = Depends(guard)):
+async def soc_incidents_csv(status: str | None = None, real_only: bool = True, _: rbac.Principal = Depends(require("soc.read"))):
     items = await soc_incidents(status, real_only, 1000, _)
     return Response(soc_report.csv_export(items), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="soc-incidents.csv"'})
 
 
 @app.post("/api/soc/agents/{agent_id}/contain")
-async def soc_contain(agent_id: str, req: ContainRequest, client: str = Depends(guard)):
+async def soc_contain(agent_id: str, req: ContainRequest, who: rbac.Principal = Depends(require("respond"))):
     """Response action: revoke the agent's token / suspend it (simulated). Logged in the audit log."""
     if agent_id not in hub.engine.agents.agents:
         raise HTTPException(404, "unknown agent")
     result = hub.engine.agents.contain(agent_id, req.contain)
     if hub.engine.persist and not hub.engine.agents.agents[agent_id].get("demo"):
         soc_store.save_agents([hub.engine.agents.agents[agent_id]])
-    audit.record(client_ip=client, analyst=req.analyst, module="soc.contain" if req.contain else "soc.release",
+    audit.record(client_ip=who.ip, analyst=actor(who, req.analyst), module="soc.contain" if req.contain else "soc.release",
                  target=agent_id, purpose=req.reason, legal_basis="own_asset", case_ref=None,
                  result={"contained": req.contain, "simulated": True})
     return result
@@ -353,7 +441,7 @@ async def soc_events(request: Request, q: asyncio.Queue):
 
 
 @app.get("/api/soc/stream")
-async def soc_stream(request: Request, _: str = Depends(guard)):
+async def soc_stream(request: Request, _: rbac.Principal = Depends(require("soc.read"))):
     """Server-Sent Events. Read with fetch() so the X-API-Key header can be sent."""
     return StreamingResponse(soc_events(request, hub.subscribe()), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

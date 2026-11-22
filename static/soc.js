@@ -25,6 +25,7 @@ async function connect() {
     if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
     $("#keyBar").hidden = true;
     setLive(true);
+    loadMe();
     loadCti(); loadQueries(); loadNotify();
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
@@ -247,6 +248,73 @@ function renderDetail(inc) {
     ${esc(a.title)}<div class="muted">${esc(a.domain)} · ${esc(a.host)} · ${esc(a.technique)}${a.session ? ` · <a href="#" class="slink" data-s="${esc(a.session)}">${esc(a.agent)} / ${esc(a.session)}</a>` : ""}${a.cti_match ? ` · <span style="color:var(--cti)">CTI: ${esc(a.cti_match)}</span>` : ""}</div></li>`).join("");
 }
 
+// ---------- identity / RBAC ----------
+const can = (p) => !state.me || state.me.permissions.includes(p);
+async function loadMe() {
+  try {
+    state.me = await api("/api/me");
+    $("#meBox").hidden = false;
+    $("#meName").textContent = state.me.name;
+    $("#meRole").textContent = state.me.role_th + (state.me.named ? "" : " · shared key");
+    document.querySelectorAll("[data-perm]").forEach((el) => { el.hidden = !can(el.dataset.perm); });
+    if (can("users.manage")) loadUsers();
+    if (state.agents) renderAgents(state.agents);
+  } catch { /* older server */ }
+}
+$("#logoutBtn").onclick = () => { store.set("apiKey", ""); state.ctrl?.abort(); state.me = null; $("#meBox").hidden = true; showKeyBar("ใส่ token ของผู้ใช้"); setLive(false, "ออกจากระบบแล้ว"); };
+const ROLE_TH = {};
+async function loadUsers() {
+  try {
+    const d = await api("/api/users");
+    d.roles.forEach((r) => { ROLE_TH[r.id] = r.th; });
+    if (!$("#newRole").options.length)
+      $("#newRole").innerHTML = d.roles.map((r) => `<option value="${esc(r.id)}" ${r.id === "analyst" ? "selected" : ""}>${esc(r.th)} (${esc(r.id)})</option>`).join("");
+    $("#rolesList").innerHTML = d.roles.map((r) => `<li><b>${esc(r.th)} (${esc(r.id)})</b>: ${esc(r.permissions.join(", "))}</li>`).join("");
+    const t = (x) => x ? new Date(x * 1000).toLocaleString("th-TH", { hour12: false }) : "-";
+    $("#usersTbl tbody").innerHTML = d.users.map((u) => `<tr><td>${esc(u.username)}</td>
+      <td><select data-u="${esc(u.username)}" class="roleSel">${d.roles.map((r) => `<option value="${esc(r.id)}" ${r.id === u.role ? "selected" : ""}>${esc(r.th)}</option>`).join("")}</select></td>
+      <td><span class="st ${u.disabled ? "contained" : "healthy"}">${u.disabled ? "ปิดใช้งาน" : "ใช้งาน"}</span></td>
+      <td class="muted">${t(u.last_seen)}</td><td class="muted">${esc(u.created_by || "")}</td>
+      <td><button class="mini release" data-act="rotate" data-u="${esc(u.username)}">ออก token ใหม่</button>
+          <button class="mini release" data-act="${u.disabled ? "enable" : "disable"}" data-u="${esc(u.username)}">${u.disabled ? "เปิดใช้งาน" : "ปิดใช้งาน"}</button></td></tr>`).join("")
+      || '<tr><td colspan="6" class="muted">ยังไม่มีผู้ใช้ — สร้างผู้ใช้แรกด้านบน</td></tr>';
+  } catch (e) { $("#usersTbl tbody").innerHTML = `<tr><td colspan="6" class="err">${esc(e.message)}</td></tr>`; }
+}
+function showToken(user, token) {
+  $("#tokenBox").hidden = false; $("#tokenUser").textContent = user; $("#tokenVal").textContent = token;
+}
+$("#tokenCopy").onclick = async () => { try { await navigator.clipboard.writeText($("#tokenVal").textContent); $("#tokenCopy").textContent = "คัดลอกแล้ว"; } catch {} };
+$("#userForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    const r = await api("/api/users", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#newUser").value.trim().toLowerCase(), role: $("#newRole").value }) });
+    showToken(r.username, r.token); $("#newUser").value = ""; loadUsers();
+  } catch (e) { alert("สร้างไม่สำเร็จ: " + e.message); }
+});
+$("#usersTbl").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-act]"); if (!b) return;
+  const u = b.dataset.u;
+  try {
+    if (b.dataset.act === "rotate") {
+      if (!confirm(`ออก token ใหม่ให้ ${u}? token เดิมจะใช้ไม่ได้ทันที`)) return;
+      const r = await api(`/api/users/${encodeURIComponent(u)}/rotate`, { method: "POST" }); showToken(u, r.token);
+    } else {
+      await api(`/api/users/${encodeURIComponent(u)}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled: b.dataset.act === "disable" }) });
+    }
+    loadUsers();
+  } catch (e) { alert("ไม่สำเร็จ: " + e.message); }
+});
+$("#usersTbl").addEventListener("change", async (ev) => {
+  const sel = ev.target.closest(".roleSel"); if (!sel) return;
+  try {
+    await api(`/api/users/${encodeURIComponent(sel.dataset.u)}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: sel.value }) });
+  } catch (e) { alert("ไม่สำเร็จ: " + e.message); }
+  loadUsers();
+});
+
 // ---------- alert channels + deep links ----------
 async function loadNotify() {
   const el = $("#notifyPill");
@@ -277,6 +345,7 @@ window.addEventListener("hashchange", openIncidentFromHash);
 
 // ---------- incident workflow ----------
 function analystName() {
+  if (state.me?.named) return state.me.name;  // named users: identity comes from their token
   let a = store.get("analyst");
   if (!a) { a = prompt("ชื่อผู้ปฏิบัติงาน (analyst)") || ""; if (a.length >= 2) store.set("analyst", a); }
   return a.length >= 2 ? a : "";
@@ -325,7 +394,7 @@ function renderAgents(list) {
     <td>${a.calls}</td><td style="color:var(${a.denied ? "--high" : "--muted"})">${a.denied}</td>
     <td><span class="risk"><i style="width:${a.risk}%"></i></span>${a.risk}</td>
     <td><span class="st ${esc(a.status)}">${esc(a.status)}</span>${a.registered === false ? ' <span class="st unregistered" title="seen in logs but not in the agent inventory">unregistered</span>' : ""}</td>
-    <td><button title="บันทึกสถานะ contained และ audit log — ยังไม่มี connector สั่ง revoke token จริง" class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button></td></tr>`).join("");
+    <td>${can("respond") ? `<button title="บันทึกสถานะ contained และ audit log — ยังไม่มี connector สั่ง revoke token จริง" class="mini ${a.contained ? "release" : ""}" data-agent="${esc(a.id)}" data-on="${a.contained ? 0 : 1}">${a.contained ? "Release" : "Contain"}</button>` : ""}</td></tr>`).join("");
 }
 function renderRules(rules) {
   rules.forEach((r) => { RULE_SEV[r.id] = r.severity; });
