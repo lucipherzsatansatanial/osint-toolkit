@@ -39,7 +39,12 @@ def parse_kev(raw: dict) -> dict:
         "name": v.get("vulnerabilityName"), "date_added": v.get("dateAdded"), "due": v.get("dueDate"),
         "ransomware": (v.get("knownRansomwareCampaignUse") or "").lower() == "known",
     } for v in vulns[:TOP]]
-    return {"total": len(vulns), "catalog_version": raw.get("catalogVersion"),
+    index = {(v.get("cveID") or "").upper(): {
+        "cve": v.get("cveID"), "vendor": v.get("vendorProject"), "product": v.get("product"),
+        "name": v.get("vulnerabilityName"), "date_added": v.get("dateAdded"), "due": v.get("dueDate"),
+        "ransomware": (v.get("knownRansomwareCampaignUse") or "").lower() == "known",
+        "description": (v.get("shortDescription") or "")[:400]} for v in vulns if v.get("cveID")}
+    return {"total": len(vulns), "catalog_version": raw.get("catalogVersion"), "index": index,
             "ransomware_linked": sum(1 for v in vulns
                                      if (v.get("knownRansomwareCampaignUse") or "").lower() == "known"),
             "items": items}
@@ -57,7 +62,11 @@ def parse_feodo(raw: list) -> dict:
         "status": r.get("status"), "country": r.get("country"), "as_name": r.get("as_name"),
         "first_seen": r.get("first_seen"), "last_online": r.get("last_online"),
     } for r in rows[:TOP]]
-    return {"total": len(rows), "online": sum(1 for r in rows if r.get("status") == "online"),
+    index = {r["ip_address"]: {"ip": r["ip_address"], "port": r.get("port"), "malware": r.get("malware"),
+                                "status": r.get("status"), "country": r.get("country"), "as_name": r.get("as_name"),
+                                "first_seen": r.get("first_seen"), "last_online": r.get("last_online")}
+             for r in rows if r.get("ip_address")}
+    return {"total": len(rows), "online": sum(1 for r in rows if r.get("status") == "online"), "index": index,
             "by_malware": dict(sorted(by_malware.items(), key=lambda kv: -kv[1])), "items": items}
 
 
@@ -77,7 +86,14 @@ def parse_threatfox(raw: dict) -> dict:
         "malware": e.get("malware_printable"), "confidence": e.get("confidence_level"),
         "first_seen": e.get("first_seen_utc"),
     } for e in flat[:TOP]]
-    return {"total": len(flat), "by_threat_type": by_type, "items": items}
+    index = {}
+    for e in flat:
+        v = str(e.get("ioc_value") or "").lower()
+        if v:
+            index.setdefault(v, {"ioc": e.get("ioc_value"), "type": e.get("ioc_type"), "threat": e.get("threat_type"),
+                                 "malware": e.get("malware_printable"), "confidence": e.get("confidence_level"),
+                                 "first_seen": e.get("first_seen_utc"), "tags": e.get("tags")})
+    return {"total": len(flat), "by_threat_type": by_type, "items": items, "index": index}
 
 
 def parse_agentic(text: str, today: date | None = None) -> dict:
@@ -143,7 +159,7 @@ def public(feeds: dict[str, dict]) -> dict[str, dict]:
     out = {}
     for n, f in feeds.items():
         data = f.get("data")
-        out[n] = {**f, "data": {k: v for k, v in data.items() if k != "rows"}} if data else f
+        out[n] = {**f, "data": {k: v for k, v in data.items() if k not in ("rows", "index")}} if data else f
     return out
 
 
@@ -159,3 +175,7 @@ def c2_ips() -> list[str]:
 def kev_cves() -> list[dict]:
     kev = (_cache.get("kev") or {}).get("data") or {}
     return kev.get("items", [])
+
+
+def feed_index(name: str) -> dict:
+    return ((_cache.get(name) or {}).get("data") or {}).get("index") or {}

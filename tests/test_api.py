@@ -179,3 +179,17 @@ def test_ai_endpoints_rbac_and_cache(client, monkeypatch):
     a = client.post(f"/api/soc/incidents/{inc_id}/ai/ask", headers=H, json={"question": "ทำอะไรต่อ"}).json()
     assert a["source"] == "none"
     assert client.get("/api/history", headers=H).json()[0]["module"] == "soc.ai_ask"
+
+
+def test_phase3_endpoints(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client.post("/api/soc/ingest", headers=H, json=[{"kind": "net", "host": "SRV-P3", "dest": "api.deepseek.com"}])
+    r = client.post("/api/soc/hunt/nl", headers=H, json={"question": "deepseek"}).json()
+    assert r["mode"] == "keyword" and r["total"] >= 1
+    e = client.post("/api/soc/enrich", headers=H, json={"indicator": "api.deepseek.com"}).json()
+    assert e["local_verdict"] == "known_service" and e["ai"] is None
+    assert "chains" in client.get("/api/soc/chains", headers=H).json()
+    assert client.post("/api/soc/chains/CH-999999/ai", headers=H).status_code == 404
+    tv = client.post("/api/users", headers=H, json={"username": "v3", "role": "viewer"}).json()["token"]
+    assert client.post("/api/soc/enrich", headers={"X-API-Key": tv}, json={"indicator": "x.example"}).status_code == 403
+    assert client.get("/api/soc/chains", headers={"X-API-Key": tv}).status_code == 200

@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, ingest, soc_report, soc_store
+from app import ai, ingest, phase3, soc_report, soc_store
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -394,6 +394,56 @@ async def soc_ai_ask(inc_id: int, req: AiAskRequest, who: rbac.Principal = Depen
                  purpose=req.question[:300], legal_basis="own_asset", case_ref=f"INC-{inc_id}",
                  result={"source": out.get("source"), "model": out.get("model"), "redacted": out.get("redacted"),
                          "usage": out.get("usage")})
+    return out
+
+
+# ---------- Phase 3: NL hunting, threat enrichment, attack chains ----------
+def _hunt_data() -> dict:
+    e = hub.engine
+    return {"alerts": list(e.events), "agent_audit": list(e.agents.records), "incidents": list(e.incidents.values())}
+
+
+class NlHuntRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=1000)
+
+
+@app.post("/api/soc/hunt/nl")
+async def soc_nl_hunt(req: NlHuntRequest, who: rbac.Principal = Depends(require("ai.use"))):
+    out = await phase3.nl_hunt(req.question, _hunt_data(), time.time())
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.ai_hunt", target="hunt", purpose=req.question[:300],
+                 legal_basis="own_asset", case_ref=None,
+                 result={"mode": out.get("mode"), "total": out.get("total"), "model": out.get("model"), "usage": out.get("usage")})
+    return out
+
+
+class EnrichRequest(BaseModel):
+    indicator: str = Field(min_length=3, max_length=500)
+
+
+@app.post("/api/soc/enrich")
+async def soc_enrich(req: EnrichRequest, who: rbac.Principal = Depends(require("ai.use"))):
+    out = await phase3.enrich(req.indicator, _hunt_data())
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.ai_enrich", target=req.indicator[:200],
+                 purpose="threat enrichment", legal_basis="own_asset", case_ref=None,
+                 result={"matches": len(out["matches"]), "local_verdict": out["local_verdict"],
+                         "ai": bool(out.get("ai")), "usage": (out.get("ai") or {}).get("usage")})
+    return out
+
+
+@app.get("/api/soc/chains")
+async def soc_chains(_: rbac.Principal = Depends(require("soc.read"))):
+    return {"chains": phase3.build_chains(list(hub.engine.incidents.values()))[:30]}
+
+
+@app.post("/api/soc/chains/{chain_id}/ai")
+async def soc_chain_ai(chain_id: str, who: rbac.Principal = Depends(require("ai.use"))):
+    chain = next((c for c in phase3.build_chains(list(hub.engine.incidents.values())) if c["id"] == chain_id), None)
+    if chain is None:
+        raise HTTPException(404, "chain not found (chains are rebuilt from current incidents)")
+    out = await ai.summarize(phase3.chain_as_incident(chain, hub.engine.incidents))
+    audit.record(client_ip=who.ip, analyst=who.name, module="soc.ai_chain", target=chain_id, purpose="attack chain narrative",
+                 legal_basis="own_asset", case_ref=chain_id,
+                 result={"source": out.get("source"), "model": out.get("model"), "usage": out.get("usage")})
     return out
 
 

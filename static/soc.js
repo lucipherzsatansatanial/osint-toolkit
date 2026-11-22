@@ -26,7 +26,7 @@ async function connect() {
     $("#keyBar").hidden = true;
     setLive(true);
     loadMe();
-    loadCti(); loadQueries(); loadNotify(); loadAiStatus();
+    loadCti(); loadQueries(); loadNotify(); loadAiStatus(); loadChains();
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
     for (;;) {
@@ -337,9 +337,10 @@ function renderCopilot(inc) {
     $("#aiRefresh").hidden = !inc.ai || !can("ai.use");
   }
 }
-function renderAi(a) {
+function renderAi(a) { renderAiInto($("#aiOut"), a); }
+function renderAiInto(el, a) {
   const t = (x) => esc(x || "");
-  $("#aiOut").innerHTML = `
+  el.innerHTML = `
     <div class="ai-head">${t(a.headline)}</div>
     <div class="ai-badges"><span class="${t(a.assessment)}">${t(ASSESS_TH[a.assessment] || a.assessment)}</span>
       <span>ความมั่นใจ: ${t(a.confidence)}</span>${(a.attack_stages || []).map((x) => `<span>${t(x)}</span>`).join("")}</div>
@@ -388,6 +389,114 @@ $("#chatForm").addEventListener("submit", (ev) => { ev.preventDefault(); const q
 const CHAT_PRESETS = ["ควร isolate เครื่องไหนก่อน เพราะอะไร", "มีหลักฐานการส่งข้อมูลออก (exfiltration) ไหม", "เขียนสรุปสำหรับผู้บริหาร 3 บรรทัด", "ต้องแจ้ง สคส. ตาม PDPA หรือไม่"];
 $("#chatPresets").innerHTML = CHAT_PRESETS.map((q) => `<button type="button">${esc(q)}</button>`).join("");
 $("#chatPresets").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) askCopilot(b.textContent); });
+
+// ---------- phase 3: NL hunting, enrichment, attack chains ----------
+const NL_PRESETS = ["หาเซิร์ฟเวอร์ที่ติดต่อ AI API ของจีนในชั่วโมงที่ผ่านมา", "alert ระดับ critical ที่มาจาก log จริง",
+  "AI agent ที่ถูกปฏิเสธการเรียก tool", "การเคลื่อนที่ข้ามเครื่อง (lateral movement) วันนี้", "incident ที่ยังไม่มีผู้รับผิดชอบ"];
+$("#nlPresets").innerHTML = NL_PRESETS.map((q) => `<button type="button">${esc(q)}</button>`).join("");
+$("#nlPresets").addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (b) { $("#nlQ").value = b.textContent; nlHunt(); } });
+$("#nlForm").addEventListener("submit", (ev) => { ev.preventDefault(); nlHunt(); });
+const t2 = (ts) => ts ? new Date(ts * 1000).toLocaleString("th-TH", { hour12: false }) : "-";
+const NL_COLS = {
+  alerts: [["ts", "เวลา", (r) => t2(r.ts)], ["severity", "ระดับ", (r) => `<span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span>`],
+           ["title", "เหตุการณ์", (r) => `${r.simulated === false ? '<span class="real">REAL</span>' : ""}${esc(r.title)}`],
+           ["host", "เครื่อง", (r) => esc(r.host)], ["user", "บัญชี", (r) => esc(r.user)]],
+  agent_audit: [["ts", "เวลา", (r) => t2(r.ts)], ["agent", "Agent", (r) => esc(r.agent)], ["kind", "ชนิด", (r) => esc(r.kind)],
+                ["summary", "รายละเอียด", (r) => esc(r.summary)], ["decision", "ผล", (r) => esc(r.decision)], ["rules", "Rules", (r) => esc((r.rules || []).join(", "))]],
+  incidents: [["id", "#", (r) => r.id], ["severity", "ระดับ", (r) => `<span class="sev" style="--sevc:var(--${esc(r.severity)})">${esc(r.severity)}</span>`],
+              ["title", "Incident", (r) => esc(r.title)], ["status", "สถานะ", (r) => esc(r.status)], ["hosts", "เครื่อง", (r) => esc((r.hosts || []).join(", "))]],
+};
+async function nlHunt() {
+  const q = $("#nlQ").value.trim(); if (!q) return;
+  $("#nlPlan").innerHTML = '<p class="muted"><span class="spin"></span> กำลังแปลงคำถามเป็นเงื่อนไขค้นหา…</p>';
+  try {
+    const r = await api("/api/soc/hunt/nl", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q }) });
+    const p = r.plan;
+    $("#nlPlan").innerHTML = `<div><span class="mode ${r.mode === "ai" ? "ai" : ""}">${r.mode === "ai" ? "AI" : "keyword"}</span>${esc(p.explanation)}</div>
+      <div class="chips"><span>source=${esc(r.source)}</span>${p.since_minutes ? `<span>ย้อนหลัง ${p.since_minutes} นาที</span>` : ""}
+        ${p.filters.map((f) => `<span>${esc(f.field)} ${esc(f.op)} ${esc(f.value)}</span>`).join("")}</div>
+      <div class="muted">พบ ${r.total} รายการ${r.ignored_fields?.length ? ` · ข้ามฟิลด์ที่ไม่รู้จัก: ${esc(r.ignored_fields.join(", "))}` : ""}${r.note ? " · " + esc(r.note) : ""}</div>
+      ${p.kql ? `<div class="qhead" style="margin-top:8px"><b>KQL สำหรับ Defender/Sentinel (ข้อเสนอ ตรวจก่อนรัน)</b><button class="mini" type="button" id="kqlCopy">คัดลอก</button></div><pre class="code" id="kqlCode">${esc(p.kql)}</pre>` : ""}`;
+    const kc = $("#kqlCopy"); if (kc) kc.onclick = () => navigator.clipboard.writeText($("#kqlCode").textContent).catch(() => {});
+    const cols = NL_COLS[r.source];
+    $("#nlRes thead").innerHTML = `<tr>${cols.map((c) => `<th>${c[1]}</th>`).join("")}</tr>`;
+    $("#nlRes tbody").innerHTML = r.results.map((x) => `<tr data-inc="${esc(x.incident_id || (r.source === "incidents" ? x.id : "") || "")}">${cols.map((c) => `<td>${c[2](x)}</td>`).join("")}</tr>`).join("")
+      || `<tr><td colspan="${cols.length}" class="muted">ไม่พบ</td></tr>`;
+  } catch (e) { $("#nlPlan").innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
+}
+$("#nlRes").addEventListener("click", (ev) => { const tr = ev.target.closest("tr[data-inc]"); if (tr && tr.dataset.inc) location.hash = "#inc-" + tr.dataset.inc; });
+$("#enForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const q = $("#enQ").value.trim(); if (!q) return;
+  $("#enOut").innerHTML = '<p class="muted"><span class="spin"></span> กำลังค้นในฟีด CTI และเหตุการณ์ในระบบ…</p>';
+  try {
+    const r = await api("/api/soc/enrich", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ indicator: q }) });
+    const a = r.ai, t = (x) => esc(x ?? "");
+    const VT = { malicious: "อันตราย", suspicious: "น่าสงสัย", benign: "ไม่อันตราย", unknown: "ไม่ทราบ", internal: "ภายในองค์กร", known_service: "บริการที่รู้จัก" };
+    const m = r.matches.map((x) => `<div class="match"><b>${t(x.source)}</b> ${Object.entries(x).filter(([k]) => !["source", "source_url"].includes(k) && x[k] !== null && x[k] !== "")
+      .map(([k, v]) => `<span class="muted">${t(k)}:</span> ${t(Array.isArray(v) ? v.join(", ") : v)}`).join(" · ")}
+      ${/^https:\/\//.test(x.source_url || "") ? ` · <a class="link" target="_blank" rel="noopener" href="${t(x.source_url)}">source</a>` : ""}</div>`).join("") || '<p class="muted">ไม่พบในฟีด CTI ใดเลย</p>';
+    const s = r.sightings;
+    $("#enOut").innerHTML = `<div><span class="verdict ${t(a ? a.verdict : r.local_verdict)}">${t(VT[a ? a.verdict : r.local_verdict] || (a ? a.verdict : r.local_verdict))}</span>
+        <span class="mono">${t(r.indicator)}</span> <span class="muted">(${t(r.type)}${a ? ` · ความมั่นใจ ${t(a.confidence)}` : ""})</span></div>
+      ${a ? `<p>${t(a.explanation)}</p>${a.recommended_actions.length ? `<ul class="ai-actions">${a.recommended_actions.map((x) => `<li><span class="p ${t(x.priority)}">${t(PRIO_TH[x.priority] || x.priority)}</span><span>${t(x.action)}<small>${t(x.owner)}</small></span></li>`).join("")}</ul>` : ""}
+        ${a.hunting_ideas.length ? `<h4>แนวทาง hunting ต่อ</h4><ul>${a.hunting_ideas.map((h) => `<li>${t(h)}</li>`).join("")}</ul>` : ""}
+        <div class="ai-foot">วิเคราะห์โดย ${t(a.model)} จากหลักฐานด้านล่างเท่านั้น · ต้องตรวจสอบก่อนตัดสินใจ</div>` : `<p class="muted">${t(r.note)}</p>`}
+      <h4>หลักฐานจากฟีด CTI (${r.matches.length})</h4>${m}
+      <h4>พบในระบบ</h4><div class="muted">${s.alerts.length} alerts · ${s.agent_records.length} AI-agent records${s.incidents.length ? " · incidents: " + s.incidents.map((i) => `<a class="link" href="#inc-${i}">#${i}</a>`).join(", ") : ""}</div>`;
+  } catch (e) { $("#enOut").innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
+});
+const TACTIC_ORDER = ["Reconnaissance", "Resource Development", "Initial Access", "Execution", "Persistence", "Privilege Escalation", "Defense Evasion",
+  "Credential Access", "Discovery", "Lateral Movement", "Collection", "Command and Control", "Exfiltration", "Impact"];
+state.chains = [];
+async function loadChains() {
+  try {
+    const r = await api("/api/soc/chains"); state.chains = r.chains;
+    $("#nb-chain").textContent = r.chains.length;
+    $("#chains").innerHTML = r.chains.map((c) => `<div class="chain" data-c="${esc(c.id)}" style="--sevc:var(--${esc(c.severity)})">
+      <div><div class="cid">${c.real ? '<span class="real">REAL</span>' : ""}${esc(c.id)}</div><span class="sev">${esc(c.severity)}</span></div>
+      <div><div>${c.incidents.length} incidents · ${esc(c.hosts.slice(0, 4).join(", "))}${c.hosts.length > 4 ? " …" : ""}</div>
+        <div class="meta">${t2(c.start)} → ${t2(c.end)} · เริ่มที่ incident #${c.entry}${c.accounts.length ? " · บัญชี " + esc(c.accounts.slice(0, 3).join(", ")) : ""}</div></div>
+      <div><div class="stagebar" title="${esc(c.tactics.join(" → "))}">${TACTIC_ORDER.map((t) => `<i class="${c.tactics.includes(t) ? "on" : ""}" title="${t}"></i>`).join("")}</div>
+        <div class="meta">${c.tactics.length}/14 ขั้นของ kill chain</div></div></div>`).join("")
+      || '<p class="muted">ยังไม่พบ incident ที่เชื่อมโยงกัน</p>';
+    if (state.chainSel) { const c = state.chains.find((x) => x.id === state.chainSel); if (c) drawChain(c); }
+  } catch { /* retried on next refresh */ }
+}
+function drawChain(c) {
+  $("#chainDetail").hidden = false;
+  $("#chTitle").innerHTML = `${esc(c.id)} · ${c.incidents.length} incidents · <span class="sev" style="--sevc:var(--${esc(c.severity)})">${esc(c.severity)}</span>`;
+  const W = 900, H = 220, pad = 50, span = Math.max(1, c.end - c.start);
+  const x = (ts) => pad + ((ts - c.start) / span) * (W - 2 * pad);
+  const pos = {}; c.incidents.forEach((i, n) => { pos[i.id] = [x(i.first_ts), 60 + (n % 3) * 55]; });
+  let svg = `<line x1="${pad}" y1="${H - 24}" x2="${W - pad}" y2="${H - 24}" stroke="${css("--line")}"/>
+    <text x="${pad}" y="${H - 8}">${esc(t2(c.start))}</text><text x="${W - pad}" y="${H - 8}" text-anchor="end">${esc(t2(c.end))}</text>`;
+  c.edges.forEach((e) => {
+    const [x1, y1] = pos[e.from] || [], [x2, y2] = pos[e.to] || []; if (x1 === undefined || x2 === undefined) return;
+    svg += `<path d="M${x1} ${y1} C ${(x1 + x2) / 2} ${Math.min(y1, y2) - 40}, ${(x1 + x2) / 2} ${Math.min(y1, y2) - 40}, ${x2} ${y2}" stroke="${css("--xdr")}" fill="none" stroke-width="1.5" class="flow"/>
+      <text x="${(x1 + x2) / 2}" y="${Math.min(y1, y2) - 34}" text-anchor="middle" style="font-size:10px;fill:${css("--muted")}">${esc(e.shared[0])}</text>`;
+  });
+  c.incidents.forEach((i) => {
+    const [px, py] = pos[i.id];
+    svg += `<a href="#inc-${i.id}"><circle cx="${px}" cy="${py}" r="11" fill="${css("--" + i.severity)}" stroke="${css("--panel")}" stroke-width="2"/>
+      <text x="${px}" y="${py + 26}" text-anchor="middle">#${i.id}</text></a>`;
+  });
+  $("#chGraph").innerHTML = svg;
+}
+$("#chains").addEventListener("click", (ev) => {
+  const el = ev.target.closest(".chain"); if (!el) return;
+  state.chainSel = el.dataset.c; $("#chAi").innerHTML = "";
+  drawChain(state.chains.find((c) => c.id === state.chainSel));
+});
+$("#chClose").onclick = () => { state.chainSel = null; $("#chainDetail").hidden = true; };
+$("#chainsRefresh").onclick = loadChains;
+$("#chAiBtn").onclick = async () => {
+  if (!state.chainSel) return;
+  $("#chAi").innerHTML = '<p class="muted"><span class="spin"></span> กำลังวิเคราะห์เส้นทางการโจมตี…</p>';
+  try { renderAiInto($("#chAi"), await api(`/api/soc/chains/${encodeURIComponent(state.chainSel)}/ai`, { method: "POST" })); }
+  catch (e) { $("#chAi").innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
+};
+setInterval(() => { if (state.me) loadChains(); }, 30000);
 
 // ---------- alert channels + deep links ----------
 async function loadNotify() {

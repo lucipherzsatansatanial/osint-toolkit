@@ -181,6 +181,18 @@ API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/in
 - สิทธิ์ `ai.use` (analyst ขึ้นไป); ทุกการเรียกบันทึกใน audit log (ผู้ขอ, โมเดล, ปิดบังข้อมูลหรือไม่, จำนวน token)
 - ผลจาก AI เป็นข้อเสนอ ต้องให้ analyst ตรวจสอบก่อนตัดสินใจ
 
+### เฟส 3: AI Threat Hunting, Threat Enrichment และ Attack Chains
+
+| ฟีเจอร์ | ทำงานอย่างไร | ไม่มี API key |
+|---|---|---|
+| **Natural Language Hunting** | Claude แปลงคำถาม (ไทย/อังกฤษ) เป็น*แผนค้นหาแบบมีโครงสร้าง* (JSON schema) แล้วระบบค้นในข้อมูลของเราเอง — **AI ไม่เห็นข้อมูล log** เห็นแค่คำถาม (ปิดบังชื่อผู้ใช้แล้ว) และรายชื่อฟิลด์; พร้อมเสนอ KQL สำหรับ Defender/Sentinel | ค้นแบบ `field:value` + คำค้นทุกฟิลด์ |
+| **AI Threat Enrichment** | ค้น IOC ในทุกฟีด (CISA KEV, Feodo, ThreatFox, agentic-attack-detections, รายชื่อ AI API/OAST) และเหตุการณ์ในระบบก่อน แล้วให้ Claude อธิบาย/ประเมิน/แนะนำการรับมือ**จากหลักฐานที่พบเท่านั้น** | แสดงผลค้นจากฟีดและ sightings |
+| **Attack Chain Analysis** | เชื่อม incident ที่มีเครื่อง บัญชี IP ผู้โจมตี AI agent หรือ IOC ร่วมกันภายใน 24 ชม. เป็นเส้นทางการโจมตี (อัลกอริทึม ไม่ใช้ AI) แสดง kill-chain coverage และกราฟเวลา; ปุ่มให้ Claude เล่าเส้นทาง | ใช้ได้เต็ม (เล่าเรื่องใช้ playbook) |
+
+- ข้อมูลจริงกับข้อมูลจำลองไม่ถูกเชื่อมเป็นเส้นทางเดียวกัน; บัญชีว่าง/unknown ไม่ใช้เป็นตัวเชื่อม
+- สิทธิ์: hunting/enrichment/AI = `ai.use` (analyst+), ดู attack chains = `soc.read`; ทุกการเรียกลง audit log
+- API: `POST /api/soc/hunt/nl`, `POST /api/soc/enrich`, `GET /api/soc/chains`, `POST /api/soc/chains/{id}/ai`
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -202,7 +214,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (105 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (113 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)
