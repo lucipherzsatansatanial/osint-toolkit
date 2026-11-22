@@ -21,6 +21,7 @@
   <nav class="nav" id="nav">
     <div class="nav-h">ศูนย์ปฏิบัติการ</div>
     <a href="#top" class="on"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>ภาพรวม</span></a>
+    <a href="#tasksCard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M9 4V2.8h6V4M8 11l2 2 4-4M8 17h8"/></svg><span>Tasks</span><em id="nb-task">0</em></a>
     <a href="#sec-edr"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>EDR · Endpoints</span><em id="nb-ep">0</em></a>
     <a href="#sec-xdr"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5l2.8 8M16 7.5l-2.8 8M8.5 6h7"/></svg><span>XDR · Incidents</span><em id="nb-inc">0</em></a>
     <a href="#sec-stream"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Alert stream</span></a>
@@ -48,6 +49,8 @@
     <span id="live" class="pill off"><i></i><span>offline</span></span>
     <span id="modePill" class="pill warn" title="SIMULATED = demo generator · LIVE = only real logs sent to /api/soc/ingest">Telemetry: SIMULATED</span>
     <span id="ctiStatus" class="pill">CTI: …</span>
+    <span class="bell-wrap"><button id="bellBtn" class="pill bell" type="button" title="งานและ incident ที่ต้องดำเนินการ" aria-expanded="false" aria-controls="bellPanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/></svg><span>ต้องดำเนินการ</span><b id="bellN" hidden>0</b></button>
+      <div id="bellPanel" class="bell-panel" hidden><h3>รายการที่ต้องดำเนินการ</h3><ul id="bellList"></ul></div></span>
     <button id="notifyPill" class="pill" type="button" title="ช่องทางแจ้งเตือน incident — คลิกเพื่อส่งข้อความทดสอบ">แจ้งเตือน: …</button>
   </div>
   <span id="clock" class="clock"></span>
@@ -72,6 +75,43 @@
     <div class="kpi"><span>CTI matches</span><b id="k-cti">–</b><small>ตรงกับ IOC/CVE จริง</small></div>
     <div class="kpi"><span>Endpoints</span><b id="k-ep">–</b><small id="k-ep-s"></small></div>
     <div class="kpi"><span>Critical / High</span><b id="k-crit">–</b><small id="k-crit-s"></small></div>
+  </section>
+
+  <section class="card span2" id="alertsCard">
+    <div class="ov-head">
+      <div class="ov-stat"><span>Pending alerts</span><b id="ov-pending">–</b></div>
+      <div class="ov-stat"><span>Opened cases</span><b id="ov-cases">–</b></div>
+      <div class="ov-title"><h2>Alerts <small class="muted">จัดกลุ่มตาม alert + host · เรียงตาม urgency</small></h2>
+        <small class="muted" id="ov-formula" title=""></small></div>
+    </div>
+    <div class="tbl-wrap"><table class="tbl alerts-tbl" id="alertsTbl">
+      <thead><tr><th>Urgency</th><th>Alert</th><th>Host</th><th class="num">Occurrences</th><th>สถานะ</th><th>ล่าสุด</th></tr></thead><tbody></tbody>
+    </table></div>
+  </section>
+
+  <section class="card" id="srcCard">
+    <h2>Events by data source <small class="muted" id="srcNote"></small></h2>
+    <div class="donut-wrap"><svg id="donut" viewBox="0 0 120 120" role="img" aria-label="Events by data source"></svg>
+      <div class="donut-c"><b id="srcTotal">–</b><span>events</span></div></div>
+    <ul class="src-legend" id="srcLegend"></ul>
+  </section>
+
+  <section class="card" id="threatCard">
+    <h2>Top observed threats <small class="muted">MITRE ATT&amp;CK · 24 ชม.</small></h2>
+    <ol class="threats" id="threats"></ol>
+  </section>
+
+  <section class="card span2" id="tasksCard">
+    <h2>Tasks <small class="muted" id="taskCounts"></small>
+      <button id="taskNew" class="sm" data-perm="incident.write">+ สร้างงาน</button></h2>
+    <div class="task-bar">
+      <input id="taskQ" type="search" placeholder="ค้นหาชื่องาน / รายละเอียด" aria-label="ค้นหางาน">
+      <select id="taskStatus" aria-label="กรองสถานะ"><option value="">ทุกสถานะ</option></select>
+      <label class="chk"><input id="taskMine" type="checkbox"> เฉพาะของฉัน</label>
+    </div>
+    <div class="tbl-wrap"><table class="tbl tasks-tbl" id="tasksTbl">
+      <thead><tr><th>#</th><th>ชื่องาน</th><th>ผู้รับผิดชอบ</th><th>สถานะ</th><th>กำหนดส่ง</th><th>Incident</th></tr></thead><tbody></tbody>
+    </table></div>
   </section>
 
   <section class="card span2 chart-card">
@@ -302,6 +342,24 @@
     </div>
   </section>
 </main>
+
+<dialog id="taskDlg" class="dlg">
+  <form method="dialog" id="taskForm">
+    <h2 id="taskDlgTitle">สร้างงาน</h2>
+    <label>ชื่องาน <input name="name" required maxlength="200" placeholder="เช่น เก็บ memory dump จาก SRV-FILE-02"></label>
+    <label>รายละเอียด <textarea name="description" rows="4" maxlength="8000"></textarea></label>
+    <div class="row3">
+      <label>ผู้รับผิดชอบ <select name="assignee"><option value="">— ยังไม่มอบหมาย —</option></select></label>
+      <label>สถานะ <select name="status"></select></label>
+      <label>กำหนดส่ง <input name="due" type="datetime-local"></label>
+    </div>
+    <label>Incident ที่เกี่ยวข้อง <input name="incident_id" type="number" min="1" placeholder="ไม่บังคับ เช่น 1004"></label>
+    <label id="taskNoteRow" hidden>บันทึกความคืบหน้า <textarea name="note" rows="2" maxlength="4000"></textarea></label>
+    <ol id="taskHist" class="task-hist" hidden></ol>
+    <p id="taskErr" class="err"></p>
+    <div class="dlg-actions"><button value="cancel" class="ghost" formnovalidate>ยกเลิก</button><button id="taskSave" value="save">บันทึก</button></div>
+  </form>
+</dialog>
 
 <footer class="foot">
   Telemetry ที่ไม่มีป้าย <b>REAL</b> เป็น<b>ข้อมูลจำลอง</b> เพื่อสาธิต (ปิดได้ด้วย SOC_SIMULATION=off) · log จริงส่งเข้าที่ /api/soc/ingest · CTI ดึงจริงจาก CISA KEV, abuse.ch และ ThreatDefence agentic-attack-detections (MIT) (cache 15 นาที) ·

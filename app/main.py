@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, ingest, phase3, phase4, soc_report, soc_store
+from app import ai, ingest, phase3, phase4, soc_report, soc_store, workspace
 from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
@@ -47,6 +47,7 @@ async def lifespan(_: FastAPI):
     def setup_engine(e):  # runs once per tenant engine: restore its data, rules and alert hook
         e.restore(soc_store.load(e.tenant))
         e.custom.load(soc_store.list_rules(e.tenant))
+        e.sources.update({k[4:]: n for k, n in soc_store.counts(e.tenant).items() if k.startswith("src:")})
         e.persist = True
         e.on_incident = notifier.offer
     hub.engines.clear()
@@ -64,7 +65,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="OSINT Toolkit", version="0.1.0", lifespan=lifespan)
 
-_hits: dict[str, deque] = defaultdict(deque)
+_hits: dict[tuple, deque] = defaultdict(deque)
 
 
 def _with_tenant(who: rbac.Principal, request: Request) -> rbac.Principal:
@@ -80,10 +81,11 @@ def _with_tenant(who: rbac.Principal, request: Request) -> rbac.Principal:
 def _authenticate(request: Request, x_api_key: str) -> rbac.Principal:
     client = request.client.host if request.client else "unknown"
     now = time.monotonic()
-    q = _hits[client]
+    read = request.method == "GET"  # dashboards poll read-only endpoints; scans and writes keep the tight budget
+    q = _hits[(client, read)]
     while q and now - q[0] > 60:
         q.popleft()
-    if len(q) >= settings.rate_limit_per_min:
+    if len(q) >= (settings.read_rate_limit_per_min if read else settings.rate_limit_per_min):
         raise HTTPException(429, "rate limit exceeded")
     q.append(now)
     if settings.api_key and x_api_key and hmac.compare_digest(x_api_key, settings.api_key):
@@ -325,6 +327,10 @@ async def soc_hunt(q: str = "", limit: int = 100, who: rbac.Principal = Depends(
     return {"query": q[:300], "results": E(who).agents.hunt(q[:300], min(max(limit, 1), 500))}
 
 
+INGEST_SOURCE = {"auto": "API", "native": "API", "ecs": "Elastic ECS", "defender": "Microsoft Defender",
+                 "access_log": "Web access log"}
+
+
 @app.post("/api/soc/ingest")
 async def soc_ingest(request: Request, format: str = "auto", host: str | None = None,
                      who: rbac.Principal = Depends(require("ingest"))):
@@ -341,7 +347,7 @@ async def soc_ingest(request: Request, format: str = "auto", host: str | None = 
         records, rejected = ingest.parse(body, format, host)
     except ingest.IngestError as e:
         raise HTTPException(413 if "larger" in str(e) or "more than" in str(e) else 422, str(e)) from e
-    result = E(who).ingest_external(records)
+    result = E(who).ingest_external(records, source=INGEST_SOURCE.get(format, format))
     if not hub.has_subscribers(who.tenant):  # nobody watching: new viewers get these via the snapshot, so don't re-broadcast later
         E(who).drop_outbox()
     return {**result, "rejected": rejected, "format": format}
@@ -766,6 +772,144 @@ async def soc_update_incident(inc_id: int, req: IncidentUpdate, who: rbac.Princi
                  purpose=req.note or f"status={req.status} assignee={req.assignee}", legal_basis="own_asset",
                  case_ref=f"INC-{inc_id}", result={k: v for k, v in req.model_dump().items() if v is not None})
     return inc
+
+
+# ---------- analyst workspace: overview widgets, tasks, notifications ----------
+@app.get("/api/soc/overview")
+async def soc_overview(who: rbac.Principal = Depends(require("soc.read"))):
+    """Homepage widgets: pending alerts, opened cases, alert list with occurrences + urgency, events by data source,
+    top observed threats (24 h) and task counts. Computed from the tenant's live window plus persisted counters."""
+    eng = E(who)
+    now = time.time()
+    events = list(eng.events)
+    alerts = workspace.alert_summary(events, eng.incidents)
+    tasks = soc_store.list_tasks(who.tenant)
+    return {"pending_alerts": sum(1 for a in alerts if a["status"] in ("new", "open")),
+            "opened_cases": sum(1 for i in eng.incidents.values() if i["status"] in ("open", "investigating")),
+            "alerts": alerts, "data_sources": workspace.data_sources(eng.sources),
+            "events_total": sum(eng.sources.values()), "top_threats": workspace.top_threats(events, now - 86400),
+            "tasks": workspace.by_status(tasks), "simulated": eng.simulate,
+            "urgency_formula": "severity base (critical 85 / high 70 / medium 45 / low 20) + occurrences-1 (max 10) "
+                               "+ 5 CTI match + 5 coordinated multi-domain incident, capped at 100"}
+
+
+class TaskIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=8000)
+    assignee: str | None = Field(default=None, max_length=80)
+    status: Literal[workspace.TASK_STATUSES] = "pending"  # type: ignore[valid-type]
+    due: float | None = None  # epoch seconds
+    incident_id: int | None = None
+
+
+class TaskPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=8000)
+    assignee: str | None = Field(default=None, max_length=80)  # "" clears
+    status: Literal[workspace.TASK_STATUSES] | None = None  # type: ignore[valid-type]
+    due: float | None = None
+    clear_due: bool = False
+    note: str | None = Field(default=None, max_length=4000)
+
+
+def _assignees(who: rbac.Principal) -> list[str]:
+    return [u["username"] for u in rbac.list_users(who.tenant) if not u["disabled"] and u["role"] != "ingest"]
+
+
+def _check_assignee(who: rbac.Principal, name: str | None) -> str | None:
+    if not name:
+        return None
+    known = _assignees(who)
+    if known and name not in known and name != who.name:
+        raise HTTPException(422, f"assignee '{name}' is not an active user of tenant {who.tenant}")
+    return name
+
+
+@app.get("/api/soc/assignees")
+async def soc_assignees(who: rbac.Principal = Depends(require("soc.read"))):
+    names = _assignees(who)
+    if who.named and who.name not in names:
+        names.append(who.name)
+    return {"users": sorted(names), "me": who.name if who.named else None}
+
+
+@app.get("/api/soc/tasks")
+async def soc_tasks(status: str | None = None, q: str | None = None, assignee: str | None = None,
+                    who: rbac.Principal = Depends(require("soc.read"))):
+    items = soc_store.list_tasks(who.tenant)
+    if status:
+        items = [t for t in items if t["status"] in status.split(",")]
+    if assignee:
+        items = [t for t in items if t.get("assignee") == assignee]
+    if q:
+        ql = q.lower()
+        items = [t for t in items if ql in t["name"].lower() or ql in (t.get("description") or "").lower()]
+    return {"tasks": items, "by_status": workspace.by_status(soc_store.list_tasks(who.tenant)),
+            "statuses": [{"id": s, "th": workspace.TASK_TH[s]} for s in workspace.TASK_STATUSES]}
+
+
+@app.post("/api/soc/tasks")
+async def soc_task_create(req: TaskIn, who: rbac.Principal = Depends(require("incident.write"))):
+    if req.incident_id is not None:
+        _find_incident(req.incident_id, who)
+    now = time.time()
+    t = soc_store.save_task({"id": None, "name": req.name.strip(), "description": req.description,
+                             "assignee": _check_assignee(who, req.assignee), "status": req.status, "due": req.due,
+                             "incident_id": req.incident_id, "created_by": who.name, "created_at": now,
+                             "updated_at": now, "history": [], "notes": []}, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.task", target=f"task:{t['id']}",
+                 purpose=f"create: {t['name'][:120]}", legal_basis="own_asset",
+                 case_ref=f"INC-{req.incident_id}" if req.incident_id else None,
+                 result={"status": t["status"], "assignee": t["assignee"]})
+    return t
+
+
+@app.patch("/api/soc/tasks/{task_id}")
+async def soc_task_update(task_id: int, req: TaskPatch, who: rbac.Principal = Depends(require("incident.write"))):
+    t = soc_store.task(task_id, who.tenant)
+    if t is None:
+        raise HTTPException(404, "task not found")
+    now = time.time()
+    changes = []
+    if req.name is not None and req.name.strip() != t["name"]:
+        t["name"] = req.name.strip()
+        changes.append("name")
+    if req.description is not None and req.description != t.get("description"):
+        t["description"] = req.description
+        changes.append("description")
+    if req.assignee is not None and (req.assignee or None) != t.get("assignee"):
+        t["assignee"] = _check_assignee(who, req.assignee)
+        changes.append(f"assignee → {t['assignee'] or '-'}")
+    if req.status and req.status != t["status"]:
+        changes.append(f"status {t['status']} → {req.status}")
+        t["status"] = req.status
+        if req.status == "completed":
+            t["completed_at"] = now
+    if req.clear_due or (req.due is not None and req.due != t.get("due")):
+        t["due"] = None if req.clear_due else req.due
+        changes.append("due")
+    if req.note:
+        t.setdefault("notes", []).append({"ts": now, "analyst": who.name, "text": req.note})
+        changes.append("note")
+    if not changes:
+        raise HTTPException(422, "nothing to update")
+    t.setdefault("history", []).append({"ts": now, "analyst": who.name, "change": ", ".join(changes)})
+    t["updated_at"] = now
+    soc_store.save_task(t, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.task", target=f"task:{task_id}",
+                 purpose=req.note or ", ".join(changes), legal_basis="own_asset",
+                 case_ref=f"INC-{t['incident_id']}" if t.get("incident_id") else None,
+                 result={k: v for k, v in req.model_dump().items() if v not in (None, False)})
+    return t
+
+
+@app.get("/api/soc/notifications")
+async def soc_notifications(who: rbac.Principal = Depends(require("soc.read"))):
+    """What needs the caller's attention: their open tasks (overdue first) and incidents assigned to them, plus
+    unassigned critical incidents from the last 24 h."""
+    incs = list(E(who).incidents.values())
+    items = workspace.notifications(who.name, soc_store.list_tasks(who.tenant), incs, time.time())
+    return {"items": items, "urgent": sum(1 for n in items if n["urgent"])}
 
 
 def _find_incident(inc_id: int, who: rbac.Principal) -> dict:

@@ -72,6 +72,13 @@ CAMPAIGN = [
 EXPLOIT = ("network", "Exploit attempt on public-facing app", "high", "T1190", "Initial Access")
 
 
+SIM_SOURCE = {"endpoint": "EDR", "identity": "Identity / IdP", "email": "Email gateway", "network": "NDR / Firewall",
+              "cloud": "Cloud audit", "data": "Database / DLP", "agent": "AI agent audit"}
+KIND_SOURCE = {"process": "EDR process", "http": "Web / proxy", "net": "Network flow", "logon": "Identity logon",
+               "db": "Database audit", "dlp": "DLP", "agent": "AI agent audit", "prompt": "AI agent audit",
+               "tool_call": "AI agent audit", "llm_call": "AI agent audit", "auth": "AI agent audit"}
+
+
 def sev_up(s: str) -> str:
     return SEV[min(SEV.index(s) + 1, len(SEV) - 1)]
 
@@ -84,6 +91,7 @@ class Engine:
         self.on_incident = None  # optional callback(incident) — the app wires the notifier here
         self._dirty: set[int] = set()
         self.ingested: Counter = Counter()
+        self.sources: Counter = Counter()  # events received per data source, for the "events by data source" widget
         self._outbox: deque[dict] = deque(maxlen=500)
         self._agent_outbox: deque[dict] = deque(maxlen=500)
         self.rng = random.Random(seed)
@@ -153,12 +161,13 @@ class Engine:
             rec.setdefault("ts", now)
             self.raw.append(rec)
             out.extend(self._custom_events(rec, now))
+        self.sources.update(f"{SIM_SOURCE.get(e['domain'], e['domain'])} (จำลอง)" for e in out)
         for ev in out:
             self._ingest(ev)
         return flushed + out
 
     # ---------- real telemetry ----------
-    def ingest_external(self, records: list[dict]) -> dict:
+    def ingest_external(self, records: list[dict], source: str | None = None) -> dict:
         """Run normalized real records (see app.ingest) through the detectors and the XDR correlator."""
         events: list[dict] = []
         agent_recs = [r for r in records if r.get("agent")]
@@ -190,6 +199,10 @@ class Engine:
             soc_store.save_agents([self.agents.agents[a] for a in {r["agent"] for r in agent_recs}
                                    if a in self.agents.agents], self.tenant)
             self.flush()
+        by_src = Counter(f"{source or 'API'} · {KIND_SOURCE.get(r['kind'], r['kind'])}" for r in records)
+        self.sources.update(by_src)
+        if self.persist:
+            soc_store.add_counts({f"src:{k}": n for k, n in by_src.items()}, self.tenant)
         self.ingested.update(r["kind"] for r in records)
         self.ingested["total"] += len(records)
         return {"accepted": len(records), "alerts": len(events),

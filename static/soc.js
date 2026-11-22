@@ -30,7 +30,7 @@ async function connect() {
     if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
     $("#keyBar").hidden = true;
     setLive(true);
-    loadMe();
+    loadMe().then(loadWorkspace);
     loadCti(); loadQueries(); loadNotify(); loadAiStatus(); loadChains(); loadRisk(); loadRules();
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
@@ -970,3 +970,170 @@ $("#themeBtn span").textContent = document.documentElement.dataset.theme === "da
 
 renderTactics({});
 connect();
+
+// ---------- workspace: overview widgets, tasks, notifications ----------
+const TASK_TH = { pending: "รอดำเนินการ", awaiting_input: "รอข้อมูล", in_progress: "กำลังทำ", completed: "เสร็จแล้ว", cancelled: "ยกเลิก" };
+const ALERT_ST = { new: "ใหม่", open: "open", investigating: "investigating", resolved: "resolved", false_positive: "false positive", closed: "closed" };
+const SRC_COLORS = ["--endpoint", "--network", "--identity", "--agent", "--email", "--cloud", "--data", "--off", "--xdr", "--low", "--medium", "--info"];
+const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); return s < 60 ? `${s | 0} วิ` : s < 3600 ? `${(s / 60) | 0} นาที` : s < 86400 ? `${(s / 3600) | 0} ชม.` : `${(s / 86400) | 0} วัน`; };
+function urgRing(u) {
+  const c = u >= 80 ? "--critical" : u >= 60 ? "--high" : u >= 40 ? "--medium" : "--low";
+  const r = 14, len = 2 * Math.PI * r;
+  return `<svg class="urg" viewBox="0 0 36 36" role="img" aria-label="urgency ${u}"><circle cx="18" cy="18" r="${r}" class="urg-bg"/>
+    <circle cx="18" cy="18" r="${r}" style="stroke:var(${c})" stroke-dasharray="${(len * u / 100).toFixed(1)} ${len.toFixed(1)}" transform="rotate(-90 18 18)"/>
+    <text x="18" y="22" text-anchor="middle">${u}</text></svg>`;
+}
+function renderDonut(srcs, total) {
+  const svg = $("#donut"), r = 46, len = 2 * Math.PI * r;
+  let off = 0, arcs = `<circle cx="60" cy="60" r="${r}" class="donut-bg"/>`;
+  srcs.forEach((s, i) => {
+    const l = len * s.share;
+    arcs += `<circle cx="60" cy="60" r="${r}" style="stroke:var(${SRC_COLORS[i % SRC_COLORS.length]})" stroke-dasharray="${Math.max(0, l - 1).toFixed(2)} ${len.toFixed(2)}"
+      stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 60 60)"><title>${esc(s.source)}: ${s.events.toLocaleString()}</title></circle>`;
+    off += l;
+  });
+  svg.innerHTML = arcs;
+  $("#srcTotal").textContent = total >= 1e6 ? (total / 1e6).toFixed(1) + "M" : total >= 1e4 ? (total / 1e3).toFixed(1) + "K" : total.toLocaleString();
+  $("#srcLegend").innerHTML = srcs.map((s, i) => `<li><i style="background:var(${SRC_COLORS[i % SRC_COLORS.length]})"></i><span>${esc(s.source)}</span>
+    <b>${s.events.toLocaleString()}</b><small>${(s.share * 100).toFixed(1)}%</small></li>`).join("") || '<li class="muted">ยังไม่มีข้อมูลเข้า</li>';
+}
+async function loadOverview() {
+  try {
+    const o = await api("/api/soc/overview");
+    setKpi("#ov-pending", o.pending_alerts); setKpi("#ov-cases", o.opened_cases);
+    $("#ov-formula").textContent = "urgency คืออะไร?"; $("#ov-formula").title = o.urgency_formula;
+    $("#srcNote").textContent = o.simulated ? "รวมข้อมูลจำลอง" : "log จริง";
+    $("#alertsTbl tbody").innerHTML = o.alerts.slice(0, 25).map((a) => `<tr data-inc="${a.incident_id ?? ""}" class="${a.incident_id ? "clk" : ""}">
+      <td>${urgRing(a.urgency)}</td>
+      <td class="a-title">${a.real ? '<span class="real">REAL</span>' : ""}${esc(a.title)}<div class="sub">${esc(a.technique || "")}${a.rule ? " · " + esc(a.rule) : ""}${a.cti ? ' · <span class="c-cti">CTI</span>' : ""}</div></td>
+      <td>${esc(a.host || "-")}</td><td class="num"><b>${a.occurrences}</b></td>
+      <td><span class="ist ${esc(a.status)}">${esc(ALERT_ST[a.status] || a.status)}</span>${a.assignee ? `<div class="sub">${esc(a.assignee)}</div>` : ""}</td>
+      <td title="${esc(t2(a.first_ts))} → ${esc(t2(a.last_ts))}">${ago(a.last_ts)}</td></tr>`).join("")
+      || '<tr><td colspan="6" class="muted">ยังไม่มี alert</td></tr>';
+    renderDonut(o.data_sources, o.events_total);
+    const max = Math.max(1, ...o.top_threats.map((t) => t.alerts));
+    $("#threats").innerHTML = o.top_threats.map((t) => `<li><div><span class="mono">${esc(t.technique)}</span> ${esc(t.name)}</div>
+      <div class="bar"><i style="width:${(100 * t.alerts / max).toFixed(1)}%"></i></div><b>${t.alerts}</b></li>`).join("")
+      || '<li class="muted">ยังไม่มี alert ใน 24 ชม.</li>';
+  } catch (e) { $("#alertsTbl tbody").innerHTML = `<tr><td colspan="6" class="err">${esc(e.message)}</td></tr>`; }
+}
+$("#alertsTbl").addEventListener("click", (ev) => {
+  const tr = ev.target.closest("tr[data-inc]"); if (tr?.dataset.inc) location.hash = "#inc-" + tr.dataset.inc;
+});
+
+const TS = { tasks: [], users: [], edit: null };
+const toLocalInput = (ts) => { if (!ts) return ""; const d = new Date(ts * 1000); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+async function loadTasks() {
+  const p = new URLSearchParams();
+  if ($("#taskQ").value.trim()) p.set("q", $("#taskQ").value.trim());
+  if ($("#taskStatus").value) p.set("status", $("#taskStatus").value);
+  if ($("#taskMine").checked && state.me?.name) p.set("assignee", state.me.name);
+  try {
+    const r = await api("/api/soc/tasks?" + p);
+    TS.tasks = r.tasks;
+    if ($("#taskStatus").options.length === 1)
+      $("#taskStatus").insertAdjacentHTML("beforeend", r.statuses.map((s) => `<option value="${s.id}">${esc(s.th)}</option>`).join(""));
+    const open = (r.by_status.pending || 0) + (r.by_status.awaiting_input || 0) + (r.by_status.in_progress || 0);
+    $("#nb-task").textContent = open;
+    $("#taskCounts").textContent = r.statuses.map((s) => `${s.th} ${r.by_status[s.id] || 0}`).join(" · ");
+    const now = Date.now() / 1000, edit = can("incident.write");
+    $("#tasksTbl tbody").innerHTML = r.tasks.map((t) => {
+      const overdue = t.due && t.due < now && !["completed", "cancelled"].includes(t.status);
+      return `<tr data-task="${t.id}" class="clk"><td>${t.id}</td>
+        <td class="a-title">${esc(t.name)}${t.description ? `<div class="sub">${esc(t.description.slice(0, 90))}</div>` : ""}</td>
+        <td>${t.assignee ? `<span class="who">${esc(t.assignee[0].toUpperCase())}</span>${esc(t.assignee)}` : '<span class="muted">—</span>'}</td>
+        <td>${edit ? `<select class="tstat ${t.status}" data-id="${t.id}" aria-label="สถานะงาน ${t.id}">${Object.entries(TASK_TH).map(([k, v]) => `<option value="${k}" ${k === t.status ? "selected" : ""}>${v}</option>`).join("")}</select>`
+          : `<span class="tstat ${t.status}">${TASK_TH[t.status]}</span>`}</td>
+        <td class="${overdue ? "overdue" : ""}">${t.due ? esc(t2(t.due)) + (overdue ? " · เลยกำหนด" : "") : '<span class="muted">—</span>'}</td>
+        <td>${t.incident_id ? `<a href="#inc-${t.incident_id}">INC-${t.incident_id}</a>` : ""}</td></tr>`;
+    }).join("") || '<tr><td colspan="6" class="muted">ยังไม่มีงาน — กด “+ สร้างงาน”</td></tr>';
+  } catch (e) { $("#tasksTbl tbody").innerHTML = `<tr><td colspan="6" class="err">${esc(e.message)}</td></tr>`; }
+}
+async function loadAssignees() {
+  try { TS.users = (await api("/api/soc/assignees")).users; } catch { TS.users = []; }
+}
+function openTask(t, preset = {}) {
+  TS.edit = t;
+  const f = $("#taskForm");
+  f.reset();
+  $("#taskDlgTitle").textContent = t ? `งาน #${t.id}` : "สร้างงาน";
+  f.assignee.innerHTML = '<option value="">— ยังไม่มอบหมาย —</option>' + TS.users.map((u) => `<option>${esc(u)}</option>`).join("");
+  f.status.innerHTML = Object.entries(TASK_TH).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
+  const v = t || preset;
+  f.name.value = v.name || ""; f.description.value = v.description || "";
+  f.assignee.value = v.assignee || ""; f.status.value = v.status || "pending";
+  f.due.value = toLocalInput(v.due); f.incident_id.value = v.incident_id || "";
+  $("#taskNoteRow").hidden = !t;
+  $("#taskHist").hidden = !t?.history?.length;
+  $("#taskHist").innerHTML = (t?.history || []).concat((t?.notes || []).map((n) => ({ ...n, change: "📝 " + n.text })))
+    .sort((a, b) => a.ts - b.ts).map((h) => `<li><span class="muted">${esc(t2(h.ts))}</span> <b>${esc(h.analyst)}</b> ${esc(h.change)}</li>`).join("");
+  $("#taskErr").textContent = "";
+  const ro = !can("incident.write");
+  f.querySelectorAll("input,textarea,select").forEach((el) => { el.disabled = ro; });
+  if (t) f.incident_id.disabled = true;
+  $("#taskSave").hidden = ro;
+  $("#taskDlg").showModal();
+}
+$("#taskForm").addEventListener("submit", async (ev) => {
+  if (ev.submitter?.value !== "save") return;
+  ev.preventDefault();
+  const f = ev.target, due = f.due.value ? new Date(f.due.value).getTime() / 1000 : null;
+  const body = { name: f.name.value.trim(), description: f.description.value, assignee: f.assignee.value, status: f.status.value };
+  try {
+    if (TS.edit) {
+      Object.assign(body, due ? { due } : { clear_due: !!TS.edit.due });
+      if (f.note.value.trim()) body.note = f.note.value.trim();
+      for (const k of ["name", "description", "assignee", "status"]) if ((TS.edit[k] || "") === body[k]) delete body[k];
+      if (Object.keys(body).length) await api(`/api/soc/tasks/${TS.edit.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } else {
+      if (due) body.due = due;
+      if (f.incident_id.value) body.incident_id = Number(f.incident_id.value);
+      await api("/api/soc/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    }
+    $("#taskDlg").close(); loadTasks(); loadBell();
+  } catch (e) { $("#taskErr").textContent = e.message; }
+});
+$("#taskNew").onclick = () => openTask(null, state.selected ? { incident_id: state.selected } : {});
+$("#tasksTbl").addEventListener("click", (ev) => {
+  if (ev.target.closest("select,a")) return;
+  const tr = ev.target.closest("tr[data-task]"); if (!tr) return;
+  openTask(TS.tasks.find((t) => t.id === Number(tr.dataset.task)));
+});
+$("#tasksTbl").addEventListener("change", async (ev) => {
+  const s = ev.target.closest("select.tstat"); if (!s) return;
+  try {
+    await api(`/api/soc/tasks/${s.dataset.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: s.value }) });
+    loadTasks(); loadBell();
+  } catch (e) { alert(e.message); loadTasks(); }
+});
+let taskQT;
+$("#taskQ").addEventListener("input", () => { clearTimeout(taskQT); taskQT = setTimeout(loadTasks, 250); });
+$("#taskStatus").onchange = loadTasks;
+$("#taskMine").onchange = loadTasks;
+
+async function loadBell() {
+  try {
+    const r = await api("/api/soc/notifications");
+    $("#bellN").hidden = !r.items.length;
+    $("#bellN").textContent = r.items.length;
+    $("#bellBtn").classList.toggle("bad", r.urgent > 0);
+    $("#bellList").innerHTML = r.items.map((n) => `<li class="${n.urgent ? "urgent" : ""}"><a href="${n.kind === "task" ? "#task-" + n.id : "#inc-" + n.id}">
+      <span class="kind">${n.kind === "task" ? "TASK" : "INC-" + n.id}</span><span>${esc(n.title)}<small>${esc(n.detail)}</small></span></a></li>`).join("")
+      || '<li class="muted">ไม่มีรายการค้าง 🎉</li>';
+  } catch {}
+}
+$("#bellBtn").onclick = (ev) => {
+  ev.stopPropagation();
+  const p = $("#bellPanel"); p.hidden = !p.hidden; $("#bellBtn").setAttribute("aria-expanded", String(!p.hidden));
+  if (!p.hidden) loadBell();
+};
+document.addEventListener("click", (ev) => { if (!ev.target.closest(".bell-wrap")) { $("#bellPanel").hidden = true; $("#bellBtn").setAttribute("aria-expanded", "false"); } });
+window.addEventListener("hashchange", () => {
+  const m = /^#task-(\d+)$/.exec(location.hash); if (!m) return;
+  const t = TS.tasks.find((x) => x.id === Number(m[1]));
+  $("#bellPanel").hidden = true;
+  if (t) openTask(t); else $("#tasksCard").scrollIntoView({ behavior: "smooth" });
+});
+function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignees(); }
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);

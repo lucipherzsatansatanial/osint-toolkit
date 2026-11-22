@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS soc2_agents (tenant TEXT NOT NULL, id TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS soc2_endpoints (tenant TEXT NOT NULL, host TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, host));
 CREATE TABLE IF NOT EXISTS soc2_rules (tenant TEXT NOT NULL, id TEXT NOT NULL, status TEXT NOT NULL, doc TEXT NOT NULL,
     updated_at REAL, PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_tasks (tenant TEXT NOT NULL, id INTEGER NOT NULL, status TEXT NOT NULL, doc TEXT NOT NULL,
+    updated_at REAL, PRIMARY KEY (tenant, id));
+CREATE TABLE IF NOT EXISTS soc2_counters (tenant TEXT NOT NULL, k TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (tenant, k));
 """
 LEGACY = {  # old single-tenant table -> (new table, column list)
     "soc_events": ("soc2_events", "id, ts, doc"),
@@ -141,10 +144,47 @@ def list_rules(tenant: str = DEFAULT) -> list[dict]:
         return [json.loads(r["doc"]) for r in c.execute("SELECT doc FROM soc2_rules WHERE tenant = ? ORDER BY id", (tenant,))]
 
 
+def save_task(task: dict, tenant: str = DEFAULT) -> dict:
+    """Insert (id None) or replace an analyst task; returns it with its id."""
+    with _lock, _conn() as c:
+        if task.get("id") is None:
+            row = c.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM soc2_tasks WHERE tenant = ?", (tenant,)).fetchone()
+            task = {**task, "id": row[0]}
+        c.execute("INSERT OR REPLACE INTO soc2_tasks (tenant, id, status, doc, updated_at) VALUES (?,?,?,?,?)",
+                  (tenant, task["id"], task["status"], _dump(task), time.time()))
+    return task
+
+
+def task(task_id: int, tenant: str = DEFAULT) -> dict | None:
+    with _lock, _conn() as c:
+        r = c.execute("SELECT doc FROM soc2_tasks WHERE tenant = ? AND id = ?", (tenant, task_id)).fetchone()
+    return json.loads(r["doc"]) if r else None
+
+
+def list_tasks(tenant: str = DEFAULT, limit: int = 1000) -> list[dict]:
+    with _lock, _conn() as c:
+        rows = c.execute("SELECT doc FROM soc2_tasks WHERE tenant = ? ORDER BY id DESC LIMIT ?", (tenant, limit))
+        return [json.loads(r["doc"]) for r in rows]
+
+
+def add_counts(counts: dict, tenant: str = DEFAULT) -> None:
+    if not counts:
+        return
+    with _lock, _conn() as c:
+        c.executemany("INSERT INTO soc2_counters (tenant, k, n) VALUES (?,?,?) "
+                      "ON CONFLICT(tenant, k) DO UPDATE SET n = n + excluded.n",
+                      [(tenant, k, int(n)) for k, n in counts.items()])
+
+
+def counts(tenant: str = DEFAULT) -> dict:
+    with _lock, _conn() as c:
+        return {r["k"]: r["n"] for r in c.execute("SELECT k, n FROM soc2_counters WHERE tenant = ?", (tenant,))}
+
+
 def tenants() -> list[str]:
     with _lock, _conn() as c:
         rows = c.execute("SELECT tenant FROM soc2_incidents UNION SELECT tenant FROM soc2_events "
-                         "UNION SELECT tenant FROM soc2_agents UNION SELECT tenant FROM soc2_rules").fetchall()
+                         "UNION SELECT tenant FROM soc2_agents UNION SELECT tenant FROM soc2_rules UNION SELECT tenant FROM soc2_tasks").fetchall()
     return sorted({r[0] for r in rows})
 
 

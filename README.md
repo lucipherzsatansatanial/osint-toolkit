@@ -128,6 +128,22 @@ API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/in
 | `SOC_RETENTION_DAYS` | `90` | ลบ alert / agent record / incident ที่ปิดแล้วเก่ากว่านี้ |
 | `SOC_AUTOSTART` | `on` | ดึง CTI feed และเริ่ม correlation ตั้งแต่เปิดเซิร์ฟเวอร์ (ไม่ต้องรอคนเปิด dashboard) |
 
+### Analyst workspace: Tasks, Alerts (urgency/occurrences), Events by data source, Top observed threats
+
+- **หน้าแรก** มี Pending alerts / Opened cases, ตาราง Alerts ที่รวม alert ซ้ำตาม (ชื่อ alert + host) พร้อมจำนวนครั้ง
+  (occurrences) และ **urgency 0–100** = ฐานตามความรุนแรง (critical 85 / high 70 / medium 45 / low 20) + (occurrences−1, สูงสุด 10)
+  + 5 ถ้าตรง CTI + 5 ถ้าอยู่ใน incident หลายโดเมน — สูตรนี้เป็นค่าตั้งต้น ควรปรับตามบริบทลูกค้า
+- **Events by data source**: นับ record ที่เข้ามาแยกตามแหล่ง (เช่น `Elastic ECS · EDR process`) เก็บถาวรใน `soc2_counters`;
+  ข้อมูลจำลองจะมีป้าย "(จำลอง)" และไม่ถูกบันทึก
+- **Top observed threats**: เทคนิค MITRE ATT&CK/ATLAS ที่พบมากที่สุดใน 24 ชม. จาก alert ในหน้าต่างปัจจุบัน
+- **Tasks**: ชื่องาน, รายละเอียด, ผู้รับผิดชอบ (ผู้ใช้ใน tenant เดียวกันเท่านั้น), สถานะ (รอดำเนินการ / รอข้อมูล / กำลังทำ /
+  เสร็จแล้ว / ยกเลิก), กำหนดส่ง, ผูกกับ incident ได้; แยกตาม tenant และบันทึกทุกการเปลี่ยนแปลงใน audit log (`soc.task`)
+- **ต้องดำเนินการ** (ปุ่มกระดิ่ง): งานที่มอบหมายให้ผู้ใช้ (เลยกำหนดขึ้นก่อน), incident ที่มอบหมายให้ และ incident critical ที่ยังไม่มีเจ้าของ
+
+API: `GET /api/soc/overview`, `GET|POST /api/soc/tasks`, `PATCH /api/soc/tasks/{id}`, `GET /api/soc/assignees`,
+`GET /api/soc/notifications`. Rate limit แยก: GET ใช้ `OSINT_READ_RATE_LIMIT` (ค่าเริ่ม 300/นาที/IP) เพื่อให้ widget
+poll ได้ ส่วน POST/PATCH และการสแกน OSINT ยังใช้ `OSINT_RATE_LIMIT` (30/นาที/IP)
+
 ### แจ้งเตือน incident ออกนอกระบบ (Teams / LINE / Slack / Email / Webhook)
 
 ตั้งค่าผ่าน environment variables (บน Render: service → **Environment**) — ไม่ต้องแก้โค้ด, secret ไม่ถูกเก็บใน repo
