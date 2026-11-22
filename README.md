@@ -16,6 +16,109 @@ Web application สำหรับรวบรวมข้อมูลจาก�
 
 \* โมดูลข้อมูลส่วนบุคคล — ระบบบังคับให้เลือก **ฐานทางกฎหมายตาม PDPA** ก่อนสแกน
 
+## SOC Dashboard — EDR / XDR / CTI (`/soc`)
+
+หน้า dashboard แบบ real-time (Server-Sent Events, อัปเดตทุก 1 วินาที) สำหรับ SOC wallboard
+
+| ส่วน | แสดงอะไร | ข้อมูล |
+|---|---|---|
+| KPI | Events/นาที, open incidents, coordinated attacks, CTI matches, สถานะ endpoint, critical/high | จำลอง |
+| Throughput | กราฟเส้นจำนวน event แยกตาม domain (endpoint/identity/email/network/cloud) ย้อนหลัง 5 นาที | จำลอง |
+| EDR | รายการ endpoint: healthy / at risk / compromised, Real-time protection, จำนวน alert | จำลอง |
+| XDR | Incident ที่ correlate ข้าม domain (entity เดียวกัน user/host ภายใน 30 นาที) + กราฟเชื่อมโยง + timeline | จำลอง + logic จริง |
+| MITRE ATT&CK | จำนวน alert ตาม tactic | จำลอง |
+| CTI | CISA KEV (CVE ที่ถูกใช้โจมตีจริง), abuse.ch Feodo Tracker (botnet C2), abuse.ch ThreatFox (IOC) | **ข้อมูลจริง** (cache 15 นาที) |
+
+- **Telemetry เป็นข้อมูลจำลอง** (ทุก event มี `"simulated": true` และหน้าเว็บแสดงป้าย SIMULATED) — ใช้สาธิต correlation จนกว่าจะต่อ connector ของ EDR/XDR จริง (เช่น Microsoft Defender XDR, CrowdStrike Falcon, SentinelOne) เข้ากับ `app/telemetry.py`
+- Simulator สร้าง noise + kill chain หลายขั้น (phishing → sign-in ผิดปกติ → MFA fatigue → PowerShell → C2 → LSASS dump → lateral movement → exfil/ransomware) เมื่อดึง CTI ได้ event C2/exploit จะอ้างอิง IP ของ Feodo และ CVE ของ KEV จริง และติดธง **CTI match**
+- Incident ที่มี ≥2 domain และมี alert ระดับ high ขึ้นไป = **Coordinated attack** และถูกยกระดับความรุนแรง 1 ขั้น
+- ThreatFox export อาจต้องใช้ Auth-Key ในอนาคต — ถ้าดึงไม่ได้ dashboard ยังทำงานต่อและแสดง error เฉพาะ feed นั้น
+
+API: `GET /api/soc/snapshot`, `GET /api/soc/cti?refresh=true`, `GET /api/soc/stream` (SSE; ส่ง `X-API-Key` ผ่าน header — หน้าเว็บใช้ `fetch` แทน `EventSource` เพื่อไม่ให้ key ไปอยู่ใน URL)
+
+### Agentic AI Threat Detection & Hunting
+
+ตรวจจับภัยที่มาจาก/ผ่าน AI Agent โดยอ่าน **AI Agent Audit Logs** (prompt provenance, tool invocation, process launch, network connection, การขอสิทธิ์) แล้ว correlate กับ EDR / NDR / identity / email ใน XDR incident เดียวกัน (เชื่อมด้วย host ของ agent และผู้ใช้ที่ agent ทำงานแทน `on_behalf_of`)
+
+| Rule | ตรวจอะไร | Mapping |
+|---|---|---|
+| AGT-001 | เรียก tool นอก permission scope (policy gateway ปฏิเสธ = denied) | T1078 |
+| AGT-002 | Agent ขอเพิ่มสิทธิ์ / role | T1098 |
+| AGT-003 | Agent ที่ไม่มีสิทธิ์ shell แต่ spawn shell (process tree) | T1059 |
+| AGT-004 | เข้าถึง secrets (.env, id_rsa, vault, api key) | T1552.001 |
+| AGT-005 / 006 | Egress ไปปลายทางนอก allowlist / ไป C2 ที่ตรงกับ CTI | T1071.001 |
+| AGT-007 | เนื้อหาที่ดึงมา (email/เอกสาร) มีสัญญาณ prompt injection | ATLAS AML.T0051.001 |
+| AGT-008 | ทำ action อ่อนไหวหลังเจอ prompt injection ใน session เดียวกัน | ATLAS AML.T0051.001 |
+| AGT-009 | อ่านข้อมูลจำนวนมาก แล้วส่งออกนอกองค์กร | T1567 |
+| AGT-010 | อัตราการเรียก tool ผิดปกติ (>25 ครั้ง/นาที) | T1119 |
+
+- **Hunting**: ภาษา query แบบ `field:value` เช่น `agent:support kind:tool_call -decision:allowed`, `rule:*`, `kind:process`
+- **Session drill-down**: process tree, network connections, execution log ต่อ session
+- **Response**: ปุ่ม Contain/Release (จำลองการ revoke token / suspend agent) บังคับใส่ชื่อผู้ปฏิบัติงานและเหตุผล บันทึกลง audit log
+- กฎใน `app/agent_detect.py` ใช้กับ log จริงได้ถ้าแปลงให้อยู่ใน record shape เดียวกัน (เช่น จาก agent gateway / MCP proxy, EDR process events, NDR/firewall ผ่าน SIEM) — ตอนนี้ข้อมูล agent เป็น**ข้อมูลจำลอง**
+- Mapping ATT&CK/ATLAS เป็นการจับคู่เชิงแนวทาง ควรทบทวนกับเวอร์ชันล่าสุดของ framework ก่อนใช้ในรายงานลูกค้า
+
+API: `GET /api/soc/agents`, `GET /api/soc/agents/sessions/{sid}`, `GET /api/soc/hunt?q=`, `POST /api/soc/agents/{id}/contain`
+
+### Offensive AI Agent Detection (ARTEX/AntiFox, Cairn, PentAGI, HexStrike, CyberStrikeAI, Strix, Hermes Agent, Agent Zero)
+
+ตรวจจับ**ผู้โจมตีที่ใช้ AI Agent** จาก telemetry ของ EDR / NDR / web log (`app/offensive_ai.py`) แบ่ง 2 ชั้น:
+
+| Rule | พฤติกรรม |
+|---|---|
+| OAI-001 | AI agent CLI ถูกเปิดแบบปิดการขออนุมัติ (`--dangerously-skip-permissions`, `--yolo`, `HERMES_YOLO_MODE` ฯลฯ) แล้วเรียกเครื่องมือโจมตี |
+| OAI-002 | เซิร์ฟเวอร์ติดต่อ API โมเดล AI ภายนอก — ผู้ให้บริการจากจีน (DeepSeek, Qwen, GLM, Kimi, MiniMax, Doubao ฯลฯ) ยกเป็น high |
+| OAI-003 | เรียกเครื่องมือโจมตีหลายชนิดอย่างรวดเร็วจากแหล่งเดียว (≥4 ชนิด / 2 นาที) |
+| OAI-004 | สแกนผ่าน proxy หมุนเวียน (≥20 IP ที่ยิงน้อยครั้งและเกือบทั้งหมด error ใส่เป้าเดียวใน 5 นาที) |
+| OAI-005 | ทำงานหลายขั้นต่อเนื่อง recon → scan → exploit → post บน entity เดียวภายใน 15 นาที |
+| OAI-006 | ตรง indicator ของ framework (UA, string, ไฟล์, docker image, IP, domain) |
+| OAI-007 | Callback ไปบริการ OAST (interactsh, Burp Collaborator, dnslog.cn ฯลฯ) |
+
+- Indicator ดึงสดจาก [ThreatDefence/agentic-attack-detections](https://github.com/ThreatDefence/agentic-attack-detections) (MIT) — ตัดรายการที่เลย `review_by` และไม่ alert รายการ confidence ต่ำ
+- Hunting query: `detections/offensive_ai/` — KQL (Defender XDR/Sentinel), SPL (Splunk), Sigma; แสดงและคัดลอก/ดาวน์โหลดได้จากหน้า dashboard — ดูสถานะการทดสอบใน `detections/offensive_ai/README.md`
+- API: `GET /api/soc/offensive-ai`
+
+### ส่ง log จริงเข้า SOC Dashboard (EDR / NDR / SIEM / AI Agent Audit Logs)
+
+```bash
+export SOC_API_KEY=<OSINT_API_KEY>
+python3 tools/ship_logs.py export.json --format defender --url https://<host>      # Defender XDR advanced hunting export
+python3 tools/ship_logs.py winlogbeat.ndjson --format ecs --url https://<host>     # Elastic / Winlogbeat / Packetbeat (ECS)
+python3 tools/ship_logs.py access.log --format access_log --host SRV-WEB-01        # Apache/Nginx combined log
+python3 tools/ship_logs.py agent_audit.ndjson --url https://<host>                 # AI agent audit log (native schema)
+```
+
+| Endpoint | ทำอะไร |
+|---|---|
+| `POST /api/soc/ingest?format=auto\|native\|ecs\|defender\|access_log` | รับ JSON array, `{"records": [...]}`, NDJSON หรือ access log (≤5 MB, ≤5,000 records ต่อครั้ง) แล้วรันผ่าน detector ทุกตัว + XDR correlation |
+| `POST /api/soc/agents/register` | ลงทะเบียน AI agent จริง พร้อม `scopes`, `egress`, `shell` — agent ที่มี log แต่ไม่ได้ลงทะเบียนจะขึ้น **AGT-011 shadow AI** |
+
+- Schema และ mapping อยู่ใน `app/ingest.py`; ตัวอย่างไฟล์ (ข้อมูลสังเคราะห์) อยู่ใน `samples/`
+- Event จาก log จริงมีป้าย **REAL** บนหน้าเว็บ และไม่มีการเติมข้อมูลสมมุติ (เช่น ประเทศต้นทาง)
+- Replay log เก่า: เวลาเหตุการณ์ใช้ timestamp ใน log; KPI "ต่อนาที" นับตามเวลาปัจจุบัน
+- ปุ่ม Contain ในโหมดจริง **บันทึกสถานะและ audit log เท่านั้น** ยังไม่ได้สั่ง revoke token ที่ระบบปลายทาง
+
+| ตัวแปร | ค่าเริ่มต้น | ความหมาย |
+|---|---|---|
+| `SOC_SIMULATION` | `on` | `off` = ใช้เฉพาะ log จริง (ไม่มี demo host/agent/event) |
+| `SOC_AI_APPROVED_HOSTS` | `SRV-AI-01,SRV-AI-02` | host ที่อนุญาตให้เรียก API โมเดล AI (OAI-002 จะไม่แจ้ง) |
+| `SOC_SERVER_PREFIXES` | `SRV` | prefix ชื่อเครื่องที่ถือเป็น server สำหรับ OAI-002 |
+
+### Incident workflow และการเก็บข้อมูลถาวร
+
+- **เก็บถาวรเฉพาะข้อมูลจริง** (SQLite ไฟล์เดียวกับ audit log): alert, incident, AI-agent audit record, agent ที่ลงทะเบียน, endpoint — restart แล้วโหลดกลับมาครบ; ข้อมูลจำลองไม่ถูกบันทึกและไม่ถูกรวมเข้ากับ incident จริง
+- **Workflow**: สถานะ `open → investigating → resolved / false_positive` (incident ที่ไม่มีความเคลื่อนไหว 30 นาทีและยังไม่มีคนรับจะ `closed` อัตโนมัติ), ผู้รับผิดชอบ, บันทึกของ analyst — ทุกการเปลี่ยนแปลงลง audit log
+- **รายงาน**: ปุ่ม "รายงาน (HTML/PDF)" ในหน้ารายละเอียด incident (พิมพ์เป็น PDF ได้) และ "Export CSV" (เปิดใน Excel ได้ภาษาไทย, กัน formula injection)
+- ข้อจำกัด: state ของกฎแบบ sliding window (fan-out, rotating proxy, multi-stage) เริ่มใหม่หลัง restart
+- **Render free plan** เก็บ DB ไว้ที่ `/tmp` ซึ่งหายเมื่อ redeploy/หลับ — ถ้าต้องการเก็บถาวรจริงต้องใช้ persistent disk (แผนเสียเงิน) แล้วตั้ง `OSINT_DB_PATH` ไปที่ disk นั้น
+
+API: `GET /api/soc/incidents`, `GET /api/soc/incidents/{id}`, `PATCH /api/soc/incidents/{id}`, `GET /api/soc/incidents/{id}/report`, `GET /api/soc/incidents.csv`
+
+| ตัวแปร | ค่าเริ่มต้น | ความหมาย |
+|---|---|---|
+| `SOC_RETENTION_DAYS` | `90` | ลบ alert / agent record / incident ที่ปิดแล้วเก่ากว่านี้ |
+| `SOC_AUTOSTART` | `on` | ดึง CTI feed และเริ่ม correlation ตั้งแต่เปิดเซิร์ฟเวอร์ (ไม่ต้องรอคนเปิด dashboard) |
+
 ## การควบคุม (Governance)
 - **Audit log** (SQLite): ทุกการสแกนบันทึก analyst, IP, เป้าหมาย, วัตถุประสงค์, legal basis, case ref และผลลัพธ์ — ลบอัตโนมัติตาม `OSINT_RETENTION_DAYS` (ค่าเริ่มต้น 90 วัน)
 - **SSRF guard**: ปฏิเสธการเชื่อมต่อไป IP ภายใน/private/metadata (169.254.169.254) และตรวจซ้ำทุก redirect
@@ -37,7 +140,7 @@ docker build -t osint-toolkit .
 docker run -p 8000:8000 --env-file .env -v osint-data:/app/data osint-toolkit
 ```
 
-ทดสอบ: `.venv/bin/pytest -q` (44 tests, mock network ทั้งหมด)
+ทดสอบ: `.venv/bin/pytest -q` (81 tests, mock network ทั้งหมด)
 
 ## ข้อจำกัดที่ทราบ
 - `.th` ไม่มี RDAP → ระบบแจ้งให้ใช้ THNIC WHOIS (ยังไม่ได้ integrate)

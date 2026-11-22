@@ -1,0 +1,11 @@
+// OAI-004 One site probed by many source IPs, each sending only a few requests, mostly errors (Sentinel W3CIISLog)
+// Typical of agents scanning through rotating / residential proxy pools. Tune thresholds to your traffic.
+W3CIISLog
+| where TimeGenerated > ago(1d)
+| summarize PerIp = count(), Errors = countif(toint(scStatus) >= 400)
+    by Computer, sSiteName, cIP, Window = bin(TimeGenerated, 5m)
+| where PerIp <= 5 and todouble(Errors) / PerIp >= 0.6   // probe-like sources only; normal visitors drop out
+| summarize DistinctIPs = count(), Requests = sum(PerIp), SampleIPs = make_set(cIP, 20)
+    by Computer, sSiteName, Window
+| where DistinctIPs >= 20
+| order by Window desc

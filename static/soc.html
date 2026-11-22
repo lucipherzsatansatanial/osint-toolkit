@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOC Threat Dashboard</title>
+  <link rel="stylesheet" href="/static/soc.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo">◈</span> SOC Threat Dashboard
+    <span class="sub"><b class="c-edr">EDR</b> · <b class="c-xdr">XDR</b> · <b class="c-cti">CTI</b> · <b class="c-agent">AI Agent</b></span>
+  </div>
+  <div class="status">
+    <span id="live" class="pill off"><i></i><span>offline</span></span>
+    <span id="modePill" class="pill warn" title="SIMULATED = demo generator · LIVE = only real logs sent to /api/soc/ingest">Telemetry: SIMULATED</span>
+    <span id="ctiStatus" class="pill">CTI: …</span>
+    <span id="clock" class="mono muted"></span>
+    <a href="/" class="link">← OSINT Toolkit</a>
+  </div>
+</header>
+
+<div id="keyBar" class="keybar" hidden>
+  <label>API key <input id="apiKey" type="password" autocomplete="off"></label>
+  <button id="connectBtn">เชื่อมต่อ</button>
+  <span id="keyMsg" class="muted"></span>
+</div>
+
+<main class="grid">
+  <section class="kpis" id="kpis">
+    <div class="kpi"><span>Events / นาที</span><b id="k-epm">–</b><canvas id="spark" height="28"></canvas></div>
+    <div class="kpi"><span>Open incidents</span><b id="k-open">–</b><small id="k-open-s"></small></div>
+    <div class="kpi hot"><span>Coordinated attacks (XDR)</span><b id="k-coord">–</b><small>หลายโดเมนในเหตุการณ์เดียว</small></div>
+    <div class="kpi"><span>CTI matches</span><b id="k-cti">–</b><small>ตรงกับ IOC/CVE จริง</small></div>
+    <div class="kpi"><span>Endpoints</span><b id="k-ep">–</b><small id="k-ep-s"></small></div>
+    <div class="kpi"><span>Critical / High</span><b id="k-crit">–</b><small id="k-crit-s"></small></div>
+  </section>
+
+  <section class="card span2">
+    <h2>Live telemetry throughput <small class="muted">events / 5 วินาที ย้อนหลัง 5 นาที</small></h2>
+    <div class="legend" id="legend"></div>
+    <canvas id="flow" height="170"></canvas>
+  </section>
+
+  <section class="card">
+    <h2>MITRE ATT&amp;CK tactics <small class="muted">สะสม</small></h2>
+    <div id="tactics" class="tactics"></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="c-edr">EDR</span> — Endpoints</h2>
+    <div class="tbl-wrap"><table class="tbl" id="endpoints">
+      <thead><tr><th>Host</th><th>OS</th><th>สถานะ</th><th>RTP</th><th>Alerts</th></tr></thead><tbody></tbody>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <h2><span class="c-xdr">XDR</span> — Correlated incidents <button id="incCsv" class="ghost sm" title="incident จาก log จริงที่บันทึกไว้">Export CSV</button></h2>
+    <div id="incidents" class="incidents"></div>
+  </section>
+
+  <section class="card">
+    <h2>Live alert stream <button id="pause" class="ghost sm">หยุดชั่วคราว</button></h2>
+    <div class="filters" id="filters"></div>
+    <ul id="stream" class="stream"></ul>
+  </section>
+
+  <section class="card span3" id="detailCard" hidden>
+    <h2>Incident <span id="d-title"></span> <button id="d-close" class="ghost sm">ปิด</button></h2>
+    <div class="detail">
+      <svg id="graph" viewBox="0 0 720 300" role="img" aria-label="Correlation graph"></svg>
+      <ol id="timeline" class="timeline"></ol>
+    </div>
+      <div class="wf">
+      <label>สถานะ <select id="wfStatus">
+        <option value="open">open — เปิด</option><option value="investigating">investigating — กำลังสอบสวน</option>
+        <option value="resolved">resolved — แก้ไขแล้ว</option><option value="false_positive">false positive — แจ้งเตือนผิด</option>
+        <option value="closed">closed — ปิด</option></select></label>
+      <label>ผู้รับผิดชอบ <input id="wfAssignee" maxlength="80" autocomplete="off"></label>
+      <label class="grow">บันทึกของ analyst <input id="wfNote" maxlength="4000" autocomplete="off" placeholder="สิ่งที่ตรวจพบ / ขั้นตอนที่ทำแล้ว"></label>
+      <button id="wfSave">บันทึก</button>
+      <button id="wfReport" class="ghost">รายงาน (HTML/PDF)</button>
+      <span id="wfMsg" class="muted"></span>
+    </div>
+    <ul id="wfNotes" class="wfnotes"></ul>
+  </section>
+
+  <section class="card span3" id="agentCard">
+    <h2><span class="c-agent">Agentic AI</span> — Threat Detection &amp; Hunting
+      <small class="muted">AI Agent Audit Logs · Tool Invocation · Process Tree · Network · Permissions</small></h2>
+    <div class="agent-grid">
+      <div>
+        <h3>Agent inventory <small class="muted">สิทธิ์ (scope) · การใช้งาน · ความเสี่ยง</small></h3>
+        <div class="tbl-wrap"><table class="tbl" id="agents">
+          <thead><tr><th>Agent</th><th>Host</th><th>Scopes</th><th>Calls</th><th>Denied</th><th>Risk</th><th>สถานะ</th><th></th></tr></thead><tbody></tbody>
+        </table></div>
+      </div>
+      <div>
+        <h3>Detection rules <small class="muted">ATT&amp;CK / ATLAS</small></h3>
+        <ul id="rules" class="rules"></ul>
+      </div>
+    </div>
+    <div class="agent-grid">
+      <div>
+        <h3>Agent audit log (live) <small class="muted">คลิกแถวเพื่อเปิด session</small></h3>
+        <ul id="agentLog" class="alog"></ul>
+      </div>
+      <div>
+        <h3>Threat hunting</h3>
+        <form id="huntForm" class="hunt"><input id="huntQ" placeholder="เช่น agent:support kind:tool_call decision:denied" autocomplete="off"><button>ค้นหา</button></form>
+        <div class="presets" id="presets"></div>
+        <ul id="huntRes" class="alog small"></ul>
+      </div>
+    </div>
+    <div id="sessionBox" class="session" hidden>
+      <h3>Session <span id="s-title"></span> <button id="s-close" class="ghost sm">ปิด</button></h3>
+      <div class="sess-grid">
+        <div><h4>Process tree</h4><div id="s-tree" class="ptree"></div></div>
+        <div><h4>Network connections</h4><ul id="s-net" class="alog small"></ul></div>
+        <div><h4>Execution log (tool calls / prompts / auth)</h4><ol id="s-log" class="timeline"></ol></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card span3" id="offaiCard">
+    <h2><span class="c-off">Offensive AI Agents</span> — Detection Rules, Hunting Queries &amp; Indicators
+      <small class="muted" id="offaiFeed"></small></h2>
+    <div id="frameworks" class="fw-grid"></div>
+    <div class="agent-grid">
+      <div>
+        <h3>Behaviour rules <small class="muted">ทนต่อการเปลี่ยน UA/banner มากกว่า IOC</small></h3>
+        <ul id="offaiRules" class="rules"></ul>
+        <h3 style="margin-top:12px">Live detections</h3>
+        <ul id="offaiLive" class="stream off-live"></ul>
+      </div>
+      <div>
+        <h3>Hunting query library <small class="muted">Defender XDR / Sentinel · Splunk · Sigma</small></h3>
+        <div class="presets" id="qTabs"></div>
+        <ul id="qList" class="qlist"></ul>
+        <div id="qBox" hidden>
+          <div class="qhead"><b id="qTitle"></b><span><button id="qCopy" class="mini">คัดลอก</button> <button id="qDl" class="mini release">ดาวน์โหลด</button></span></div>
+          <pre id="qCode" class="code"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card span3">
+    <h2><span class="c-cti">Cyber Threat Intelligence</span> — แหล่งข้อมูลจริง
+      <button id="ctiRefresh" class="ghost sm">รีเฟรช</button></h2>
+    <div class="cti">
+      <div><h3>CISA KEV <small id="kev-meta" class="muted"></small></h3><ul id="kev" class="list"></ul></div>
+      <div><h3>Botnet C2 — Feodo Tracker <small id="feodo-meta" class="muted"></small></h3><ul id="feodo" class="list"></ul></div>
+      <div><h3>IOCs — ThreatFox <small id="tf-meta" class="muted"></small></h3><ul id="tf" class="list"></ul></div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  Telemetry ที่ไม่มีป้าย <b>REAL</b> เป็น<b>ข้อมูลจำลอง</b> เพื่อสาธิต (ปิดได้ด้วย SOC_SIMULATION=off) · log จริงส่งเข้าที่ /api/soc/ingest · CTI ดึงจริงจาก CISA KEV, abuse.ch และ ThreatDefence agentic-attack-detections (MIT) (cache 15 นาที) ·
+  เหตุการณ์ C2/exploit จำลองจะอ้างอิง IP/CVE จริงจาก CTI เมื่อดึงได้
+</footer>
+<script src="/static/soc.js"></script>
+</body>
+</html>

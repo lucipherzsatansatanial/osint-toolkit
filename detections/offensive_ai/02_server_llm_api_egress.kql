@@ -1,0 +1,26 @@
+// OAI-002 Servers calling external AI model APIs, Chinese providers flagged (Defender XDR / Sentinel)
+// Hostnames: verify against each provider's current docs before blocking. Add approved AI hosts below.
+let approved = dynamic(["SRV-AI-01", "SRV-AI-02"]);
+let llm = datatable(ApiHost:string, Provider:string, Region:string) [
+    "api.openai.com","OpenAI","US", "api.anthropic.com","Anthropic","US",
+    "generativelanguage.googleapis.com","Google Gemini","US", "api.x.ai","xAI","US",
+    "api.mistral.ai","Mistral","EU", "api.groq.com","Groq","US", "openrouter.ai","OpenRouter","US",
+    "api.together.xyz","Together","US",
+    "api.deepseek.com","DeepSeek","CN", "dashscope.aliyuncs.com","Alibaba Qwen","CN",
+    "dashscope-intl.aliyuncs.com","Alibaba Qwen intl","CN", "open.bigmodel.cn","Zhipu GLM","CN",
+    "api.moonshot.cn","Moonshot Kimi","CN", "api.minimax.chat","MiniMax","CN", "api.minimaxi.com","MiniMax","CN",
+    "ark.cn-beijing.volces.com","ByteDance Doubao","CN", "api.siliconflow.cn","SiliconFlow","CN",
+    "qianfan.baidubce.com","Baidu Qianfan","CN"];
+let servers = DeviceInfo
+    | summarize arg_max(Timestamp, DeviceType) by DeviceId
+    | where DeviceType == "Server"
+    | project DeviceId;
+DeviceNetworkEvents
+| where Timestamp > ago(7d) and isnotempty(RemoteUrl)
+| where DeviceId in (servers) and DeviceName !in (approved)
+| extend ApiHost = tolower(tostring(split(trim_start(@"https?://", RemoteUrl), "/")[0]))
+| join kind=inner llm on ApiHost
+| summarize Connections = count(), FirstSeen = min(Timestamp), LastSeen = max(Timestamp),
+    Processes = make_set(InitiatingProcessFileName, 10)
+    by DeviceName, Provider, Region, ApiHost
+| order by Region asc, Connections desc

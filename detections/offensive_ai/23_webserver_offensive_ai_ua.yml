@@ -1,0 +1,30 @@
+title: Offensive AI Agent Framework User-Agent In Web Logs
+id: e3906f4e-1139-4f7a-826e-ff1633e09a34
+status: experimental
+description: >-
+  Detects user agents that offensive AI-agent frameworks send by default (HexStrike, CyberStrikeAI, ARTEX).
+  Strings come from the ThreatDefence agentic-attack-detections indicator list; operators can change them.
+references:
+  - https://github.com/ThreatDefence/agentic-attack-detections
+author: IDA SOC
+date: 2026-11-22
+tags:
+  - attack.reconnaissance
+  - attack.t1595
+logsource:
+  category: webserver
+detection:
+  selection:
+    cs-user-agent|contains:
+      - 'HexStrike-HTTP-Framework/'
+      - 'HexStrike-BrowserAgent/'
+      - 'CyberStrikeAI-WebShell/'
+      - 'CyberStrikeAI/'
+      - 'artex-pentest/'
+      - 'artex-readonly/'
+      - 'artex-verify/'
+      - 'ARTEX-worker/'
+  condition: selection
+falsepositives:
+  - Authorized penetration tests using these frameworks
+level: high

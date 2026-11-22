@@ -1,0 +1,12 @@
+`comment("OAI-001/003 Agent CLI with approvals off and rapid attack-tool fan-out (Sysmon EventCode 1)")`
+index=sysmon EventCode=1
+| rex field=Image "(?<tool>[^\\\\/]+?)(?:\.exe)?$"
+| eval tool=lower(tool)
+| eval agent_bypass=if(match(CommandLine, "(?i)(--dangerously-skip-permissions|--dangerously-bypass-approvals-and-sandbox|--full-auto|--yolo\b|--approval-mode[ =]yolo|bypassPermissions|--auto-approve|--yes-always|HERMES_YOLO_MODE)"), 1, 0)
+| search agent_bypass=1 OR tool IN ("nmap","masscan","naabu","subfinder","httpx","katana","nuclei","ffuf","gobuster","feroxbuster","dirsearch","sqlmap","nikto","wpscan","hydra","msfconsole","netexec","nxc","crackmapexec","kerbrute","responder","secretsdump.py","psexec.py","interactsh-client","evil-winrm","chisel")
+| bin _time span=2m
+| stats max(agent_bypass) as agent_bypass values(eval(if(agent_bypass=1, CommandLine, null()))) as agent_cmd
+        dc(eval(if(agent_bypass=0, tool, null()))) as distinct_tools values(tool) as tools count as runs by _time host User
+| eventstats max(agent_bypass) as host_agent_bypass by host
+| where distinct_tools>=4 OR runs>=30 OR (host_agent_bypass=1 AND distinct_tools>=1)
+| sort - _time
