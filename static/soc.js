@@ -2943,3 +2943,65 @@ window.addEventListener("pointerup", () => {
 });
 $("#mapDays").onchange = loadThreatMap;
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden && TM.visible) loadThreatMap(); }, 60000);
+
+
+// ---------- global search (top right) ----------
+const GS = { items: [], sel: -1, t: 0, seq: 0 };
+const GS_ICON = { case: "🗂", alert: "⚠", intel: "🛡", cve: "🐞", asset: "🖥", rule: "📐", task: "✅", notebook: "📝", menu: "☰" };
+function gsMenu(q) {  // sidebar items whose label matches, so "threat map" or "intake" jumps straight there
+  const ql = q.toLowerCase();
+  return [...document.querySelectorAll("#nav a")].filter((a) => !a.hidden && a.closest("[hidden]") === null && a.textContent.toLowerCase().includes(ql))
+    .slice(0, 5).map((a) => ({ title: a.querySelector("span")?.textContent.trim() || a.textContent.trim(), sub: "เมนู", href: a.getAttribute("href") }));
+}
+async function gsRun(q, log = false) {
+  const my = ++GS.seq, panel = $("#gsPanel");
+  if (q.trim().length < 2) { panel.hidden = true; $("#gsQ").setAttribute("aria-expanded", "false"); return; }
+  let r = { groups: [] };
+  try { r = await api(`/api/soc/search?q=${encodeURIComponent(q.trim())}${log ? "&log=1" : ""}`); } catch (e) { r = { groups: [], error: e.message }; }
+  if (my !== GS.seq) return;  // a newer query is already on its way
+  const menu = gsMenu(q.trim());
+  const groups = [...r.groups, ...(menu.length ? [{ key: "menu", label: "เมนู", items: menu, more: 0 }] : [])];
+  GS.items = groups.flatMap((g) => g.items.map((it) => ({ ...it, key: g.key })));
+  GS.sel = GS.items.length ? 0 : -1;
+  let n = -1;
+  panel.innerHTML = groups.map((g) => `<div class="gs-g"><div class="gs-gh">${esc(g.label)}${g.more ? ` <small>+${g.more}</small>` : ""}</div>${g.items.map((it) => { n++;
+    return `<button type="button" class="gs-it${n === GS.sel ? " on" : ""}" role="option" data-i="${n}"><span class="gs-ic">${GS_ICON[g.key] || "•"}</span>
+      <span class="gs-tx"><b class="${it.sev ? "sevt " + esc(it.sev) : ""}">${esc(it.title)}</b><small>${esc(it.sub || "")}</small></span>${it.external ? '<span class="gs-ext">↗</span>' : ""}</button>`; }).join("")}</div>`).join("")
+    || `<div class="gs-empty">${r.error ? esc(r.error) : `ไม่พบ “${esc(q.trim())}” ในข้อมูลที่คุณมีสิทธิ์ดู`}</div>`;
+  panel.hidden = false; $("#gsQ").setAttribute("aria-expanded", "true");
+}
+function gsOpen(it) {
+  if (!it) return;
+  $("#gsPanel").hidden = true; $("#gsQ").blur();
+  if (it.external) { window.open(it.href, "_blank", "noopener"); return; }
+  const a = it.action || {};
+  if (a.intel_q) { $("#ciQ").value = a.intel_q; CI.page = 1; loadIntel(); }
+  if (a.asset_q) { $("#asQ").value = a.asset_q; AS.page = 1; loadAssets(); }
+  if (a.alerts_q) { $("#alQ").value = a.alerts_q; AL.page = 1; loadAlertsList(); }
+  const grp = document.querySelector(`#nav a[href="${CSS.escape(it.href)}"]`)?.closest(".nav-g"); if (grp) grp.open = true;
+  if (location.hash === it.href) window.dispatchEvent(new HashChangeEvent("hashchange")); else location.hash = it.href;
+  const target = /^#[A-Za-z][\w-]*$/.test(it.href) ? document.querySelector(it.href) : null;
+  if (target && !/^#(inc|task|nb)-/.test(it.href)) target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function gsMark() { document.querySelectorAll("#gsPanel .gs-it").forEach((b) => b.classList.toggle("on", Number(b.dataset.i) === GS.sel));
+  document.querySelector("#gsPanel .gs-it.on")?.scrollIntoView({ block: "nearest" }); }
+$("#gsQ").addEventListener("input", (ev) => { clearTimeout(GS.t); GS.t = setTimeout(() => gsRun(ev.target.value), 250); });
+$("#gsQ").addEventListener("focus", (ev) => { if (ev.target.value.trim().length >= 2 && GS.items.length) $("#gsPanel").hidden = false; });
+$("#gsQ").addEventListener("keydown", async (ev) => {
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault(); if (!GS.items.length) return;
+    GS.sel = (GS.sel + (ev.key === "ArrowDown" ? 1 : -1) + GS.items.length) % GS.items.length; gsMark();
+  } else if (ev.key === "Enter") {
+    ev.preventDefault(); clearTimeout(GS.t);
+    const q = ev.target.value;
+    if ($("#gsPanel").hidden || !GS.items.length) await gsRun(q, true); else api(`/api/soc/search?q=${encodeURIComponent(q.trim())}&log=1`).catch(() => {});
+    gsOpen(GS.items[Math.max(0, GS.sel)]);
+  } else if (ev.key === "Escape") { $("#gsPanel").hidden = true; ev.target.blur(); }
+});
+$("#gsPanel").addEventListener("mousedown", (ev) => { const b = ev.target.closest(".gs-it"); if (b) { ev.preventDefault(); gsOpen(GS.items[Number(b.dataset.i)]); } });
+document.addEventListener("click", (ev) => { if (!ev.target.closest("#gsWrap")) $("#gsPanel").hidden = true; });
+document.addEventListener("keydown", (ev) => {  // Ctrl/⌘+K or "/" focuses the search box
+  if (((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "k") || (ev.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || ""))) {
+    ev.preventDefault(); $("#gsQ").focus(); $("#gsQ").select();
+  }
+});

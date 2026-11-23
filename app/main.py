@@ -3210,6 +3210,89 @@ def _tenant_events(who: rbac.Principal, start: float, end: float) -> list[dict]:
     return out
 
 
+# ---------- global search (top-right search box) ----------
+@app.get("/api/soc/search")
+async def soc_search(q: str, log: bool = False, who: rbac.Principal = Depends(require("soc.read"))):
+    """One box for everything: cases (INC-123 / title / host / user), alert groups, intelligence (IP, domain, URL,
+    hash), CVEs (CISA KEV), assets, rules, tasks and notebooks. Each group is only searched when the caller has
+    the permission for it; at most 6 results per group."""
+    q = q.strip()[:300]
+    if len(q) < 2:
+        return {"q": q, "groups": []}
+    ql, now, groups = q.lower(), time.time(), []
+    typ, norm = intel.classify(q)
+    nl = norm.lower()
+
+    def grp(key, label, items):
+        if items:
+            groups.append({"key": key, "label": label, "items": items[:6], "more": max(0, len(items) - 6)})
+
+    if who.can("cases.read"):
+        m = re.fullmatch(r"(?:inc-?)?(\d{3,9})", ql)
+        rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        hits = []
+        for i in _merged_incidents(who):
+            title = str(i.get("title") or i.get("name") or "")
+            hay = " ".join([title, " ".join(map(str, i.get("hosts") or [])), " ".join(map(str, i.get("users") or [])),
+                            " ".join(i.get("tags") or []), " ".join(str(a.get("indicator") or a.get("remote_ip") or "") for a in i.get("alerts", [])[:200])]).lower()
+            if (m and int(m.group(1)) == i["id"]) or ql in hay:
+                hits.append(i)
+        hits.sort(key=lambda i: (not (m and int(m.group(1)) == i["id"]), i.get("status") in ("closed", "resolved", "false_positive"),
+                                 rank.get(i.get("severity"), 9), -(i.get("last_ts") or 0)))
+        grp("case", "Cases / Incidents", [{"title": f"INC-{i['id']} · {str(i.get('title') or i.get('name') or '')[:80]}",
+                                           "sub": f"{i.get('severity')} · {i.get('status')} · {', '.join((i.get('hosts') or [])[:3])}",
+                                           "href": f"#inc-{i['id']}", "sev": i.get("severity")} for i in hits])
+    if who.can("alerts.read"):
+        seen, hits = set(), []
+        for e in sorted(_tenant_events(who, now - 7 * 86400, now), key=lambda e: -e["ts"]):
+            hay = " ".join(str(e.get(k) or "") for k in ("title", "host", "user", "indicator", "remote_ip", "rule", "technique", "cve")).lower()
+            key = (e.get("title"), e.get("host"))
+            if ql in hay and key not in seen:
+                seen.add(key)
+                hits.append(e)
+            if len(hits) > 20:
+                break
+        grp("alert", "Alerts (7 วัน)", [{"title": str(e.get("title"))[:90], "sub": f"{e.get('severity')} · {e.get('host') or '-'} · {e.get('rule') or e.get('technique') or ''}",
+                                          "href": f"#inc-{e['incident_id']}" if e.get("incident_id") else "#alertsListCard",
+                                          "action": None if e.get("incident_id") else {"alerts_q": q}, "sev": e.get("severity")} for e in hits])
+    if who.can("threatintel.read"):
+        rows = _indicators(who.tenant)
+        exact = [i for i in rows if i["value"].lower() == nl] if typ else []
+        part = [i for i in rows if (ql in i["value"].lower() or ql in (i.get("threat") or "").lower()) and i not in exact] if len(ql) >= 3 else []
+        grp("intel", "Threat Intelligence", [{"title": i["value"][:120], "sub": f"{i['type']} · {i['source_name']}{' · ' + i['threat'] if i.get('threat') else ''} · conf {i['confidence']}",
+                                              "action": {"intel_q": i["value"]}, "href": "#intelCard"} for i in (exact + part)[:30]])
+        cve = re.fullmatch(r"cve-\d{4}-\d{4,}", ql)
+        kev = threatintel.feed_index("kev")
+        if cve:
+            k = kev.get(q.upper())
+            grp("cve", "CVE", [{"title": q.upper(), "sub": (f"อยู่ใน CISA KEV · {k['vendor']} {k['product']} · กำหนดแก้ {k['due']}"
+                                                             + (" · ransomware" if k.get("ransomware") else "")) if k else "ไม่อยู่ใน CISA KEV",
+                                "href": f"https://nvd.nist.gov/vuln/detail/{q.upper()}", "external": True}])
+        elif len(ql) >= 3:
+            grp("cve", "CVE (CISA KEV)", [{"title": k["cve"], "sub": f"{k['vendor']} {k['product']} · {k['name'][:60]}",
+                                           "href": f"https://nvd.nist.gov/vuln/detail/{k['cve']}", "external": True}
+                                          for k in kev.values() if ql in f"{k['vendor']} {k['product']} {k['name']}".lower()][:10])
+    if who.can("assets.read"):
+        grp("asset", "Assets", [{"title": a["name"], "sub": f"{a['type']} · alerts {a.get('alerts', 0)} · events {a.get('events', 0)}",
+                                 "action": {"asset_q": a["name"]}, "href": "#assetsCard"}
+                                for a in sorted(_all_assets(who).values(), key=lambda a: -a.get("alerts", 0)) if ql in a["name"].lower()])
+    if who.can("rules.read"):
+        custom = soc_store.list_rules(who.tenant) + (_demo_rules() if E(who).simulate else [])
+        allr = catalog.builtin_rules() + [{"id": r["id"], "title": r.get("title"), "technique": r.get("technique"), "severity": r.get("severity")} for r in custom]
+        grp("rule", "Detection rules", [{"title": f"{r['id']} · {r['title']}", "sub": f"{r.get('severity')} · {r.get('technique') or ''}", "href": "#catalogCard"}
+                                        for r in allr if ql in f"{r['id']} {r.get('title')} {r.get('technique')}".lower()])
+    grp("task", "Tasks", [{"title": t["name"][:90], "sub": f"{workspace.TASK_TH.get(t['status'], t['status'])} · {t.get('assignee') or 'ยังไม่มอบหมาย'}",
+                           "href": f"#task-{t['id']}"} for t in _all_tasks(who) if ql in f"{t['name']} {t.get('description') or ''}".lower()])
+    if who.can("notebooks.read"):
+        grp("notebook", "Notebooks", [{"title": n["title"][:90], "sub": f"{n.get('updated_by')}{' · INC-' + str(n['case_id']) if n.get('case_id') else ''}",
+                                       "href": f"#nb-{n['id']}"} for n in soc_store.notebooks(who.tenant) + _demo_notebooks(who)
+                                      if ql in f"{n['title']} {n['content']}".lower()])
+    if log:  # the UI sets log=1 when the user presses Enter (not on every keystroke)
+        audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.search", target=q[:200], purpose="global search",
+                     legal_basis="own_asset", case_ref=None, result={"groups": {g["key"]: len(g["items"]) + g["more"] for g in groups}})
+    return {"q": q, "type": typ, "groups": groups}
+
+
 @app.get("/api/soc/threatmap")
 async def soc_threatmap(days: int = 7, who: rbac.Principal = Depends(require("alerts.read"))):
     """Threat Map: origin country of the infrastructure behind this tenant's alerts (event src_country or Feodo C2

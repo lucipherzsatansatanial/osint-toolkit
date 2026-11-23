@@ -86,6 +86,13 @@
         <a href="#nrulesCard" class="bell-foot">จัดการกฎการแจ้งเตือน →</a></div></span>
     <button id="notifyPill" class="pill" type="button" title="ช่องทางแจ้งเตือน incident — คลิกเพื่อส่งข้อความทดสอบ">แจ้งเตือน: …</button>
   </div>
+  <div class="gsearch" id="gsWrap" role="search">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    <input id="gsQ" type="search" autocomplete="off" placeholder="ค้นหา IOC, CVE, incident…" aria-label="ค้นหาทั้งระบบ (Ctrl+K)"
+      aria-controls="gsPanel" aria-expanded="false">
+    <kbd>Enter</kbd>
+    <div id="gsPanel" class="gs-panel" role="listbox" hidden></div>
+  </div>
   <span id="clock" class="clock"></span>
 </header>
 

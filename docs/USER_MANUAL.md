@@ -156,6 +156,22 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 | **แจ้งเตือน: …** | สถานะช่องทางแจ้งเตือนภายนอก คลิกเพื่อส่งข้อความทดสอบ (ต้องมี `integrations.manage`) |
 | นาฬิกา | เวลาปัจจุบันตามเครื่องผู้ใช้ (พ.ศ.) |
 
+### 3.1.1 ช่องค้นหาทั้งระบบ (มุมขวาบน)
+
+พิมพ์อย่างน้อย 2 ตัวอักษร ระบบค้นให้ทันทีและแบ่งผลเป็นกลุ่ม (กลุ่มละไม่เกิน 6 รายการ) — ค้นเฉพาะส่วนที่บทบาทของคุณมีสิทธิ์ดู
+
+| กลุ่ม | ค้นจาก | คลิกแล้วไปที่ |
+|---|---|---|
+| Cases / Incidents | เลข (`INC-1056` หรือ `1056`), ชื่อ, เครื่อง, บัญชี, tag, IOC ใน alert | หน้ารายละเอียด case |
+| Alerts (7 วัน) | ชื่อ alert, เครื่อง, บัญชี, IOC, rule, technique | case ของ alert หรือหน้า Alerts พร้อมคำค้น |
+| Threat Intelligence | IP / domain / URL / hash (รองรับ defang) และชื่อ threat | หน้า Intelligence พร้อมคำค้น |
+| CVE | `CVE-YYYY-NNNN` — บอกว่าอยู่ใน CISA KEV หรือไม่ / ค้นชื่อผู้ผลิตใน KEV | หน้า NVD (แท็บใหม่) |
+| Assets · Detection rules · Tasks · Notebooks | ชื่อ / รหัส / เนื้อหา | การ์ดหรือรายการนั้น |
+| เมนู | ชื่อเมนูด้านซ้าย | เมนูนั้น |
+
+- คีย์ลัด: **Ctrl+K** (⌘K) หรือ **/** เพื่อเริ่มค้น · ↑ ↓ เลือก · **Enter** เปิดรายการที่เลือก · **Esc** ปิด
+- การค้นที่กด Enter บันทึกใน audit log (`soc.search`) — การพิมพ์ระหว่างทางไม่บันทึก
+
 ### 3.2 SOC Assistant (✦ ถาม AI)
 
 ผู้ช่วย AI ที่ตอบคำถามเกี่ยวกับข้อมูลของ tenant โดยค้นข้อมูลเองผ่านเครื่องมือแบบ **อ่านอย่างเดียว** 7 ตัว: ค้น alert, ค้น case, ดูรายละเอียด case, รัน query บน log ดิบ, ค้น Intelligence, ค้น rules catalog, ค้น assets
@@ -1392,6 +1408,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | POST | `/api/soc/notify-rules` | `integrations.manage` |  |
 | PUT | `/api/soc/notify-rules/{rule_id}` | `integrations.manage` |  |
 | DELETE | `/api/soc/notify-rules/{rule_id}` | `integrations.manage` |  |
+| GET | `/api/soc/search` | `soc.read` | One box for everything: cases (INC-123 / title / host / user), alert groups, intelligence (IP, domain, URL, |
 | GET | `/api/soc/threatmap` | `alerts.read` | Threat Map: origin country of the infrastructure behind this tenant's alerts (event src_country or Feodo C2 |
 | GET | `/api/soc/landscape` | `alerts.read` |  |
 | GET | `/api/soc/events` | `events.read` | Raw telemetry explorer: real records from the database (kept SOC_RAW_RETENTION_DAYS) plus the in-memory window |
