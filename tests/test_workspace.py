@@ -122,3 +122,12 @@ def test_dashboard_reads_do_not_consume_write_budget(client, monkeypatch):
         assert client.get("/api/soc/tasks", headers=H).status_code == 200
     codes = [client.post("/api/soc/tasks", headers=H, json={"name": f"t{i}"}).status_code for i in range(4)]
     assert codes == [200, 200, 200, 429]
+
+
+def test_pages_version_their_assets(client):
+    import re
+    for path in ("/soc", "/", "/manual"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+        refs = re.findall(r'(?:src|href)="(/static/[^"]+\.(?:js|css)[^"]*)"', r.text)
+        assert refs and all(re.search(r"\?v=[0-9a-f]{10}$", u) for u in refs), refs

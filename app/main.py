@@ -3356,12 +3356,31 @@ async def soc_stream(request: Request, who: rbac.Principal = Depends(require("so
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    return _page("index.html")
+
+
+def _asset_version() -> str:
+    """Short content hash of the static assets, so a deploy changes every script/stylesheet URL and browsers never
+    run yesterday's soc.js against today's API (that is how graphs ended up piled in a corner)."""
+    h = hashlib.sha1()
+    for f in sorted(STATIC.rglob("*")):
+        if f.is_file() and f.suffix in (".js", ".css", ".json"):
+            h.update(f.read_bytes())
+    return h.hexdigest()[:10]
+
+
+ASSET_V = _asset_version()
+
+
+def _page(name: str) -> HTMLResponse:
+    html = (STATIC / name).read_text(encoding="utf-8")
+    html = re.sub(r'((?:src|href)="/static/[^"?]+\.(?:js|css))"', lambda m: f'{m.group(1)}?v={ASSET_V}"', html)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/soc")
 def soc_page():
-    return FileResponse(STATIC / "soc.html")
+    return _page("soc.html")
 
 
 MANUAL = Path(__file__).resolve().parent.parent / "docs" / "USER_MANUAL.md"
@@ -3370,7 +3389,7 @@ MANUAL = Path(__file__).resolve().parent.parent / "docs" / "USER_MANUAL.md"
 @app.get("/manual")
 def manual_page():
     """The user manual (rendered in the browser from /manual.md)."""
-    return FileResponse(STATIC / "manual.html")
+    return _page("manual.html")
 
 
 @app.get("/manual.md")

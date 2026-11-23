@@ -2415,7 +2415,7 @@ $("#colMain").addEventListener("click", async (ev) => {
 });
 
 // ---------- graph explorations ----------
-const GR = { id: null, nodes: new Map(), edges: [], drag: null };
+const GR = { id: null, nodes: new Map(), edges: [], drag: null, k: 1, pan: { x: 0, y: 0 }, box: null, panning: null };
 const GR_COL = { host: "--endpoint", account: "--identity", indicator: "--critical", incident: "--xdr", threat: "--off", rule: "--cti" };
 const GR_TH = { host: "Host", account: "Account", indicator: "Indicator", incident: "Case", threat: "Threat", rule: "Rule" };
 $("#grLegend").innerHTML = Object.entries(GR_TH).map(([k, v]) => `<span><i style="background:var(${GR_COL[k]})"></i>${v}</span>`).join("");
@@ -2439,9 +2439,16 @@ function grLayout(iter = 220) {
 function grDraw() {
   const svg = $("#grSvg"), ns = [...GR.nodes.values()];
   if (!ns.length) { svg.innerHTML = '<text x="20" y="40" class="tk">เพิ่ม node ด้วยช่องด้านบน หรือเปิด graph ที่บันทึกไว้</text>'; svg.setAttribute("viewBox", "0 0 800 420"); return; }
-  const xs = ns.map((n) => n.x), ys = ns.map((n) => n.y), pad = 80;
-  const minX = Math.min(...xs) - pad, minY = Math.min(...ys) - pad, w = Math.max(400, Math.max(...xs) - minX + pad), h = Math.max(300, Math.max(...ys) - minY + pad);
-  svg.setAttribute("viewBox", `${minX} ${minY} ${w} ${h}`);
+  // fit box around all nodes, centred; zoom (k) and pan are applied on top of it
+  const xs = ns.map((n) => n.x), ys = ns.map((n) => n.y), pad = 90;
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const fw = Math.max(420, Math.max(...xs) - Math.min(...xs) + 2 * pad), fh = Math.max(300, Math.max(...ys) - Math.min(...ys) + 2 * pad);
+  const el = svg.getBoundingClientRect(), aspect = el.width && el.height ? el.width / el.height : 2.5;
+  const bw = Math.max(fw, fh * aspect), bh = bw / aspect;  // keep the svg's aspect so the graph sits in the middle
+  GR.box = { w: bw, h: bh };
+  const w = bw / GR.k, h = bh / GR.k;
+  svg.setAttribute("viewBox", `${cx + GR.pan.x - w / 2} ${cy + GR.pan.y - h / 2} ${w} ${h}`);
+  $("#grZoom").textContent = Math.round(GR.k * 100) + "%";
   svg.innerHTML = GR.edges.map((e) => { const a = GR.nodes.get(e.from), b = GR.nodes.get(e.to); if (!a || !b) return "";
       return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" class="gr-e"/><text x="${(a.x + b.x) / 2}" y="${(a.y + b.y) / 2 - 3}" class="gr-el">${esc(e.label || "")}</text>`; }).join("")
     + ns.map((n) => `<g class="gr-n" data-id="${esc(n.id)}" transform="translate(${n.x},${n.y})"><circle r="${n.expanded ? 15 : 12}" style="fill:var(${GR_COL[n.type] || "--muted"})"/>
@@ -2457,7 +2464,7 @@ async function grExpand(type, value) {
     r.nodes.forEach((n, i) => { if (!GR.nodes.has(n.id)) { const ang = (2 * Math.PI * i) / Math.max(1, r.nodes.length); GR.nodes.set(n.id, { ...n, x: root.x + 140 * Math.cos(ang), y: root.y + 140 * Math.sin(ang) }); } });
     const have = new Set(GR.edges.map((e) => e.from + ">" + e.to));
     r.edges.forEach((e) => { if (!have.has(e.from + ">" + e.to) && !have.has(e.to + ">" + e.from)) GR.edges.push(e); });
-    grLayout(); grDraw();
+    grLayout(); grFitView();
     $("#grMsg").textContent = `${r.nodes.length} ความเชื่อมโยง${r.truncated ? " (ตัดที่ 25)" : ""}${r.nodes.length ? "" : " — ไม่พบใน alert/log 7 วัน"}`;
   } catch (e) { $("#grMsg").textContent = e.message; }
 }
@@ -2465,7 +2472,35 @@ $("#grAdd").onclick = () => { const v = $("#grValue").value.trim(); if (v) grExp
 $("#grValue").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("#grAdd").click(); });
 $("#grSvg").addEventListener("dblclick", (ev) => { const g = ev.target.closest(".gr-n"); if (g) { const n = GR.nodes.get(g.dataset.id); grExpand(n.type, n.value); } });
 function svgPoint(ev) { const svg = $("#grSvg"), pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY; return pt.matrixTransform(svg.getScreenCTM().inverse()); }
-$("#grSvg").addEventListener("pointerdown", (ev) => { const g = ev.target.closest(".gr-n"); if (!g) return; GR.drag = GR.nodes.get(g.dataset.id); GR.moved = false; ev.preventDefault(); });
+function grFitView() { GR.k = 1; GR.pan = { x: 0, y: 0 }; grDraw(); }
+function grZoom(f, at) {  // at = svg point to keep under the cursor
+  const k = Math.max(0.2, Math.min(6, GR.k * f));
+  if (at && GR.box) {
+    const vb = $("#grSvg").viewBox.baseVal, cx = vb.x + vb.width / 2, cy = vb.y + vb.height / 2, r = GR.k / k;
+    GR.pan.x += (at.x - cx) * (1 - r); GR.pan.y += (at.y - cy) * (1 - r);
+  }
+  GR.k = k; grDraw();
+}
+$("#grZin").onclick = () => grZoom(1.25);
+$("#grZout").onclick = () => grZoom(0.8);
+$("#grFit").onclick = grFitView;
+$("#grFull").onclick = () => { const w = $("#grWrap"); document.fullscreenElement ? document.exitFullscreen() : w.requestFullscreen?.().catch(() => {}); };
+document.addEventListener("fullscreenchange", () => setTimeout(grDraw, 60));
+window.addEventListener("resize", () => { if (GR.nodes.size) grDraw(); });
+$("#grSvg").addEventListener("wheel", (ev) => { if (!GR.nodes.size) return; ev.preventDefault(); grZoom(ev.deltaY < 0 ? 1.12 : 1 / 1.12, svgPoint(ev)); }, { passive: false });
+$("#grSvg").addEventListener("pointerdown", (ev) => {
+  const g = ev.target.closest(".gr-n");
+  if (!g) { if (GR.nodes.size) { GR.panning = { x: ev.clientX, y: ev.clientY, px: GR.pan.x, py: GR.pan.y }; $("#grSvg").classList.add("panning"); } return; }
+  GR.drag = GR.nodes.get(g.dataset.id); GR.moved = false; ev.preventDefault();
+});
+window.addEventListener("pointermove", (ev) => {
+  if (!GR.panning) return;
+  const svg = $("#grSvg"), vb = svg.viewBox.baseVal, s = vb.width / (svg.clientWidth || 1);
+  GR.pan.x = GR.panning.px - (ev.clientX - GR.panning.x) * s; GR.pan.y = GR.panning.py - (ev.clientY - GR.panning.y) * s;
+  const w = vb.width, h = vb.height, cx0 = vb.x + w / 2 - (GR.pan.x - (GR.lastPan?.x ?? GR.pan.x));
+  grDraw();
+});
+window.addEventListener("pointerup", () => { if (GR.panning) { GR.panning = null; $("#grSvg").classList.remove("panning"); } });
 window.addEventListener("pointermove", (ev) => {
   if (!GR.drag) return; const p = svgPoint(ev); GR.drag.x = p.x; GR.drag.y = p.y; GR.drag.fixed = true; GR.moved = true;
   const g = $(`#grSvg .gr-n[data-id="${CSS.escape(GR.drag.id)}"]`); if (g) g.setAttribute("transform", `translate(${p.x},${p.y})`);
@@ -2499,7 +2534,7 @@ $("#grSuggest").addEventListener("click", (ev) => {
 function grPlace(nodes, edges) {  // circle start + force layout for graphs that come without positions
   GR.nodes = new Map(nodes.map((n, i) => { const a = 2 * Math.PI * i / Math.max(1, nodes.length), r = 60 + 14 * nodes.length;
     return [n.id, { ...n, x: i ? r * Math.cos(a) : 0, y: i ? r * Math.sin(a) : 0, fixed: false }]; }));
-  GR.edges = edges; grLayout(400); grDraw();
+  GR.edges = edges; grLayout(400); grFitView();
 }
 async function grAuto(incId) {
   const id = String(incId || "").replace(/^INC-/i, "").trim();
@@ -2517,7 +2552,7 @@ $("#grList").addEventListener("click", async (ev) => {
   const g = await api(`/api/soc/graphs/${li.dataset.id}`);
   $("#grSuggest").hidden = true;
   if (g.nodes.every((n) => !n.x && !n.y)) grPlace(g.nodes, g.edges);
-  else { GR.nodes = new Map(g.nodes.map((n) => [n.id, { ...n, fixed: true }])); GR.edges = g.edges; grDraw(); }
+  else { GR.nodes = new Map(g.nodes.map((n) => [n.id, { ...n, fixed: true }])); GR.edges = g.edges; grFitView(); }
   GR.id = g.simulated ? null : g.id; $("#grName").value = g.name;
   loadGraphs();
   $("#grMsg").textContent = g.simulated ? "graph ตัวอย่างของทีมจำลอง สร้างจากข้อมูลจำลองล่าสุด — กดบันทึกเพื่อเก็บเป็นสำเนาของคุณ"

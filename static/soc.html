@@ -622,7 +622,17 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
           <span id="grMsg" class="muted small"></span>
         </div>
         <div id="grSuggest" class="gr-suggest" hidden></div>
-        <svg id="grSvg" class="gr-svg" role="img" aria-label="Investigation graph"></svg>
+        <div class="gr-wrap" id="grWrap">
+          <svg id="grSvg" class="gr-svg" role="img" aria-label="Investigation graph"></svg>
+          <div class="gr-tools" role="toolbar" aria-label="ซูม graph">
+            <button type="button" id="grZin" title="ขยาย (หรือหมุนล้อเมาส์)">＋</button>
+            <span id="grZoom" class="gr-zoom">100%</span>
+            <button type="button" id="grZout" title="ย่อ">－</button>
+            <button type="button" id="grFit" title="จัดให้พอดีและอยู่กลางจอ">⤢</button>
+            <button type="button" id="grFull" title="เต็มจอ">⛶</button>
+          </div>
+          <div class="gr-hint muted">ลากพื้นที่ว่างเพื่อเลื่อน · ล้อเมาส์เพื่อซูม · ลาก node เพื่อจัดตำแหน่ง · ดับเบิลคลิก node เพื่อขยาย</div>
+        </div>
         <div class="gr-legend" id="grLegend"></div>
       </div>
     </div>

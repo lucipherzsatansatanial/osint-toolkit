@@ -367,6 +367,8 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 - **⚡ Graph อัตโนมัติจาก case** — สร้าง graph 2 ชั้น: case → เครื่อง / บัญชี / IOC / rule / threat → สิ่งที่เครื่อง IOC และบัญชีเหล่านั้นเชื่อมต่อ (สูงสุด 45 nodes) แล้วขยายหรือบันทึกต่อได้
 - **graph ตัวอย่าง (ป้าย "จำลอง")** — ใน tenant `default` มี graph การสืบสวนของ 3 case จำลองที่รุนแรงที่สุด สร้างใหม่ทุก 5 นาทีในหน่วยความจำ เปิดดู ขยาย และกดบันทึกเป็นสำเนาของตัวเองได้
 
+- **ซูมและเลื่อน** — ปุ่ม ＋ / － (หรือหมุนล้อเมาส์ที่ตำแหน่งที่ต้องการ) ซูม 20%–600%, ลากพื้นที่ว่างเพื่อเลื่อน, ⤢ จัดให้พอดีและอยู่กลางจอ, ⛶ เต็มจอ — graph จัดกึ่งกลางให้เองทุกครั้งที่เปิดหรือขยาย
+
 สีของ node: Host ฟ้า · Account ส้ม · Indicator แดง · Case ม่วง · Threat ชมพู · Rule เขียว
 ข้อมูลที่ใช้: alert และ log ดิบ 7 วัน, case, และ intelligence ของ tenant นี้เท่านั้น
 
@@ -1400,7 +1402,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | GET | `/api/soc/incidents.csv` | `soc.export` |  |
 | POST | `/api/soc/agents/{agent_id}/contain` | `respond.execute` | Response action: revoke the agent's token / suspend it (simulated). With the four-eyes policy (default) this |
 | GET | `/api/soc/stream` | `soc.read` | Server-Sent Events. Read with fetch() so the X-API-Key header can be sent |
-| GET | `/` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
+| GET | `/` | ไม่ต้องยืนยันตัว / token ใดก็ได้ | Short content hash of the static assets, so a deploy changes every script/stylesheet URL and browsers never |
 | GET | `/soc` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
 | GET | `/manual` | ไม่ต้องยืนยันตัว / token ใดก็ได้ | The user manual (rendered in the browser from /manual.md) |
 | GET | `/manual.md` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
