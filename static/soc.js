@@ -2523,8 +2523,9 @@ async function loadApprovals() {
     const mine = state.me?.named && r.requested_by === state.me.name;
     const perm = kind === "resp" ? "respond.approve" : "agents.approve";
     const what = kind === "resp" ? `${ACT_TH[r.action] || r.action} <span class="mono">${esc(r.agent)}</span> — ${esc(r.reason)}`
-      : `${r.change === "new" ? "เพิ่ม" : "แก้"} agent <span class="mono">${esc(r.spec.id)}</span> · scopes: ${esc((r.spec.scopes || []).join(", ") || "-")}${r.spec.shell ? " · shell" : ""}${(r.spec.egress || []).length ? " · egress: " + esc(r.spec.egress.join(", ")) : ""}`;
-    return `<li class="${pending ? "" : "read"}"><div>#${r.id} ${what}</div><small class="muted">ขอโดย ${esc(r.requested_by)} · ${ago(r.requested_at)}ที่แล้ว
+      : `${r.change === "new" ? "เพิ่ม" : "แก้"} agent <span class="mono">${esc(r.spec.id)}</span> · scopes: ${esc((r.spec.scopes || []).join(", ") || "-")}${r.spec.shell ? " · <b>shell</b>" : ""}${(r.spec.egress || []).length ? " · egress: " + esc(r.spec.egress.join(", ")) : ""}${r.reason ? ` — ${esc(r.reason)}` : ""}`;
+    const tag = r.simulated ? '<span class="demo-tag" title="คำขอของทีมจำลองใน tenant demo — อนุมัติ/ปฏิเสธได้เพื่อฝึก four-eyes มีผลเฉพาะในเครื่องจำลอง">จำลอง</span>' : `#${r.id}`;
+    return `<li class="${pending ? "" : "read"}"><div>${tag} ${what}</div><small class="muted">ขอโดย ${esc(r.requested_by)} · ${ago(r.requested_at)}ที่แล้ว
       ${pending ? "" : ` · <b>${r.status === "approved" ? "อนุมัติ" : "ปฏิเสธ"}</b> โดย ${esc(r.decided_by)}${r.comment ? " — " + esc(r.comment) : ""}`}</small>
       ${pending && can(perm) ? (mine ? '<div class="small muted">คุณเป็นผู้ขอ — ต้องให้คนอื่นอนุมัติ</div>'
         : `<div><button class="sm ap-ok" data-k="${kind}" data-id="${r.id}">อนุมัติ</button> <button class="ghost sm ap-no" data-k="${kind}" data-id="${r.id}">ปฏิเสธ</button></div>`) : ""}</li>`;

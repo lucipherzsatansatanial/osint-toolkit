@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, assistant, catalog, demo_tasks, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, assistant, catalog, demo_requests, demo_tasks, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app import query as query_mod
 from app.notify import notifier
 from app.telemetry import hub
@@ -1230,14 +1230,40 @@ def _do_contain(who: rbac.Principal, agent_id: str, contain: bool) -> dict:
     return result
 
 
+def _with_demo(who: rbac.Principal, key: str) -> list[dict]:
+    """Stored requests plus the demo team's requests in a simulated tenant (negative ids, simulated=True)."""
+    demo = demo_requests.sync(E(who), time.time())[key]
+    return sorted(_requests(who.tenant, key) + demo, key=lambda r: -r["requested_at"])[:100]
+
+
+def _decide_demo(who: rbac.Principal, key: str, req_id: int, d: Decision) -> dict:
+    eng = E(who)
+    demo_requests.sync(eng, time.time())
+    box = "resp" if key == "response_requests" else "ag"
+    r = getattr(eng, "_dreq", {}).get(box, {}).get(req_id)
+    if r is None:
+        raise HTTPException(404, "request not found")
+    if r["status"] != "pending":
+        raise HTTPException(409, f"request already {r['status']}")
+    if r["requested_by"] == who.name:
+        raise HTTPException(403, "separation of duties: the requester cannot approve their own request")
+    result = demo_requests.decide(eng, box, r, d.approve, who.name, d.comment, time.time())
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.demo_decision",
+                 target=f"demo-request:{req_id}", purpose=f"{key} #{req_id} by {r['requested_by']} {d.comment}"[:500],
+                 legal_basis="own_asset", case_ref=None, result={"approved": d.approve, "simulated": True})
+    return {**{k: v for k, v in r.items() if not k.startswith("_")}, "result": result}
+
+
 @app.get("/api/soc/response-requests")
 async def soc_response_requests(who: rbac.Principal = Depends(require("cases.read"))):
-    return {"requests": list(reversed(_requests(who.tenant, "response_requests")))[:100],
+    return {"requests": _with_demo(who, "response_requests"),
             "four_eyes": _policies(who.tenant)["four_eyes_response"]}
 
 
 @app.post("/api/soc/response-requests/{req_id}/decision")
 async def soc_response_decide(req_id: int, d: Decision, who: rbac.Principal = Depends(require("respond.approve"))):
+    if req_id < 0:
+        return _decide_demo(who, "response_requests", req_id, d)
     r = _decide(who, "response_requests", req_id, d)
     result = None
     if d.approve:
@@ -1252,7 +1278,7 @@ async def soc_response_decide(req_id: int, d: Decision, who: rbac.Principal = De
 
 @app.get("/api/soc/agents/requests")
 async def soc_agent_requests(who: rbac.Principal = Depends(require("agents.read"))):
-    return {"requests": list(reversed(_requests(who.tenant, "agent_requests")))[:100],
+    return {"requests": _with_demo(who, "agent_requests"),
             "four_eyes": _policies(who.tenant)["four_eyes_agents"]}
 
 
@@ -1265,6 +1291,8 @@ def _apply_agent_specs(who: rbac.Principal, specs: list[dict]) -> list[dict]:
 
 @app.post("/api/soc/agents/requests/{req_id}/decision")
 async def soc_agent_decide(req_id: int, d: Decision, who: rbac.Principal = Depends(require("agents.approve"))):
+    if req_id < 0:
+        return _decide_demo(who, "agent_requests", req_id, d)
     r = _decide(who, "agent_requests", req_id, d)
     out = _apply_agent_specs(who, [r["spec"]]) if d.approve else None
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.agent_approve" if d.approve else "soc.agent_reject",
