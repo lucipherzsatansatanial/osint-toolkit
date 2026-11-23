@@ -178,6 +178,8 @@ GLOSSARY = [
     ("Urgency", "ความเร่งด่วน", "คะแนน 0–100 ใช้เรียงลำดับ alert"),
     ("User-agent", "ข้อมูลระบุโปรแกรมผู้เรียก", "ข้อความระบุเบราว์เซอร์/เครื่องมือในคำขอ HTTP"),
     ("Verdict", "ผลวินิจฉัย", "True positive / False positive / Benign / ยังสรุปไม่ได้"),
+    ("VirusTotal", "บริการตรวจชื่อเสียงไฟล์/URL", "บริการของ Google ที่รวมผล antivirus และ blocklist กว่า 70 ราย ระบบใช้ API v3 แบบค้นอย่างเดียว"),
+    ("Reputation (VirusTotal)", "คะแนนชื่อเสียง", "คะแนนจากการโหวตของชุมชน VirusTotal ค่าติดลบ = ถูกมองว่าอันตราย"),
     ("Version", "เวอร์ชัน", "ฉบับของ rule แต่ละครั้งที่เผยแพร่"),
     ("Warning event", "เหตุการณ์ที่มีข้อสังเกต", "record ที่เวลาผิด/หาย หรือระบุเครื่อง/ผู้ใช้ไม่ได้"),
     ("Webhook", "เว็บฮุก", "URL ที่ระบบส่งข้อมูลไปให้ระบบอื่นอัตโนมัติ"),
@@ -231,7 +233,7 @@ def api() -> str:
              "`POST /api/soc/alerts/action` (alerts.acknowledge / assign / escalate / close), "
              "`PATCH /api/users/{username}` (users.manage / roles.manage) และการส่งออก CSV (soc.export)\n",
              "| Method | Path | สิทธิ์ | คำอธิบาย (จาก docstring) |", "|---|---|---|---|"]
-    pat = re.compile(r'@app\.(get|post|put|patch|delete)\("([^"]+)"[^\n]*\n((?:.*\n){1,10})')
+    pat = re.compile(r'@app\.(get|post|put|patch|delete)\("([^"]+)"[^\n]*\n((?:(?!@app\.).*\n){1,10})')
     for m in pat.finditer(src):
         method, path, body = m.group(1).upper(), m.group(2), m.group(3)
         perm = re.search(r'require\("([^"]+)"\)', body)
@@ -248,6 +250,11 @@ ENV_TH = {
     "ANTHROPIC_AUTH_TOKEN": "ทางเลือกแทน ANTHROPIC_API_KEY",
     "HIBP_API_KEY": "กุญแจ Have I Been Pwned (OSINT Email)",
     "IPINFO_TOKEN": "กุญแจ ipinfo.io (OSINT IP)",
+    "VT_API_KEY": "กุญแจ VirusTotal API v3 (ค้นชื่อเสียง hash/URL/domain/IP)",
+    "VT_RATE_PER_MIN": "จำนวนครั้งต่อนาทีที่เรียก VirusTotal ได้ (บัญชีฟรี 4)",
+    "VT_DAILY_QUOTA": "จำนวนครั้งต่อวันที่เรียก VirusTotal ได้ (บัญชีฟรี 500, นับตามวัน UTC)",
+    "VT_CACHE_TTL": "เก็บผล VirusTotal ใน cache กี่วินาที (ค่าเริ่ม 3600)",
+    "VT_BLOCK_DOMAINS": "โดเมนภายในเพิ่มเติมที่ห้ามส่งไป VirusTotal (คั่นด้วย ,)",
     "OSINT_API_KEY": "break-glass admin key",
     "OSINT_DB_PATH": "ที่อยู่ไฟล์ฐานข้อมูล SQLite (บน Render ใช้ /var/data/osint.db)",
     "OSINT_HTTP_TIMEOUT": "timeout (วินาที) ของการเรียกภายนอกใน OSINT",
@@ -281,7 +288,7 @@ ENV_TH = {
     "SMTP_HOST": "เซิร์ฟเวอร์อีเมลสำหรับแจ้งเตือน", "SMTP_PORT": "พอร์ต SMTP (ค่าเริ่ม 587)",
     "SMTP_USER": "ผู้ใช้ SMTP", "SMTP_PASSWORD": "รหัสผ่าน SMTP", "SMTP_FROM": "อีเมลผู้ส่ง",
 }
-SECRET = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "HIBP_API_KEY", "IPINFO_TOKEN", "OSINT_API_KEY",
+SECRET = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "HIBP_API_KEY", "IPINFO_TOKEN", "VT_API_KEY", "OSINT_API_KEY",
           "SOC_NOTIFY_LINE_TOKEN", "SMTP_PASSWORD", "SOC_NOTIFY_TEAMS_URL", "SOC_NOTIFY_SLACK_URL", "SOC_NOTIFY_WEBHOOK_URL"}
 
 

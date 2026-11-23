@@ -203,6 +203,15 @@ button.pill:hover { filter: none; background: var(--hover); }
 .en-out .verdict { display: inline-block; font-weight: 700; border-radius: 6px; padding: 1px 8px; margin-right: 6px; }
 .verdict.malicious { background: var(--critical); color: #fff; } .verdict.suspicious { background: var(--warn-bg); color: var(--warn-ink); }
 .verdict.benign, .verdict.known_service, .verdict.internal { background: var(--ok-bg); color: var(--ok-ink); }
+.verdict.clean { background: var(--ok-bg); color: var(--ok-ink); }
+.vt-out { margin: 8px 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); }
+.vt-out h4 { margin: 0 0 8px; display: flex; gap: 8px; align-items: center; } .vt-out h4 .ghost { margin-left: auto; }
+.vt-row { padding: 8px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vt-out .vt-row:first-of-type { border-top: 0; }
+.vt-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.vt-row .vt-scan { align-self: flex-start; }
+.vt-ind { overflow-wrap: anywhere; } .vt-ratio { font-variant-numeric: tabular-nums; }
+.vt-row .verdict { display: inline-block; font-weight: 700; border-radius: 6px; padding: 1px 8px; }
 .verdict.unknown { background: var(--chip); color: var(--muted); }
 .en-out .match { border-bottom: 1px solid var(--line2); padding: 6px 0; overflow-wrap: anywhere; }
 .en-out .match b { color: var(--text); }

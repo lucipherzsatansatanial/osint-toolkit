@@ -457,6 +457,7 @@ $("#enForm").addEventListener("submit", async (ev) => {
         ${a.hunting_ideas.length ? `<h4>แนวทาง hunting ต่อ</h4><ul>${a.hunting_ideas.map((h) => `<li>${t(h)}</li>`).join("")}</ul>` : ""}
         <div class="ai-foot">วิเคราะห์โดย ${t(a.model)} จากหลักฐานด้านล่างเท่านั้น · ต้องตรวจสอบก่อนตัดสินใจ</div>` : `<p class="muted">${t(r.note)}</p>`}
       <h4>หลักฐานจากฟีด CTI (${r.matches.length})</h4>${m}
+      ${r.virustotal ? `<h4>VirusTotal</h4>${vtCard(r.virustotal)}` : ""}
       <h4>พบในระบบ</h4><div class="muted">${s.alerts.length} alerts · ${s.agent_records.length} AI-agent records${s.incidents.length ? " · incidents: " + s.incidents.map((i) => `<a class="link" href="#inc-${i}">#${i}</a>`).join(", ") : ""}</div>`;
   } catch (e) { $("#enOut").innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
 });
@@ -1934,6 +1935,71 @@ $("#asForm").addEventListener("submit", async (ev) => {
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) { loadIntakes(); loadAssets(); } }, 60000);
 
 
+// ---------- VirusTotal API v3 ----------
+const VT_TH = { malicious: "อันตราย", suspicious: "น่าสงสัย", clean: "ไม่พบการตรวจจับ", unknown: "ไม่มีข้อมูล" };
+const VT_KIND = { file: "ไฟล์ (hash)", url: "URL", domain: "โดเมน", ip: "IP" };
+function vtDetail(r) {
+  const d = [];
+  if (r.kind === "file") d.push(r.name, r.type, r.size ? (r.size / 1024).toFixed(0) + " KB" : null, r.first_seen ? "พบครั้งแรก " + r.first_seen : null);
+  if (r.kind === "ip") d.push(r.as_owner, r.asn ? "AS" + r.asn : null, r.country, r.network);
+  if (r.kind === "domain") d.push(r.registrar, r.created ? "จดทะเบียน " + r.created : null, (r.categories || []).join(", "));
+  if (r.kind === "url") d.push(r.title, r.final_url && r.final_url !== r.indicator ? "→ " + r.final_url : null, (r.categories || []).join(", "));
+  return d.filter(Boolean).map(esc).join(" · ");
+}
+function vtCard(r, opts = {}) {
+  const t = (x) => esc(x ?? "");
+  if (r.error) return `<div class="vt-row"><span class="mono">${t(r.indicator)}</span> <span class="${r.error === "disabled" ? "muted" : "err"}">${t(r.message)}</span></div>`;
+  const local = [];
+  if (r.in_intel) local.push(`อยู่ใน Intelligence ของเรา (${t(r.in_intel.source)}${r.in_intel.threat ? " · " + t(r.in_intel.threat) : ""})`);
+  const s = r.sightings;
+  if (s && (s.logs || s.alerts)) local.push(`<b class="bad-ink">เห็นใน tenant 7 วัน: ${s.logs} logs · ${s.alerts} alerts</b>${s.hosts.length ? " (" + t(s.hosts.join(", ")) + ")" : ""}`);
+  const ratio = r.found ? `<b>${r.malicious}</b>/${r.engines} engines${r.suspicious ? ` · น่าสงสัย ${r.suspicious}` : ""}` : "";
+  return `<div class="vt-row">
+    <div class="vt-head"><span class="verdict ${t(r.verdict)}">${t(VT_TH[r.verdict] || r.verdict)}</span>
+      <span class="kindtag">${t(VT_KIND[r.kind] || r.kind)}</span> <span class="mono vt-ind" title="${t(r.indicator)}">${t(r.indicator)}</span>
+      ${ratio ? `<span class="vt-ratio">${ratio}</span>` : ""}
+      ${r.reputation != null ? `<span class="muted small">reputation ${t(r.reputation)}</span>` : ""}
+      ${r.threat_label ? `<span class="thr">${t(r.threat_label)}</span>` : ""}
+      <a class="link small" href="${t(r.link)}" target="_blank" rel="noopener noreferrer">เปิดใน VirusTotal ↗</a>
+      ${r.cached ? '<span class="muted small" title="ไม่ใช้โควตา">· จาก cache</span>' : ""}</div>
+    ${r.found ? `<div class="small muted">${vtDetail(r)}${r.last_analysis ? ` · วิเคราะห์ล่าสุด ${t(r.last_analysis)}` : ""}</div>` : `<div class="small muted">${t(r.message)}</div>`}
+    ${(r.flagged_by || []).length ? `<div class="small">ตรวจพบโดย: ${r.flagged_by.map((f) => `<span class="thr" title="${t(f.result)}">${t(f.engine)}</span>`).join(" ")}</div>` : ""}
+    ${(r.tags || []).length ? `<div class="small muted">tags: ${r.tags.map(t).join(", ")}</div>` : ""}
+    ${local.length ? `<div class="small">${local.join(" · ")}</div>` : ""}
+    ${opts.scan && r.kind === "url" && can("threatintel.curate") ? `<button class="ghost sm vt-scan" data-url="${t(r.indicator)}">ส่งให้ VirusTotal สแกนใหม่…</button>` : ""}
+  </div>`;
+}
+async function vtLookup() {
+  const vals = $("#ciQ").value.split(/[\n,]+/).map((v) => v.trim()).filter(Boolean);
+  const box = $("#vtOut"); box.hidden = false;
+  if (!vals.length) { box.innerHTML = '<p class="muted">ใส่ hash, URL, domain หรือ IP ในช่องค้นหาก่อน (สูงสุด 10 ค่า)</p>'; return; }
+  if (vals.length > 10) { box.innerHTML = `<p class="err">ตรวจได้ครั้งละไม่เกิน 10 ค่า (ใส่มา ${vals.length})</p>`; return; }
+  box.innerHTML = '<p class="muted"><span class="spin"></span> กำลังถาม VirusTotal… (บัญชีฟรีได้ 4 ครั้ง/นาที ค่าที่เคยค้นจะมาจาก cache)</p>';
+  try {
+    const r = await api("/api/soc/vt/lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ indicators: vals }) });
+    const u = r.usage;
+    box.innerHTML = `<h4>VirusTotal <small class="muted">ใช้วันนี้ ${u.used_today}/${u.daily_quota} · นาทีนี้ ${u.used_last_minute}/${u.per_minute} · ค้นอย่างเดียว ไม่อัปโหลดไฟล์</small>
+      <button class="ghost sm" id="vtClose">ปิด</button></h4>` + r.results.map((x) => vtCard(x, { scan: true })).join("");
+  } catch (e) { box.innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
+}
+$("#vtGo").onclick = vtLookup;
+$("#vtOut").addEventListener("click", async (ev) => {
+  if (ev.target.id === "vtClose") { $("#vtOut").hidden = true; return; }
+  const b = ev.target.closest(".vt-scan"); if (!b) return;
+  if (!confirm(`ส่ง URL นี้ให้ VirusTotal สแกน?\n\n${b.dataset.url}\n\nURL จะถูกเปิดเผยต่อชุมชน VirusTotal (ผู้ใช้อื่นค้นเจอได้) — ห้ามส่ง URL ที่มี token, ข้อมูลลูกค้า หรือระบบภายใน`)) return;
+  b.disabled = true;
+  try {
+    const r = await api("/api/soc/vt/scan-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: b.dataset.url, confirm_public: true }) });
+    b.outerHTML = `<span class="small muted">${esc(r.message)}</span>`;
+  } catch (e) { b.disabled = false; alert(e.message); }
+});
+async function loadVtStatus() {
+  try {
+    const u = await api("/api/soc/vt/status");
+    if (!u.enabled) { $("#vtGo").disabled = true; $("#vtGo").title = "ยังไม่ได้ตั้ง VT_API_KEY บนเซิร์ฟเวอร์ (ดู Integrations)"; }
+  } catch (e) { /* no permission: the button is hidden by data-perm */ }
+}
+
 // ---------- intelligence ----------
 const CI = { page: 1, meta: null };
 const TLP_CLS = { clear: "clear", green: "green", amber: "amber", "amber+strict": "amber", red: "red" };
@@ -1945,7 +2011,7 @@ async function loadIntel() {
   try {
     const r = await api("/api/soc/intel?" + p);
     if (!CI.meta) {
-      CI.meta = r;
+      CI.meta = r; loadVtStatus();
       $("#ciType").insertAdjacentHTML("beforeend", r.types.map((t) => `<option>${t}</option>`).join(""));
       $("#ciSrc").insertAdjacentHTML("beforeend", Object.entries(r.sources).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
     }

@@ -37,6 +37,9 @@ CATALOG = [
     ("email", "Email (SMTP)", "Email", "notify", "อีเมลแจ้ง incident", "ตั้ง SMTP_HOST, SMTP_FROM, SOC_NOTIFY_EMAIL_TO"),
     ("claude", "Anthropic Claude", "AI", "ai", "AI SOC Copilot, NL hunting, rule assistant (pseudonymise ก่อนส่ง)", "ตั้ง ANTHROPIC_API_KEY"),
     ("hibp", "Have I Been Pwned", "Identity", "enrich", "ตรวจอีเมลรั่วใน OSINT Toolkit", "ตั้ง HIBP_API_KEY"),
+    ("virustotal", "VirusTotal API v3", "Threat Intelligence", "enrich",
+     "ชื่อเสียงของ hash / URL / domain / IP จาก antivirus และ blocklist กว่า 70 ราย (ค้นอย่างเดียว ไม่อัปโหลดไฟล์)",
+     "ตั้ง VT_API_KEY (ฟรี: 4 ครั้ง/นาที, 500 ครั้ง/วัน — ปรับด้วย VT_RATE_PER_MIN, VT_DAILY_QUOTA)"),
     ("ipinfo", "ipinfo.io", "Network", "enrich", "ข้อมูล ASN/ประเทศของ IP", "ตั้ง IPINFO_TOKEN (ไม่ตั้งก็ใช้ได้แบบจำกัด)"),
     ("kql", "Microsoft Sentinel / Defender (KQL)", "Endpoint", "export", "hunting query ของ offensive-AI rules", "ไฟล์ใน detections/offensive_ai/*.kql"),
     ("spl", "Splunk (SPL)", "Generic", "export", "hunting search ของ offensive-AI rules", "ไฟล์ใน detections/offensive_ai/*.spl"),
@@ -45,7 +48,7 @@ CATALOG = [
 
 
 def catalog(state: dict) -> list[dict]:
-    """state: notify_channels, ai_enabled, hibp, ipinfo, feeds_ok {name: bool}, intakes {format: n}, feeds_out {fmt: n}."""
+    """state: notify_channels, ai_enabled, hibp, ipinfo, virustotal, feeds_ok {name: bool}, intakes {format: n}, feeds_out {fmt: n}."""
     out = []
     for iid, name, cat, ctype, desc, how in CATALOG:
         if ctype == "notify":
@@ -61,7 +64,7 @@ def catalog(state: dict) -> list[dict]:
             status = "configured" if n else "available"
         elif iid == "claude":
             status = "configured" if state["ai_enabled"] else "available"
-        elif iid in ("hibp", "ipinfo"):
+        elif iid in ("hibp", "ipinfo", "virustotal"):
             status = "configured" if state[iid] else "available"
         else:
             status = "built_in"

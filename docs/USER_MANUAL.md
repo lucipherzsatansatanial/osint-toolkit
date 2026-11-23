@@ -280,6 +280,16 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 
 แหล่งข้อมูล: abuse.ch ThreatFox, abuse.ch Feodo Tracker, CISA KEV, ThreatDefence agentic-attack-detections และ IOC ของ tenant
 
+**🛡 ตรวจกับ VirusTotal** (`threatintel.enrich`) — ใช้ค่าที่อยู่ในช่องค้นหา (hash md5/sha1/sha256, URL, domain, IP สูงสุด 10 ค่า) ไปค้นใน VirusTotal API v3
+- แต่ละค่าแสดง: ผล (อันตราย / น่าสงสัย / ไม่พบการตรวจจับ / ไม่มีข้อมูล), จำนวน engine ที่ตรวจพบ เช่น **5/66**, reputation, ป้ายภัย (threat label), engine ที่ตรวจพบ, รายละเอียดตามชนิด (ชื่อไฟล์/ชนิด/ขนาด, ASN/ประเทศ, registrar/วันจดทะเบียน, หมวดหมู่), วันวิเคราะห์ล่าสุด และลิงก์ **เปิดใน VirusTotal**
+- บอกบริบทภายในด้วยว่าค่านั้น **อยู่ใน Intelligence ของเรา** หรือ **เห็นใน log/alert ของ tenant ใน 7 วัน** หรือไม่
+- **ค้นอย่างเดียว ไม่อัปโหลดไฟล์** — ระบบไม่มีฟังก์ชันส่งไฟล์ให้ VirusTotal เพราะไฟล์ที่อัปโหลดจะดาวน์โหลดได้โดยลูกค้า premium ของ VirusTotal (เสี่ยงข้อมูลลูกค้ารั่วและขัด PDPA) ให้ใช้ hash แทน
+- **ไม่ส่งข้อมูลภายใน** — IP ภายใน (private/reserved), โดเมน `.local` `.corp` `.internal` `.lan` ฯลฯ, ชื่อเครื่องที่ไม่มีจุด, URL ที่ฝังชื่อผู้ใช้/รหัสผ่าน และโดเมนใน `VT_BLOCK_DOMAINS` จะถูกปฏิเสธก่อนออกจากเซิร์ฟเวอร์
+- **โควตา** — ค่าเริ่มต้นตามบัญชีฟรี 4 ครั้ง/นาที และ 500 ครั้ง/วัน (ปรับด้วย `VT_RATE_PER_MIN`, `VT_DAILY_QUOTA`) ผลถูกเก็บใน cache 1 ชม. ค่าที่ค้นซ้ำจึงไม่เสียโควตา (ป้าย "จาก cache") ถ้าเกินโควตาระบบบอกเวลาที่ต้องรอ
+- **ส่งให้ VirusTotal สแกนใหม่…** (เฉพาะ URL, ต้องมี `threatintel.curate` เพิ่ม) — ใช้เมื่อ VirusTotal ยังไม่มีข้อมูล URL นั้น ระบบจะถามยืนยันเพราะ **URL จะถูกเปิดเผยต่อชุมชน VirusTotal** ห้ามส่ง URL ที่มี token ข้อมูลลูกค้า หรือระบบภายใน
+- ทุกการค้นและการส่งสแกนบันทึกใน audit log (`soc.vt_lookup`, `soc.vt_scan_url`) พร้อมจำนวนครั้งที่เรียก API จริง
+- ถ้าตั้ง `VT_API_KEY` แล้ว **AI Threat Enrichment** (4.25) และโมดูล **Domain / IP** ของ OSINT Toolkit จะดึงผล VirusTotal มาประกอบให้อัตโนมัติ (ผู้ใช้ต้องมี `threatintel.enrich` สำหรับ enrichment)
+
 ### 4.9 IOC Collections
 
 **วัตถุประสงค์:** จัด IOC ของเราเป็นชุดตามแคมเปญหรือ incident และใช้ตรวจ log ด้วย rule **IOC-001** (สิทธิ์ดู `threatintel.read`, แก้ `threatintel.curate`)
@@ -449,7 +459,7 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 ### 4.25 AI Hunting & Enrichment
 
 - **Natural Language Hunting** (`ai.hunt`) — พิมพ์คำถามภาษาธรรมชาติ เช่น "หาเซิร์ฟเวอร์ที่ติดต่อ AI API ของจีนในชั่วโมงที่ผ่านมา" AI แปลงเป็นเงื่อนไขค้นหา แล้ว **ระบบค้นเองในข้อมูลของเรา** (ข้อมูลไม่ถูกส่งให้ AI ทั้งหมด) มีคำถามตัวอย่างให้กด
-- **AI Threat Enrichment** (`ai.enrich`) — ใส่ IP, domain, URL, hash, CVE หรือ user-agent แล้วกด **วิเคราะห์** ระบบรวมข้อมูลจาก CTI และ log ภายใน แล้วให้ AI สรุปความเสี่ยงและสิ่งที่ควรทำ
+- **AI Threat Enrichment** (`ai.enrich`) — ใส่ IP, domain, URL, hash, CVE หรือ user-agent แล้วกด **วิเคราะห์** ระบบรวมข้อมูลจาก CTI, log ภายใน และ VirusTotal (ถ้าตั้งค่าและมีสิทธิ์ `threatintel.enrich`) แล้วให้ AI สรุปความเสี่ยงและสิ่งที่ควรทำ
 - ปุ่ม 👍/👎 ใต้คำตอบ AI — ให้คะแนนคุณภาพ (ใช้ในหน้า Governance)
 
 ### 4.26 Attack Chains
@@ -581,8 +591,8 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 
 | โมดูล | ตรวจอะไร |
 |---|---|
-| **Domain** | DNS (A, AAAA, MX, NS, TXT, SOA, CAA), RDAP/WHOIS, certificate transparency (subdomain), HTTP และ TLS |
-| **IP Address** | reverse DNS, เจ้าของ IP ผ่าน RDAP, ตำแหน่ง/ASN (ipinfo ถ้าตั้งค่า) |
+| **Domain** | DNS (A, AAAA, MX, NS, TXT, SOA, CAA), RDAP/WHOIS, certificate transparency (subdomain), HTTP และ TLS, ชื่อเสียงจาก VirusTotal (ถ้าตั้ง `VT_API_KEY`) |
+| **IP Address** | reverse DNS, เจ้าของ IP ผ่าน RDAP, ตำแหน่ง/ASN (ipinfo ถ้าตั้งค่า), ชื่อเสียงจาก VirusTotal (ถ้าตั้ง `VT_API_KEY`) |
 | **Email** | ความปลอดภัยอีเมลของโดเมน (SPF, DMARC, DKIM), Gravatar, การรั่วไหล (Have I Been Pwned ถ้าตั้งค่า) |
 | **Brand / Lookalike** | โดเมนเลียนแบบ (typosquatting, homoglyph, สลับ TLD รวม .co.th/.in.th) และคำในใบรับรอง (CT log) |
 | **Username** | ตรวจว่ามีชื่อผู้ใช้นี้บนแพลตฟอร์มสาธารณะหรือไม่ — **เป็นเพียงความเป็นไปได้** ชื่อซ้ำกันไม่ได้แปลว่าเป็นคนเดียวกัน ต้องตรวจยืนยันเอง |
@@ -759,6 +769,9 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | แก้ rule แล้วผลยังเหมือนเดิม | การแก้เป็น draft ต้องให้ผู้มี `rules.publish` เผยแพร่ก่อน |
 | CTI: 0/4 feeds live | เซิร์ฟเวอร์ออก internet ไปยัง feed ไม่ได้ ตรวจ network ของ Render |
 | AI ตอบว่า "ใช้สรุปแบบกฎแทน" | ยังไม่ตั้ง `ANTHROPIC_API_KEY`, ถูกจำกัดอัตรา, หรือโมเดลปฏิเสธ — ดูเหตุผลในข้อความ |
+| ปุ่ม "ตรวจกับ VirusTotal" กดไม่ได้ | ยังไม่ตั้ง `VT_API_KEY` บน Render หรือบทบาทไม่มี `threatintel.enrich` |
+| VirusTotal: "เกิน 4 ครั้ง/นาที" / "ใช้โควตาครบ" | รอตามเวลาที่บอก หรือใช้ key แบบเสียเงินแล้วปรับ `VT_RATE_PER_MIN` / `VT_DAILY_QUOTA` |
+| VirusTotal: "ไม่ส่ง IP/โดเมนภายใน…" | ตั้งใจปฏิเสธเพื่อไม่ให้ข้อมูลภายในรั่วออกนอกองค์กร |
 | ส่ง log ได้ 401 | intake key ผิด/ถูกปิด/ถูก rotate |
 | ส่ง log ได้ 413 | ใหญ่เกิน 25 MB หรือเกิน 25,000 record ต่อครั้ง — แบ่งเป็นหลายชุด |
 | Invalid events สูง | รูปแบบ log ไม่ตรงกับที่เลือกใน intake หรือ kind ไม่รองรับ |
@@ -772,7 +785,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 ## 13. อภิธานศัพท์ (คำศัพท์ คำแปล ความหมาย)
 
 <!-- BEGIN GENERATED:glossary -->
-รวม 165 คำ เรียงตามตัวอักษร
+รวม 167 คำ เรียงตามตัวอักษร
 
 **A**
 
@@ -984,6 +997,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | Reconnaissance (Recon) | การสอดแนม | การสำรวจเป้าหมายก่อนโจมตี |
 | Redaction | การปิดบังข้อมูล | ซ่อนข้อมูลส่วนบุคคลบางส่วน |
 | Reoccurred | เกิดซ้ำ | alert ที่ปิดแล้วเกิดขึ้นอีก |
+| Reputation (VirusTotal) | คะแนนชื่อเสียง | คะแนนจากการโหวตของชุมชน VirusTotal ค่าติดลบ = ถูกมองว่าอันตราย |
 | Response | การตอบสนอง | การกระทำเพื่อหยุดหรือแก้ไขเหตุการณ์ |
 | Retention | ระยะเก็บข้อมูล | จำนวนวันที่ระบบเก็บข้อมูลก่อนลบ |
 | Retire (agent) | ปลดระวาง | เลิกใช้งาน agent กิจกรรมหลังจากนั้นถูกบล็อก |
@@ -1044,6 +1058,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 |---|---|---|
 | Verdict | ผลวินิจฉัย | True positive / False positive / Benign / ยังสรุปไม่ได้ |
 | Version | เวอร์ชัน | ฉบับของ rule แต่ละครั้งที่เผยแพร่ |
+| VirusTotal | บริการตรวจชื่อเสียงไฟล์/URL | บริการของ Google ที่รวมผล antivirus และ blocklist กว่า 70 ราย ระบบใช้ API v3 แบบค้นอย่างเดียว |
 
 **W**
 
@@ -1065,7 +1080,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 ## ภาคผนวก ก. สิทธิ์และบทบาท (สร้างจากโค้ด)
 
 <!-- BEGIN GENERATED:permissions -->
-ทั้งหมด 47 สิทธิ์ · ✓ = บทบาทนั้นมีสิทธิ์นี้
+ทั้งหมด 48 สิทธิ์ · ✓ = บทบาทนั้นมีสิทธิ์นี้
 
 | สิทธิ์ | กลุ่ม | ใช้ทำอะไร | ผู้ดู (viewer) | นักวิเคราะห์ (analyst) | หัวหน้าทีม SOC (lead) | ผู้ดูแลระบบ (admin) | บัญชีส่ง log (ingest) |
 |---|---|---|---|---|---|---|---|
@@ -1089,6 +1104,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | `alerts.close` | จัดการ Alert | ปิด alert พร้อมเหตุผล |  | ✓ | ✓ | ✓ |  |
 | `threatintel.read` | Threat Intelligence / OSINT | ค้น Intelligence, IOC collections, feeds ที่ส่งออก | ✓ | ✓ | ✓ | ✓ |  |
 | `threatintel.curate` | Threat Intelligence / OSINT | เพิ่ม/แก้/revoke IOC, collection และ feed ส่งออก |  | ✓ | ✓ | ✓ |  |
+| `threatintel.enrich` | Threat Intelligence / OSINT | ค้นชื่อเสียง IOC กับบริการภายนอก เช่น VirusTotal (ใช้โควตา API) |  | ✓ | ✓ | ✓ |  |
 | `osint.scan` | Threat Intelligence / OSINT | สแกน OSINT |  | ✓ | ✓ | ✓ |  |
 | `osint.history` | Threat Intelligence / OSINT | ดูประวัติการสแกน OSINT |  | ✓ | ✓ | ✓ |  |
 | `osint.export` | Threat Intelligence / OSINT | ส่งออกประวัติการสแกน OSINT (CSV) |  |  | ✓ | ✓ |  |
@@ -1172,16 +1188,23 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 |---|---|---|---|
 | POST | `/api/scan` | `osint.scan` |  |
 | GET | `/api/history` | `osint.history` |  |
+| GET | `/api/history.csv` | `osint.export` |  |
 | GET | `/api/scan/{scan_id}` | `osint.history` |  |
-| GET | `/api/me` | `users.read` |  |
+| GET | `/api/meta` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
+| GET | `/api/me` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
+| GET | `/api/roles` | `users.read` |  |
 | PUT | `/api/roles/{name}` | `roles.manage` |  |
 | DELETE | `/api/roles/{name}` | `roles.manage` |  |
 | GET | `/api/users` | `users.read` |  |
+| POST | `/api/users` | `users.manage` |  |
 | POST | `/api/users/{username}/rotate` | `tokens.manage` |  |
 | PATCH | `/api/users/{username}` | `users.read` |  |
 | GET | `/api/tenants` | `users.read` | Platform staff: every tenant known to the system. Others: their own tenant |
-| GET | `/api/soc/cti` | `threatintel.read` | Offensive AI-agent framework coverage, rule hit counts and the hunting query library |
+| GET | `/api/soc/snapshot` | `soc.read` |  |
+| GET | `/api/soc/cti` | `threatintel.read` |  |
+| GET | `/api/soc/offensive-ai` | `alerts.read` | Offensive AI-agent framework coverage, rule hit counts and the hunting query library |
 | GET | `/api/soc/agents` | `agents.read` |  |
+| GET | `/api/soc/agents/sessions/{sid}` | `agents.read` |  |
 | GET | `/api/soc/hunt` | `agents.read` |  |
 | POST | `/api/soc/ingest` | `ingest.submit` | Ingest real EDR / NDR / web / AI-agent telemetry. Formats: auto, native, ecs, defender, access_log |
 | POST | `/api/soc/intake` | intake key | Ingest with a per-intake key (header X-Intake-Key): tenant, format, entity and mode come from the intake, |
@@ -1189,29 +1212,38 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | POST | `/api/soc/iocs` | `threatintel.curate` | Add the tenant's own IOCs (bulk). They are searched with the CTI feeds, matched in logs (IOC-001) and can be |
 | GET | `/api/soc/iocs` | `threatintel.read` |  |
 | GET | `/api/soc/ioc-collections` | `threatintel.read` |  |
+| POST | `/api/soc/ioc-collections` | `threatintel.curate` |  |
 | PUT | `/api/soc/ioc-collections/{cid}` | `threatintel.curate` |  |
 | POST | `/api/soc/iocs/revoke` | `threatintel.curate` |  |
 | GET | `/api/soc/ioc-collections/{cid}/report` | `threatintel.read` | Telemetry report: for every IOC in the collection, how often it appeared in this tenant's logs and alerts |
 | POST | `/api/soc/iocs/delete` | `threatintel.curate` |  |
 | GET | `/api/soc/feeds` | `threatintel.read` |  |
+| POST | `/api/soc/feeds/preview` | `threatintel.read` |  |
 | POST | `/api/soc/feeds` | `threatintel.curate` |  |
 | PUT | `/api/soc/feeds/{feed_id}` | `threatintel.curate` |  |
 | GET | `/feeds/{token}.{ext}` | feed key ใน URL | Pull endpoint for firewalls / CTI platforms. The token in the URL is the credential (stored as SHA-256) |
 | GET | `/api/soc/integrations` | `soc.read` |  |
 | GET | `/api/assistant/suggestions` | `ai.copilot` |  |
+| POST | `/api/assistant` | `ai.copilot` |  |
 | GET | `/api/soc/graph/expand` | `query.run` |  |
 | GET | `/api/soc/graphs` | `notebooks.read` |  |
+| GET | `/api/soc/graphs/{gid}` | `notebooks.read` |  |
 | POST | `/api/soc/graphs` | `notebooks.write` |  |
+| PUT | `/api/soc/graphs/{gid}` | `notebooks.write` |  |
 | DELETE | `/api/soc/graphs/{gid}` | `notebooks.write` |  |
 | GET | `/api/soc/workspace` | `soc.read` |  |
+| PUT | `/api/soc/workspace` | `governance.manage` |  |
 | PUT | `/api/soc/case-templates` | `governance.manage` |  |
 | GET | `/api/soc/policies` | `governance.read` |  |
+| PUT | `/api/soc/policies` | `governance.manage` |  |
 | GET | `/api/soc/response-requests` | `cases.read` |  |
+| POST | `/api/soc/response-requests/{req_id}/decision` | `respond.approve` |  |
 | GET | `/api/soc/agents/requests` | `agents.read` |  |
 | POST | `/api/soc/agents/requests/{req_id}/decision` | `agents.approve` |  |
 | POST | `/api/soc/agents/{agent_id}/lifecycle` | `agents.deploy` | Put an approved agent into service or retire it. Activity from a retired agent is blocked and alerted (AGT-011) |
 | POST | `/api/soc/alerts/action` | `alerts.read` | Act on an alert group (same alert title on the same host) without touching response capabilities |
 | GET | `/api/soc/entities` | `entities.read` |  |
+| POST | `/api/soc/entities` | `ingest.sources.manage` |  |
 | PUT | `/api/soc/entities/{ent_id}` | `ingest.sources.manage` |  |
 | GET | `/api/soc/intakes` | `entities.read` |  |
 | POST | `/api/soc/intakes` | `ingest.sources.manage` |  |
@@ -1220,44 +1252,60 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | PUT | `/api/soc/assets` | `assets.manage` | Create a manual asset or update tags / description / criticality / revoked on a discovered one |
 | POST | `/api/soc/agents/register` | `agents.edit` | Upsert real AI agents and what they are allowed to do. Unregistered agents seen in logs raise AGT-011 |
 | GET | `/api/soc/notify` | `soc.read` | Which alert channels are configured (never returns URLs or tokens) and recent delivery results |
+| POST | `/api/soc/notify/test` | `integrations.manage` |  |
 | GET | `/api/soc/ai/status` | `soc.read` |  |
+| POST | `/api/soc/incidents/{inc_id}/ai/summary` | `ai.copilot` | AI alert summary + AI incident timeline + response actions. Cached on the incident until refresh=true |
 | POST | `/api/soc/incidents/{inc_id}/ai/ask` | `ai.copilot` |  |
 | POST | `/api/soc/hunt/nl` | `ai.hunt` |  |
 | POST | `/api/soc/enrich` | `ai.enrich` |  |
+| GET | `/api/soc/vt/status` | `threatintel.read` |  |
+| POST | `/api/soc/vt/lookup` | `threatintel.enrich` | Reputation of up to 10 IOCs (hash / URL / domain / IP). GET look-ups only — nothing is uploaded |
+| POST | `/api/soc/vt/scan-url` | `threatintel.enrich` | Submit a URL for a fresh scan. The URL becomes visible to the VirusTotal community, hence the extra |
+| GET | `/api/soc/chains` | `cases.read` |  |
 | POST | `/api/soc/chains/{chain_id}/ai` | `ai.copilot` |  |
 | GET | `/healthz` | ไม่ต้องยืนยันตัว / token ใดก็ได้ | Liveness: the process is up |
+| GET | `/readyz` | ไม่ต้องยืนยันตัว / token ใดก็ได้ | Readiness: database writable and the default tenant engine loaded |
 | GET | `/api/audit` | `audit.read` |  |
+| GET | `/api/audit/verify` | `audit.read` |  |
 | GET | `/api/audit.csv` | `audit.read` |  |
 | POST | `/api/ai/feedback` | `ai.copilot` | Analyst rating of an AI answer — part of continuous AI evaluation |
+| GET | `/api/governance/ai-usage` | `governance.read` | AI governance report: calls, tokens, estimated cost, fallbacks, grounding flags and analyst feedback |
 | GET | `/api/admin/backup` | `governance.manage` | Download a consistent SQLite snapshot (all tenants) — platform staff only |
 | POST | `/api/soc/rules/draft` | `rules.edit` |  |
 | POST | `/api/soc/rules/test` | `rules.edit` |  |
+| GET | `/api/soc/rules` | `rules.read` |  |
 | POST | `/api/soc/rules` | `rules.edit` | Save a custom rule. A new rule is stored disabled as version 1; editing an existing rule stores a DRAFT — |
 | PATCH | `/api/soc/rules/{rule_id}` | `rules.publish` | Publish (enable — applying a pending draft as a new version) or disable a custom rule |
 | POST | `/api/soc/rules/{rule_id}/rollback` | `rules.rollback` | Restore an earlier version of a custom rule (recorded as a new version). Takes effect immediately if enabled |
 | GET | `/api/soc/agents/risk` | `agents.read` |  |
 | GET | `/api/soc/incidents/{inc_id}/response` | `cases.read` |  |
+| POST | `/api/soc/incidents/{inc_id}/response/{step_id}` | `cases.update` |  |
 | PATCH | `/api/soc/incidents/{inc_id}` | `cases.read` | Analyst workflow: status, assignee and notes. Every change is written to the audit log |
 | GET | `/api/soc/cases` | `cases.read` |  |
 | POST | `/api/soc/cases` | `cases.create` |  |
 | GET | `/api/soc/case-fields` | `cases.read` |  |
+| PUT | `/api/soc/case-fields` | `governance.manage` |  |
 | GET | `/api/soc/assets/criticality` | `assets.read` |  |
+| PUT | `/api/soc/assets/criticality` | `assets.manage` |  |
 | GET | `/api/soc/cases/{inc_id}/events` | `events.read` | Raw telemetry for the case's hosts and users, from 1 h before first seen to 1 h after last seen |
 | GET | `/api/soc/rules/catalog` | `rules.read` |  |
 | PUT | `/api/soc/rules/{rule_id}/enabled` | `rules.publish` |  |
 | POST | `/api/soc/query` | `query.run` |  |
 | GET | `/api/soc/queries` | `query.run` |  |
+| POST | `/api/soc/queries` | `query.run` |  |
 | DELETE | `/api/soc/queries/{qid}` | `query.run` |  |
 | GET | `/api/soc/notebooks` | `notebooks.read` |  |
 | POST | `/api/soc/notebooks` | `notebooks.write` |  |
 | PUT | `/api/soc/notebooks/{nb_id}` | `notebooks.write` |  |
 | GET | `/api/soc/overview` | `soc.read` | Homepage widgets: pending alerts, opened cases, alert list with occurrences + urgency, events by data source, |
 | GET | `/api/soc/assignees` | `soc.read` |  |
+| GET | `/api/soc/tasks` | `soc.read` |  |
 | POST | `/api/soc/tasks` | `cases.update` |  |
 | PATCH | `/api/soc/tasks/{task_id}` | `cases.update` |  |
 | GET | `/api/soc/notifications` | `soc.read` | What needs the caller's attention: their open tasks (overdue first) and incidents assigned to them, plus |
 | POST | `/api/soc/notifications/read` | `soc.read` |  |
 | GET | `/api/soc/notify-rules` | `soc.read` |  |
+| POST | `/api/soc/notify-rules/test` | `integrations.manage` |  |
 | POST | `/api/soc/notify-rules` | `integrations.manage` |  |
 | PUT | `/api/soc/notify-rules/{rule_id}` | `integrations.manage` |  |
 | DELETE | `/api/soc/notify-rules/{rule_id}` | `integrations.manage` |  |
@@ -1266,9 +1314,13 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | GET | `/api/soc/alerts` | `alerts.read` |  |
 | GET | `/api/soc/incidents` | `cases.read` | Incident list. real_only (default) reads persisted cases from SQLite; otherwise the live in-memory set |
 | GET | `/api/soc/incidents/{inc_id}` | `cases.read` |  |
-| GET | `/api/soc/incidents.csv` | `soc.export` | Response action: revoke the agent's token / suspend it (simulated). With the four-eyes policy (default) this |
+| GET | `/api/soc/incidents/{inc_id}/report` | `soc.export` |  |
+| GET | `/api/soc/incidents.csv` | `soc.export` |  |
+| POST | `/api/soc/agents/{agent_id}/contain` | `respond.execute` | Response action: revoke the agent's token / suspend it (simulated). With the four-eyes policy (default) this |
 | GET | `/api/soc/stream` | `soc.read` | Server-Sent Events. Read with fetch() so the X-API-Key header can be sent |
-| GET | `/soc` | ไม่ต้องยืนยันตัว / token ใดก็ได้ | The user manual (rendered in the browser from /manual.md) |
+| GET | `/` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
+| GET | `/soc` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
+| GET | `/manual` | ไม่ต้องยืนยันตัว / token ใดก็ได้ | The user manual (rendered in the browser from /manual.md) |
 | GET | `/manual.md` | ไม่ต้องยืนยันตัว / token ใดก็ได้ |  |
 <!-- END GENERATED:api -->
 
@@ -1316,4 +1368,8 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | `SOC_RETENTION_DAYS` | `90` | ระยะเก็บข้อมูล SOC (วัน) |  |
 | `SOC_SCALE` | `5` | ตัวคูณขนาดข้อมูลจำลองและความจุ (1–20) |  |
 | `SOC_SIMULATION` | `on` | เปิดเครื่องจำลองข้อมูลใน tenant default |  |
+| `VT_API_KEY` | — | กุญแจ VirusTotal API v3 (ค้นชื่อเสียง hash/URL/domain/IP) | 🔒 ตั้งใน Render Environment เท่านั้น |
+| `VT_CACHE_TTL` | `3600` | เก็บผล VirusTotal ใน cache กี่วินาที (ค่าเริ่ม 3600) |  |
+| `VT_DAILY_QUOTA` | `500` | จำนวนครั้งต่อวันที่เรียก VirusTotal ได้ (บัญชีฟรี 500, นับตามวัน UTC) |  |
+| `VT_RATE_PER_MIN` | `4` | จำนวนครั้งต่อนาทีที่เรียก VirusTotal ได้ (บัญชีฟรี 4) |  |
 <!-- END GENERATED:env -->

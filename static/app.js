@@ -9,7 +9,7 @@ const MODULES = {
 };
 const LABELS = {
   dns: "DNS Records", whois_rdap: "WHOIS / RDAP", subdomains_ct: "Subdomains (CT logs)", http: "HTTP & Web",
-  tls: "TLS Certificate", reverse_dns: "Reverse DNS", rdap: "Network Owner (RDAP)", geolocation: "Geolocation",
+  tls: "TLS Certificate", reverse_dns: "Reverse DNS", rdap: "Network Owner (RDAP)", geolocation: "Geolocation", virustotal: "VirusTotal",
   mail_security: "Mail Security (SPF/DMARC/DKIM)", gravatar: "Gravatar", breaches: "Data Breaches (HIBP)",
   lookalike_domains: "Lookalike Domains", ct_keyword: "Certificates containing keyword", footprint: "Username Footprint",
 };

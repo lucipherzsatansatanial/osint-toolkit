@@ -2,6 +2,7 @@
 import dns.reversename
 
 from app.config import settings
+from app import vt
 from app.modules.common import dns_query, http_client, run_checks
 from app.validators import ValidationError, is_public_ip
 
@@ -45,4 +46,5 @@ async def scan(ip: str) -> dict:
         "reverse_dns": lambda: reverse_dns(ip),
         "rdap": lambda: rdap_ip(ip),
         "geolocation": lambda: geolocation(ip),
+        "virustotal": lambda: vt.osint_check(ip),
     })

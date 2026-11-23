@@ -190,3 +190,14 @@ def test_manual_is_up_to_date_and_covers_every_menu_and_permission():
     assert not missing, f"menus without a manual section: {missing}"
     for p in rbac.PERMISSIONS:
         assert f"`{p}`" in manual
+
+
+def test_manual_api_appendix_lists_every_route():
+    """The generated API appendix must not skip endpoints declared back to back."""
+    import pathlib
+    import re
+    src = pathlib.Path("app/main.py").read_text(encoding="utf-8")
+    routes = {(m.upper(), p) for m, p in re.findall(r'^@app\.(get|post|put|patch|delete)\("([^"]+)"', src, re.M)}
+    manual = pathlib.Path("docs/USER_MANUAL.md").read_text(encoding="utf-8")
+    listed = set(re.findall(r"^\| (GET|POST|PUT|PATCH|DELETE) \| `([^`]+)`", manual, re.M))
+    assert routes <= listed, sorted(routes - listed)

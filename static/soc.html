@@ -534,9 +534,11 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
       <select id="ciSrc" aria-label="แหล่ง"><option value="">ทุกแหล่ง</option></select>
       <select id="ciConf" aria-label="ความเชื่อมั่น"><option value="0">ความเชื่อมั่นทั้งหมด</option><option value="50">≥ 50</option><option value="80">≥ 80</option></select>
       <button id="ciGo">ค้นหา</button>
+      <button id="vtGo" class="ghost" data-perm="threatintel.enrich" title="ค้นชื่อเสียงของค่าในช่องค้นหา (สูงสุด 10 ค่า) จาก VirusTotal API v3">🛡 ตรวจกับ VirusTotal</button>
       <span id="ciMeta" class="muted small"></span>
     </div>
     <p id="ciMissing" class="small muted"></p>
+    <div id="vtOut" class="vt-out" hidden></div>
     <div class="tbl-wrap tall"><table class="tbl" id="ciTbl"><thead><tr><th>TLP</th><th>ชนิด</th><th>Indicator</th><th>Conf.</th><th>แหล่ง</th><th>Threat / รายละเอียด</th>
       <th>พบครั้งแรก</th><th>เห็นใน tenant (7 วัน)</th></tr></thead><tbody></tbody></table></div>
     <div class="pager"><button id="ciPrev" class="ghost sm">‹ ก่อนหน้า</button><span id="ciPage" class="muted"></span><button id="ciNext" class="ghost sm">ถัดไป ›</button></div>

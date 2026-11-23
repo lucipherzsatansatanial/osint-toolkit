@@ -47,6 +47,7 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "alerts.close": ("จัดการ Alert", "ปิด alert พร้อมเหตุผล"),
     "threatintel.read": ("Threat Intelligence / OSINT", "ค้น Intelligence, IOC collections, feeds ที่ส่งออก"),
     "threatintel.curate": ("Threat Intelligence / OSINT", "เพิ่ม/แก้/revoke IOC, collection และ feed ส่งออก"),
+    "threatintel.enrich": ("Threat Intelligence / OSINT", "ค้นชื่อเสียง IOC กับบริการภายนอก เช่น VirusTotal (ใช้โควตา API)"),
     "osint.scan": ("Threat Intelligence / OSINT", "สแกน OSINT"),
     "osint.history": ("Threat Intelligence / OSINT", "ดูประวัติการสแกน OSINT"),
     "osint.export": ("Threat Intelligence / OSINT", "ส่งออกประวัติการสแกน OSINT (CSV)"),
@@ -80,7 +81,7 @@ ALL = set(PERMISSIONS)
 READ = {"soc.read", "alerts.read", "events.read", "cases.read", "assets.read", "entities.read", "threatintel.read",
         "rules.read", "agents.read", "notebooks.read"}
 ANALYST = READ | {"query.run", "notebooks.write", "soc.export", "cases.create", "cases.update", "cases.close",
-                  "alerts.acknowledge", "alerts.escalate", "alerts.close", "threatintel.curate", "osint.scan",
+                  "alerts.acknowledge", "alerts.escalate", "alerts.close", "threatintel.curate", "threatintel.enrich", "osint.scan",
                   "osint.history", "rules.edit", "agents.edit", "ai.copilot", "ai.hunt", "ai.enrich"}
 LEAD = ANALYST | {"cases.assign", "alerts.assign", "rules.publish", "rules.rollback", "agents.approve", "agents.deploy",
                   "respond.execute", "respond.approve", "osint.export", "assets.manage", "governance.read",

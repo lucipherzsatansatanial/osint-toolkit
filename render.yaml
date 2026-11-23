@@ -32,3 +32,5 @@ services:
         sync: false
       - key: IPINFO_TOKEN
         sync: false
+      - key: VT_API_KEY
+        sync: false

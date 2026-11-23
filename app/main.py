@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, assistant, catalog, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, assistant, catalog, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app import query as query_mod
 from app.notify import notifier
 from app.telemetry import hub
@@ -228,7 +228,8 @@ def meta():
         "auth_required": bool(settings.api_key) or rbac.has_users(),
         "legal_bases": LEGAL_BASES,
         "personal_data_modules": sorted(PERSONAL_DATA_MODULES),
-        "integrations": {"hibp": bool(settings.hibp_api_key), "ipinfo": bool(settings.ipinfo_token)},
+        "integrations": {"hibp": bool(settings.hibp_api_key), "ipinfo": bool(settings.ipinfo_token),
+                         "virustotal": vt.enabled()},
         "retention_days": audit.RETENTION_DAYS,
     }
 
@@ -826,7 +827,7 @@ async def soc_integrations(who: rbac.Principal = Depends(require("soc.read"))):
     ins = soc_store.intakes(who.tenant)
     fds = soc_store.feeds(who.tenant)
     state = {"notify_channels": notifier.channels(), "ai_enabled": ai.status()["enabled"],
-             "hibp": bool(settings.hibp_api_key), "ipinfo": bool(settings.ipinfo_token),
+             "hibp": bool(settings.hibp_api_key), "ipinfo": bool(settings.ipinfo_token), "virustotal": vt.enabled(),
              "feeds_ok": {n: (threatintel._cache.get(n) or {}).get("ok") for n in ("threatfox", "feodo", "kev", "agentic")},
              "intakes": dict(Counter(i["format"] for i in ins if not i.get("disabled"))),
              "feeds_out": dict(Counter(f["format"] for f in fds if f.get("enabled", True)))}
@@ -1711,11 +1712,65 @@ class EnrichRequest(BaseModel):
 
 @app.post("/api/soc/enrich")
 async def soc_enrich(req: EnrichRequest, who: rbac.Principal = Depends(require("ai.enrich"))):
-    out = await phase3.enrich(req.indicator, _hunt_data(who))
+    vt_res = await vt.lookup(req.indicator) if vt.enabled() and who.can("threatintel.enrich") else None
+    out = await phase3.enrich(req.indicator, _hunt_data(who), vt_res)
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ai_enrich", target=req.indicator[:200],
                  purpose="threat enrichment", legal_basis="own_asset", case_ref=None,
                  result={"matches": len(out["matches"]), "local_verdict": out["local_verdict"],
                          "ai": bool(out.get("ai")), "usage": (out.get("ai") or {}).get("usage")})
+    return out
+
+
+# ---------- VirusTotal API v3 ----------
+class VtLookup(BaseModel):
+    indicators: list[str] = Field(min_length=1, max_length=10)
+
+
+class VtScanUrl(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    confirm_public: bool = False
+
+
+@app.get("/api/soc/vt/status")
+async def soc_vt_status(who: rbac.Principal = Depends(require("threatintel.read"))):
+    return vt.usage()
+
+
+@app.post("/api/soc/vt/lookup")
+async def soc_vt_lookup(req: VtLookup, who: rbac.Principal = Depends(require("threatintel.enrich"))):
+    """Reputation of up to 10 IOCs (hash / URL / domain / IP). GET look-ups only — nothing is uploaded."""
+    values = list(dict.fromkeys(v.strip() for v in req.indicators if v.strip()))[:10]
+    results = await vt.lookup_many(values)
+    idx = _intel_index(who.tenant)
+    seen = _sightings(who, [str(r.get("indicator", "")) for r in results])
+    for r in results:  # local context: already in our CTI feeds / IOC collections? seen in this tenant's logs?
+        key = str(r.get("indicator", "")).lower()
+        hit = idx.get(key)
+        r["in_intel"] = {"source": hit.get("source_name"), "threat": hit.get("threat")} if hit else None
+        r["sightings"] = seen.get(key)
+    spent = sum(1 for r in results if r.get("cached") is False)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.vt_lookup",
+                 target=", ".join(values)[:200], purpose="IOC reputation (VirusTotal)", legal_basis="own_asset",
+                 case_ref=None, result={"n": len(values), "api_calls": spent,
+                                        "verdicts": [r.get("verdict") or r.get("error") for r in results]})
+    return {"results": results, "usage": vt.usage()}
+
+
+@app.post("/api/soc/vt/scan-url")
+async def soc_vt_scan_url(req: VtScanUrl, who: rbac.Principal = Depends(require("threatintel.enrich"))):
+    """Submit a URL for a fresh scan. The URL becomes visible to the VirusTotal community, hence the extra
+    permission and the explicit confirmation."""
+    need(who, "threatintel.curate")
+    if not req.confirm_public:
+        raise HTTPException(422, "ต้องยืนยันว่ายอมให้ URL นี้เปิดเผยต่อชุมชน VirusTotal (confirm_public)")
+    try:
+        out = await vt.submit_url(req.url)
+    except vt.VTError as e:
+        raise HTTPException({"unsupported": 422, "internal": 422, "disabled": 503, "quota": 429, "auth": 502}
+                            .get(e.code, 502), e.message)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.vt_scan_url",
+                 target=req.url[:200], purpose="submit URL to VirusTotal (public)", legal_basis="own_asset",
+                 case_ref=None, result={"analysis_id": out.get("analysis_id")})
     return out
 
 

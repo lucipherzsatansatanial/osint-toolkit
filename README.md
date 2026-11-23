@@ -8,8 +8,8 @@ Web application สำหรับรวบรวมข้อมูลจาก�
 
 | โมดูล | ตรวจอะไร | แหล่งข้อมูล | ต้องใช้ key |
 |---|---|---|---|
-| Domain | DNS (A/AAAA/MX/NS/TXT/SOA/CAA), WHOIS ผ่าน RDAP, subdomains จาก Certificate Transparency, HTTP security headers (เกรด A–F), tech stack, TLS cert | DNS, rdap.org, crt.sh, เว็บเป้าหมาย | ไม่ |
-| IP | Reverse DNS, เจ้าของเครือข่าย/CIDR, Geolocation+ASN | DNS, rdap.org, ipinfo.io | Geo: `IPINFO_TOKEN` |
+| Domain | DNS (A/AAAA/MX/NS/TXT/SOA/CAA), WHOIS ผ่าน RDAP, subdomains จาก Certificate Transparency, HTTP security headers (เกรด A–F), tech stack, TLS cert, ชื่อเสียงจาก VirusTotal | DNS, rdap.org, crt.sh, เว็บเป้าหมาย, VirusTotal | VirusTotal: `VT_API_KEY` |
+| IP | Reverse DNS, เจ้าของเครือข่าย/CIDR, Geolocation+ASN, ชื่อเสียงจาก VirusTotal | DNS, rdap.org, ipinfo.io, VirusTotal | Geo: `IPINFO_TOKEN` · VirusTotal: `VT_API_KEY` |
 | Email* | SPF / DMARC / DKIM (ประเมินความเสี่ยง spoofing), Gravatar, Data breach | DNS, gravatar.com, HIBP | Breach: `HIBP_API_KEY` |
 | Brand | Lookalike/typosquatting domain ที่จดทะเบียนแล้ว (สูงสุด 400 รูปแบบ, มี MX = เสี่ยงสูง), ใบรับรอง SSL ที่มีชื่อแบรนด์ | DNS, crt.sh | ไม่ |
 | Username* | ตรวจ handle บน 14 แพลตฟอร์ม (GitHub, Reddit, Telegram ฯลฯ) | API/หน้าสาธารณะ | ไม่ |
@@ -263,7 +263,7 @@ poll ได้ ส่วน POST/PATCH และการสแกน OSINT ย�
 
 ### ผู้ใช้และสิทธิ์ (RBAC) — สิทธิ์ตามการกระทำ
 
-สิทธิ์ตั้งชื่อตามการกระทำ (47 สิทธิ์ ใน 11 กลุ่ม — รายการเต็มและคำอธิบายภาษาไทยอยู่ที่ `GET /api/roles` และตารางในหน้า
+สิทธิ์ตั้งชื่อตามการกระทำ (48 สิทธิ์ ใน 11 กลุ่ม — รายการเต็มและคำอธิบายภาษาไทยอยู่ที่ `GET /api/roles` และตารางในหน้า
 "ผู้ใช้และสิทธิ์") ทุก endpoint ผูกกับสิทธิ์เดียว และมีเทสต์ตรวจว่าไม่มี endpoint ใดไม่มีการตรวจสิทธิ์
 
 | กลุ่ม | สิทธิ์ |
@@ -361,7 +361,7 @@ poll ได้ ส่วน POST/PATCH และการสแกน OSINT ย�
 
 ## คู่มือการใช้งาน
 
-- คู่มือฉบับเต็ม (ทุกเมนู ทุกฟีเจอร์ ทุกฟังก์ชัน + อภิธานศัพท์ 165 คำ): [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)
+- คู่มือฉบับเต็ม (ทุกเมนู ทุกฟีเจอร์ ทุกฟังก์ชัน + อภิธานศัพท์ 167 คำ): [`docs/USER_MANUAL.md`](docs/USER_MANUAL.md)
   และในระบบที่ `/manual` (มีสารบัญ ค้นหา และพิมพ์เป็น PDF ได้)
 - ภาคผนวก (สิทธิ์ rule API ตัวแปรแวดล้อม) สร้างจากโค้ดด้วย `python tools/gen_manual.py`; เทสต์จะล้มถ้าคู่มือไม่ตรงกับโค้ด
   หรือมีเมนูที่ไม่มีในคู่มือ

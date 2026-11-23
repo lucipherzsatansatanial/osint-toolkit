@@ -5,6 +5,7 @@ import socket
 import ssl
 from datetime import datetime, timezone
 
+from app import vt
 from app.modules.common import dns_query, http_client, run_checks, safe_get
 from app.validators import assert_public_host
 
@@ -174,4 +175,5 @@ async def scan(domain: str) -> dict:
         "subdomains_ct": lambda: ct_subdomains(domain),
         "http": lambda: http_probe(domain),
         "tls": lambda: tls_cert(domain),
+        "virustotal": lambda: vt.osint_check(domain),
     })

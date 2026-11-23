@@ -287,8 +287,10 @@ ENRICH_SCHEMA = {
 }
 
 
-async def enrich(ind: str, data: dict) -> dict:
+async def enrich(ind: str, data: dict, virustotal: dict | None = None) -> dict:
     local = local_enrichment(ind, data)
+    if virustotal is not None:
+        local["virustotal"] = virustotal
     if not ai.enabled():
         return {**local, "ai": None, "note": "ยังไม่ได้ตั้ง ANTHROPIC_API_KEY — แสดงเฉพาะผลค้นจากแหล่งข้อมูลในระบบ"}
     ps = ai.Pseudonymizer(ai.redact_enabled())
@@ -300,7 +302,8 @@ async def enrich(ind: str, data: dict) -> dict:
             output_config={"effort": ai.EFFORT, "format": {"type": "json_schema", "schema": ENRICH_SCHEMA}},
             messages=[{"role": "user", "content":
                        "Enrich this indicator for the SOC. Use ONLY the evidence in <enrichment_data> (CTI feed "
-                       "matches with their sources, and local sightings). If there are no matches, the verdict is "
+                       "matches with their sources, local sightings, and the VirusTotal summary if present — cite its "
+                       "engine counts as given, do not invent engine names). If there are no matches, the verdict is "
                        "'unknown' unless local sightings justify 'suspicious'. Do not add threat actors, malware "
                        "families or facts that are not in the evidence. Explain in Thai what the indicator is, why it "
                        "matters here, what to do, and how to hunt for related activity."
