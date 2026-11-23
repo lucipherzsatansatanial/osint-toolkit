@@ -665,3 +665,5 @@ tr.revoked td { opacity: .5; text-decoration: line-through; } tr.revoked td:last
 @media (max-width: 860px) { .nav-g { display: contents; } .nav-g > summary { display: none; } }
 .seg a { font-size: 13px; font-weight: 600; padding: 3px 10px; color: var(--muted); text-decoration: none; }
 .seg a.on { background: var(--accent-soft); color: var(--accent); } .seg a + a { border-left: 1px solid var(--line); }
+.demo-tag { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; background: var(--chip); color: var(--muted); border: 1px dashed var(--line); white-space: nowrap; }
+#tasksTbl tr.demo .a-title { color: var(--muted); }

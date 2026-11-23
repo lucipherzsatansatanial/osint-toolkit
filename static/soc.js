@@ -622,7 +622,8 @@ function renderResponse(p) {
   const left = p.pdpa_deadline ? p.pdpa_deadline - Date.now() / 1000 : null;
   const fmt = (s) => s <= 0 ? "เลยกำหนดแล้ว" : `เหลือ ${Math.floor(s / 3600)} ชม. ${Math.floor((s % 3600) / 60)} นาที`;
   const canW = can("cases.update");
-  $("#respPlan").innerHTML = `<h3><span>แผนตอบสนอง (Response plan)</span><small class="muted">${Math.round(p.progress * 100)}% เสร็จ</small></h3>
+  $("#respPlan").innerHTML = `<h3><span>แผนตอบสนอง (Response plan)</span><small class="muted">${Math.round(p.progress * 100)}% เสร็จ</small>
+      ${canW && p.progress < 1 ? '<button type="button" class="ghost sm" id="planTasks" title="สร้างงานใน Tasks จากขั้นที่ยังไม่เสร็จ (ข้ามขั้นที่มีงานอยู่แล้ว)">สร้างงานจากแผนนี้</button>' : ""}</h3>
     <div class="bar"><i style="width:${p.progress * 100}%"></i></div>
     ${left !== null ? `<div class="pdpa">⏱ PDPA ม.37(4): หากมีข้อมูลส่วนบุคคลรั่วไหลและมีความเสี่ยงต่อสิทธิ ต้องแจ้ง สคส. ภายใน 72 ชม. — ${fmt(left)}
       (นับจากเวลาที่ตรวจพบครั้งแรก — ควรยืนยันเวลาที่องค์กร "ทราบเหตุ" กับ DPO)</div>` : ""}
@@ -630,6 +631,18 @@ function renderResponse(p) {
       `<label class="${x.done ? "done" : ""}"><input type="checkbox" data-step="${esc(x.id)}" ${x.done ? "checked" : ""} ${canW ? "" : "disabled"}>
        <span>${esc(x.action)}<small>${esc(x.owner)} · ${esc(x.why)}${x.done ? ` · ✓ ${esc(x.done_by || "")} ${x.done_at ? new Date(x.done_at * 1000).toLocaleString("th-TH", { hour12: false }) : ""}` : ""}</small></span></label>`).join("")}` : ""; }).join("")}`;
 }
+$("#respPlan").addEventListener("click", async (ev) => {
+  if (ev.target.id !== "planTasks" || !state.selected) return;
+  const who = can("cases.assign") ? prompt("มอบหมายงานทั้งหมดให้ (username ใน tenant นี้ — เว้นว่าง = ยังไม่มอบหมาย)", "") : "";
+  if (who === null) return;
+  ev.target.disabled = true;
+  try {
+    const r = await api(`/api/soc/incidents/${state.selected}/plan-tasks`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assignee: (who || "").trim() || null }) });
+    ev.target.textContent = r.created.length ? `สร้างแล้ว ${r.created.length} งาน` : "ทุกขั้นมีงานแล้ว";
+    loadTasks(); if (typeof loadCaseTasks === "function") loadCaseTasks(state.selected);
+  } catch (e) { ev.target.disabled = false; alert("ไม่สำเร็จ: " + e.message); }
+});
 $("#respPlan").addEventListener("change", async (ev) => {
   const cb = ev.target.closest("input[data-step]"); if (!cb || !state.selected) return;
   try { renderResponse(await api(`/api/soc/incidents/${state.selected}/response/${encodeURIComponent(cb.dataset.step)}`,
@@ -1075,10 +1088,11 @@ async function loadTasks() {
     const now = Date.now() / 1000, edit = can("cases.update");
     $("#tasksTbl tbody").innerHTML = r.tasks.map((t) => {
       const overdue = t.due && t.due < now && !["completed", "cancelled"].includes(t.status);
-      return `<tr data-task="${t.id}" class="clk"><td>${t.id}</td>
+      const demo = !!t.simulated;
+      return `<tr data-task="${t.id}" class="clk${demo ? " demo" : ""}"><td>${demo ? '<span class="demo-tag" title="งานของทีมจำลองใน tenant demo — แก้ไขไม่ได้">จำลอง</span>' : t.id}</td>
         <td class="a-title">${esc(t.name)}${t.description ? `<div class="sub">${esc(t.description.slice(0, 90))}</div>` : ""}</td>
         <td>${t.assignee ? `<span class="who">${esc(t.assignee[0].toUpperCase())}</span>${esc(t.assignee)}` : '<span class="muted">—</span>'}</td>
-        <td>${edit ? `<select class="tstat ${t.status}" data-id="${t.id}" aria-label="สถานะงาน ${t.id}">${Object.entries(TASK_TH).map(([k, v]) => `<option value="${k}" ${k === t.status ? "selected" : ""}>${v}</option>`).join("")}</select>`
+        <td>${edit && !demo ? `<select class="tstat ${t.status}" data-id="${t.id}" aria-label="สถานะงาน ${t.id}">${Object.entries(TASK_TH).map(([k, v]) => `<option value="${k}" ${k === t.status ? "selected" : ""}>${v}</option>`).join("")}</select>`
           : `<span class="tstat ${t.status}">${TASK_TH[t.status]}</span>`}</td>
         <td class="${overdue ? "overdue" : ""}">${t.due ? esc(t2(t.due)) + (overdue ? " · เลยกำหนด" : "") : '<span class="muted">—</span>'}</td>
         <td>${t.incident_id ? `<a href="#inc-${t.incident_id}">INC-${t.incident_id}</a>` : ""}</td></tr>`;
@@ -1104,7 +1118,12 @@ function openTask(t, preset = {}) {
   $("#taskHist").innerHTML = (t?.history || []).concat((t?.notes || []).map((n) => ({ ...n, change: "📝 " + n.text })))
     .sort((a, b) => a.ts - b.ts).map((h) => `<li><span class="muted">${esc(t2(h.ts))}</span> <b>${esc(h.analyst)}</b> ${esc(h.change)}</li>`).join("");
   $("#taskErr").textContent = "";
-  const ro = !can("cases.update");
+  const demo = !!t?.simulated, ro = !can("cases.update") || demo;
+  if (demo) {
+    if (t.assignee) { f.assignee.insertAdjacentHTML("beforeend", `<option>${esc(t.assignee)}</option>`); f.assignee.value = t.assignee; }
+    $("#taskDlgTitle").textContent = "งานของทีมจำลอง (อ่านอย่างเดียว)";
+    $("#taskErr").textContent = "งานนี้สร้างโดยเครื่องจำลองใน tenant demo เพื่อสาธิตการทำงาน — สร้างงานจริงด้วยปุ่ม + สร้างงาน หรือ “สร้างงานจากแผนนี้” ในหน้า case";
+  }
   f.querySelectorAll("input,textarea,select").forEach((el) => { el.disabled = ro; });
   if (t) f.incident_id.disabled = true;
   $("#taskSave").hidden = ro;
@@ -1180,6 +1199,7 @@ function loadWorkspace() { loadOverview(); loadTasks(); loadBell(); loadAssignee
   loadIntel(); loadFeeds(); loadIntegrations(); loadCollections(); loadGraphs(); loadWsSettings(); loadApprovals(); }
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadOverview(); }, 15000);
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadBell(); }, 60000);
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden) loadTasks(); }, 30000);
 
 $("#inboxRead").onclick = async (ev) => {
   ev.stopPropagation();
@@ -1534,7 +1554,7 @@ function renderCase(inc) {
     <td class="mono">${esc(a.host || "-")}</td><td>${esc(a.user || "-")}</td><td>${esc(a.rule || "-")}</td><td class="c-cti">${esc(a.cti_match || "")}</td></tr>`).join("")
     || '<tr><td colspan="6" class="muted">case นี้ยังไม่มี alert (สร้างด้วยมือ)</td></tr>';
   const tasks = TS.tasks.filter((t) => t.incident_id === inc.id);
-  $("#caseTasks tbody").innerHTML = tasks.map((t) => `<tr class="clk" data-task="${t.id}"><td>${t.id}</td><td class="a-title">${esc(t.name)}</td>
+  $("#caseTasks tbody").innerHTML = tasks.map((t) => `<tr class="clk" data-task="${t.id}"><td>${t.simulated ? '<span class="demo-tag">จำลอง</span>' : t.id}</td><td class="a-title">${esc(t.name)}</td>
     <td>${esc(t.assignee || "—")}</td><td><span class="tstat ${t.status}">${TASK_TH[t.status]}</span></td><td>${t.due ? esc(t2(t.due)) : "—"}</td></tr>`).join("")
     || '<tr><td colspan="5" class="muted">ยังไม่มีงานใน case นี้</td></tr>';
 }

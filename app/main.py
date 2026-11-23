@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, assistant, catalog, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, assistant, catalog, demo_tasks, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app import query as query_mod
 from app.notify import notifier
 from app.telemetry import hub
@@ -2087,6 +2087,39 @@ class StepUpdate(BaseModel):
     done: bool
 
 
+class PlanTasks(BaseModel):
+    assignee: str | None = Field(default=None, max_length=80)
+    steps: list[str] | None = Field(default=None, max_length=50)  # None = every open step
+
+
+PHASE_DUE_H = {"contain": 4, "eradicate": 24, "recover": 72, "notify": 72, "lessons": 14 * 24}
+
+
+@app.post("/api/soc/incidents/{inc_id}/plan-tasks")
+async def soc_plan_tasks(inc_id: int, req: PlanTasks, who: rbac.Principal = Depends(require("cases.update"))):
+    """Turn the open steps of the case's response plan into Tasks (skips steps already done or already a task).
+    Due dates follow the phase: contain 4 h, eradicate 1 d, recover / notify 3 d (PDPA 72 h), lessons 14 d."""
+    if req.assignee and req.assignee != who.name:
+        need(who, "cases.assign")
+    inc = _find_incident(inc_id, who)
+    plan = phase4.response_plan(inc, inc.get("response"))
+    have = {(t.get("incident_id"), t["name"]) for t in soc_store.list_tasks(who.tenant)}
+    assignee = _check_assignee(who, req.assignee)
+    now, made = time.time(), []
+    for st in plan["steps"]:
+        if st["done"] or (req.steps is not None and st["id"] not in req.steps) or (inc_id, st["action"][:200]) in have:
+            continue
+        made.append(soc_store.save_task({
+            "id": None, "name": st["action"][:200], "assignee": assignee, "status": "pending",
+            "description": f"{st['phase']} · ผู้รับผิดชอบตามแผน: {st['owner']} · จากแผนตอบสนองของ INC-{inc_id} (ขั้น {st['id']})",
+            "due": now + PHASE_DUE_H.get(st["phase"], 24) * 3600, "incident_id": inc_id, "plan_step": st["id"],
+            "created_by": who.name, "created_at": now, "updated_at": now, "history": [], "notes": []}, who.tenant))
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.task", target=f"incident:{inc_id}",
+                 purpose=f"create {len(made)} tasks from response plan", legal_basis="own_asset", case_ref=f"INC-{inc_id}",
+                 result={"created": [t["id"] for t in made], "assignee": assignee})
+    return {"created": made, "skipped": len(plan["steps"]) - len(made)}
+
+
 @app.post("/api/soc/incidents/{inc_id}/response/{step_id}")
 async def soc_response_step(inc_id: int, step_id: str, req: StepUpdate,
                             who: rbac.Principal = Depends(require("cases.update"))):
@@ -2499,7 +2532,7 @@ async def soc_overview(who: rbac.Principal = Depends(require("soc.read"))):
     now = time.time()
     events = list(eng.events)
     alerts = workspace.alert_summary(events, eng.incidents, states=_alert_states(who.tenant))
-    tasks = soc_store.list_tasks(who.tenant)
+    tasks = _all_tasks(who)
     hist = _tenant_events(who, now - 2 * 86400, now)
     cur_a = sum(1 for e in hist if e["ts"] >= now - 86400 and e.get("severity") not in ("info", "low"))
     prev_a = sum(1 for e in hist if e["ts"] < now - 86400 and e.get("severity") not in ("info", "low"))
@@ -2564,10 +2597,16 @@ async def soc_assignees(who: rbac.Principal = Depends(require("soc.read"))):
     return {"users": sorted(names), "me": who.name if who.named else None}
 
 
+def _all_tasks(who: rbac.Principal) -> list[dict]:
+    """Stored tasks plus the demo team's tasks in a simulated tenant (marked simulated, read-only)."""
+    return soc_store.list_tasks(who.tenant) + demo_tasks.sync(E(who), time.time())
+
+
 @app.get("/api/soc/tasks")
 async def soc_tasks(status: str | None = None, q: str | None = None, assignee: str | None = None,
                     who: rbac.Principal = Depends(require("soc.read"))):
-    items = soc_store.list_tasks(who.tenant)
+    every = _all_tasks(who)
+    items = list(every)
     if status:
         items = [t for t in items if t["status"] in status.split(",")]
     if assignee:
@@ -2575,7 +2614,7 @@ async def soc_tasks(status: str | None = None, q: str | None = None, assignee: s
     if q:
         ql = q.lower()
         items = [t for t in items if ql in t["name"].lower() or ql in (t.get("description") or "").lower()]
-    return {"tasks": items, "by_status": workspace.by_status(soc_store.list_tasks(who.tenant)),
+    return {"tasks": items, "by_status": workspace.by_status(every),
             "statuses": [{"id": s, "th": workspace.TASK_TH[s]} for s in workspace.TASK_STATUSES]}
 
 
@@ -2599,6 +2638,8 @@ async def soc_task_create(req: TaskIn, who: rbac.Principal = Depends(require("ca
 
 @app.patch("/api/soc/tasks/{task_id}")
 async def soc_task_update(task_id: int, req: TaskPatch, who: rbac.Principal = Depends(require("cases.update"))):
+    if task_id < 0:
+        raise HTTPException(409, "งานจำลอง (demo) แก้ไขไม่ได้ — สร้างงานจริงด้วย + สร้างงาน")
     t = soc_store.task(task_id, who.tenant)
     if t is None:
         raise HTTPException(404, "task not found")

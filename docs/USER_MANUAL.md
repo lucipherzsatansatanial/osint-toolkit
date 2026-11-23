@@ -443,6 +443,8 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 - คลิกชื่องานเพื่อแก้ไข เพิ่ม **บันทึกความคืบหน้า** และดูประวัติการเปลี่ยนแปลง
 - ตัวกรอง: ค้นหา, สถานะ, **เฉพาะของฉัน**
 - รับงานที่ยังไม่มีเจ้าของมาเป็นของตัวเองได้ด้วย `cases.update`
+- **สร้างงานจากแผนตอบสนอง** — ในหน้า case ส่วน "แผนตอบสนอง" กด **สร้างงานจากแผนนี้** ระบบสร้างงานจากทุกขั้นที่ยังไม่เสร็จ (ข้ามขั้นที่มีงานชื่อเดียวกันอยู่แล้ว) กำหนดส่งตามขั้น: กักกัน 4 ชม. · กำจัด 1 วัน · กู้คืน/แจ้ง 3 วัน (ตาม PDPA 72 ชม.) · บทเรียน 14 วัน มอบหมายให้ผู้อื่นพร้อมกันได้ถ้ามี `cases.assign`
+- **งานจำลอง (ป้าย "จำลอง")** — ใน tenant `default` ที่มีข้อมูลจำลอง ระบบมี "ทีม SOC จำลอง" (บัญชีลงท้าย `.demo`) เปิดงานให้ incident จำลองระดับ high/critical จากแผนตอบสนองของ incident นั้น (สูงสุด 3 งานต่อ incident) และขยับสถานะเองตามเวลา: รอดำเนินการ → กำลังทำ → เสร็จแล้ว บางงาน "รอข้อมูล" และงานที่ยังไม่เริ่มจะถูกยกเลิกเมื่อ incident ปิด งานจำลอง **เก็บในหน่วยความจำเท่านั้น ไม่บันทึกลงฐานข้อมูล แก้ไขไม่ได้** และไม่มีใน tenant ของลูกค้า
 
 ### 4.19 EDR · Endpoints
 
@@ -1325,6 +1327,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | POST | `/api/soc/rules/{rule_id}/rollback` | `rules.rollback` | Restore an earlier version of a custom rule (recorded as a new version). Takes effect immediately if enabled |
 | GET | `/api/soc/agents/risk` | `agents.read` |  |
 | GET | `/api/soc/incidents/{inc_id}/response` | `cases.read` |  |
+| POST | `/api/soc/incidents/{inc_id}/plan-tasks` | `cases.update` | Turn the open steps of the case's response plan into Tasks (skips steps already done or already a task) |
 | POST | `/api/soc/incidents/{inc_id}/response/{step_id}` | `cases.update` |  |
 | PATCH | `/api/soc/incidents/{inc_id}` | `cases.read` | Analyst workflow: status, assignee and notes. Every change is written to the audit log |
 | GET | `/api/soc/cases` | `cases.read` |  |
@@ -1344,7 +1347,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | POST | `/api/soc/notebooks` | `notebooks.write` |  |
 | PUT | `/api/soc/notebooks/{nb_id}` | `notebooks.write` |  |
 | GET | `/api/soc/overview` | `soc.read` | Homepage widgets: pending alerts, opened cases, alert list with occurrences + urgency, events by data source, |
-| GET | `/api/soc/assignees` | `soc.read` |  |
+| GET | `/api/soc/assignees` | `soc.read` | Stored tasks plus the demo team's tasks in a simulated tenant (marked simulated, read-only) |
 | GET | `/api/soc/tasks` | `soc.read` |  |
 | POST | `/api/soc/tasks` | `cases.update` |  |
 | PATCH | `/api/soc/tasks/{task_id}` | `cases.update` |  |
