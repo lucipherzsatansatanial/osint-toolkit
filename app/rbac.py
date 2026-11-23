@@ -62,6 +62,7 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "ai.copilot": ("AI", "ใช้ AI SOC Copilot / SOC Assistant / สรุป attack chain"),
     "ai.hunt": ("AI", "ค้นด้วยภาษาธรรมชาติ (AI hunting)"),
     "ai.enrich": ("AI", "enrich indicator ด้วย AI"),
+    "offensive.read": ("AI", "ดูหน้า Offensive AI: framework โจมตีด้วย AI, detection และ hunting query (ข้อมูลเทคนิคผู้โจมตี)"),
     "respond.execute": ("การตอบสนอง", "ขอปฏิบัติการตอบสนอง เช่น กักกัน/ปล่อย AI agent"),
     "respond.approve": ("การตอบสนอง", "อนุมัติการตอบสนองที่ผู้อื่นขอ"),
     "assets.manage": ("ระบบและการกำกับดูแล", "เพิ่ม asset, แก้ tag และระดับความสำคัญ, revoke asset"),
@@ -82,7 +83,8 @@ READ = {"soc.read", "alerts.read", "events.read", "cases.read", "assets.read", "
         "rules.read", "agents.read", "notebooks.read"}
 ANALYST = READ | {"query.run", "notebooks.write", "soc.export", "cases.create", "cases.update", "cases.close",
                   "alerts.acknowledge", "alerts.escalate", "alerts.close", "threatintel.curate", "threatintel.enrich", "osint.scan",
-                  "osint.history", "rules.edit", "agents.edit", "ai.copilot", "ai.hunt", "ai.enrich"}
+                  "osint.history", "rules.edit", "agents.edit", "ai.copilot", "ai.hunt", "ai.enrich",
+                  "offensive.read"}
 LEAD = ANALYST | {"cases.assign", "alerts.assign", "rules.publish", "rules.rollback", "agents.approve", "agents.deploy",
                   "respond.execute", "respond.approve", "osint.export", "assets.manage", "governance.read",
                   "audit.read", "users.read"}

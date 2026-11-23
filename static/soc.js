@@ -967,6 +967,17 @@ $("#themeBtn").onclick = () => {
   applyTheme(t);
 };
 $("#themeBtn span").textContent = document.documentElement.dataset.theme === "dark" ? "Light Mode" : "Dark Mode";
+(() => {  // sidebar groups: remember which are open; open the group of the active item; always open on narrow screens
+  let saved = {}; try { saved = JSON.parse(localStorage.getItem("navGroups") || "{}"); } catch {}
+  const narrow = matchMedia("(max-width: 860px)");
+  document.querySelectorAll("#nav .nav-g").forEach((g) => {
+    if (saved[g.dataset.g] === false && !narrow.matches) g.open = false;
+    g.addEventListener("toggle", () => { if (narrow.matches) return; saved[g.dataset.g] = g.open; try { localStorage.setItem("navGroups", JSON.stringify(saved)); } catch {} });
+  });
+  narrow.addEventListener("change", () => { if (narrow.matches) document.querySelectorAll("#nav .nav-g").forEach((g) => { g.open = true; }); });
+  if (narrow.matches) document.querySelectorAll("#nav .nav-g").forEach((g) => { g.open = true; });
+  document.getElementById("nav").addEventListener("click", (ev) => { const a = ev.target.closest("a"); const g = a && a.closest(".nav-g"); if (g) g.open = true; });
+})();
 (() => {  // highlight the sidebar item of the section in view
   const links = [...document.querySelectorAll("#nav a[href^='#']")];
   const targets = links.map((a) => document.querySelector(a.getAttribute("href"))).filter(Boolean);

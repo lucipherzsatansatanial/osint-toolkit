@@ -201,3 +201,12 @@ def test_manual_api_appendix_lists_every_route():
     manual = pathlib.Path("docs/USER_MANUAL.md").read_text(encoding="utf-8")
     listed = set(re.findall(r"^\| (GET|POST|PUT|PATCH|DELETE) \| `([^`]+)`", manual, re.M))
     assert routes <= listed, sorted(routes - listed)
+
+
+def test_offensive_ai_page_needs_its_own_permission(client):
+    H = {"X-API-Key": "secret"}
+    tok = {r: client.post("/api/users", headers=H, json={"username": f"u{r}", "role": r}).json()["token"]
+           for r in ("viewer", "analyst")}
+    assert client.get("/api/soc/offensive-ai", headers={"X-API-Key": tok["viewer"]}).status_code == 403
+    assert client.get("/api/soc/offensive-ai", headers={"X-API-Key": tok["analyst"]}).status_code == 200
+    assert client.get("/api/soc/alerts", headers={"X-API-Key": tok["viewer"]}).status_code == 200  # OAI alerts stay visible

@@ -386,7 +386,7 @@ async def soc_cti(refresh: bool = False, who: rbac.Principal = Depends(require("
 
 
 @app.get("/api/soc/offensive-ai")
-async def soc_offensive_ai(who: rbac.Principal = Depends(require("alerts.read"))):
+async def soc_offensive_ai(who: rbac.Principal = Depends(require("offensive.read"))):
     """Offensive AI-agent framework coverage, rule hit counts and the hunting query library."""
     return {**E(who).offai.summary(), "queries": hunting_pack()}
 

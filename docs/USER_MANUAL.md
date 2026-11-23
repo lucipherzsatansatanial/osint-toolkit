@@ -62,6 +62,27 @@
 - เมนูซ้ายเป็นลิงก์ไปยังแต่ละส่วนในหน้าเดียว ตัวเลขในวงกลมข้างเมนูคือจำนวนรายการ (เช่น จำนวน case, งานที่ยังไม่เสร็จ)
 - เมนูที่คุณไม่มีสิทธิ์จะถูกซ่อน หรือปุ่มจะถูกปิดใช้งาน
 
+**ลำดับเมนูตามงานประจำของ SOC Manager** (ดูภาพรวม → จัดการเหตุ → มอบหมายงาน → สืบสวน → ปรับปรุงการตรวจจับ)
+
+| ลำดับ | กลุ่ม / เมนู | ใช้เมื่อ |
+|---|---|---|
+| 1 | **ภาพรวม** | เริ่มกะ ดูสถานการณ์และสิ่งที่ต้องทำก่อน |
+| 2 | **Incidents (XDR)** | ดู **เหตุด้านความปลอดภัย** ที่ระบบเชื่อมโยงจากหลาย alert (มุมมองเชิงเทคนิค: โดเมน ความรุนแรง เครื่อง) |
+| 3 | **Alerts** | คัดกรอง alert ทีละกลุ่ม: รับทราบ / มอบหมาย / ยกระดับ / ปิด |
+| 4 | **Cases** | **แฟ้มงาน** สืบสวนและติดตามการแก้ไข: ผู้รับผิดชอบ, priority, verdict, งาน, notebook |
+| 5 | **Tasks** | มอบหมายและติดตามงานของทีม |
+| 6 | **รออนุมัติ** | อนุมัติคำขอตอบสนอง / สิทธิ์ AI agent (four-eyes) |
+| 7 | กลุ่ม **เหตุการณ์** | Alert stream (สด) และ Log ดิบ (Events) — สลับกันได้จากปุ่มบนหัวการ์ด |
+| 8 | กลุ่ม **การสืบสวน** | Query builder, Graph explorations, Notebooks, Attack Chains |
+| 9 | กลุ่ม **Threat Intelligence** | Intelligence, IOC Collections, Feeds (out), Threat Landscape, Threat Map, CTI feeds สาธารณะ |
+| 10 | กลุ่ม **สินทรัพย์และแหล่งข้อมูล** | Assets, Entities, EDR · Endpoints, Integrations, Intakes |
+| 11 | กลุ่ม **กฎและ AI** | Rules catalog, AI Rule Assistant, AI Hunting & Enrichment, Agentic AI |
+| 12 | **Offensive AI** | ท้ายเมนู แสดงเฉพาะผู้มีสิทธิ์ `offensive.read` |
+
+- กลุ่ม 7–11 พับ/กางได้ด้วยการคลิกชื่อกลุ่ม ระบบจำสถานะไว้ในเบราว์เซอร์ และกางให้อัตโนมัติเมื่อคลิกเมนูในกลุ่ม (บนจอแคบแสดงทุกเมนูเป็นแถวเลื่อนได้)
+- **Incident กับ Case คือเหตุการณ์เดียวกันในสองมุมมอง** — ทุก incident มี case ของตัวเองโดยอัตโนมัติ (และสร้าง case เองได้โดยไม่มี incident) หน้า Incidents ใช้ดูภาพเชิงเทคนิค ส่วนหน้า Cases ใช้บริหารงาน
+- หัวข้อในบทที่ 4 ของคู่มือยังเรียงตามเลขเดิม ใช้ตารางนี้เพื่อหาเมนู
+
 ---
 
 ## 2. แนวคิดหลักของระบบ
@@ -459,7 +480,7 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 
 ### 4.23 Offensive AI
 
-**วัตถุประสงค์:** ตรวจจับเครื่องมือโจมตีที่ขับเคลื่อนด้วย AI agent เช่น ARTEX, AntiFox, Cairn, PentAGI, HexStrike, CyberStrikeAI, Strix, Hermes Agent, Agent Zero (สิทธิ์ `alerts.read`)
+**วัตถุประสงค์:** ตรวจจับเครื่องมือโจมตีที่ขับเคลื่อนด้วย AI agent เช่น ARTEX, AntiFox, Cairn, PentAGI, HexStrike, CyberStrikeAI, Strix, Hermes Agent, Agent Zero (สิทธิ์ `offensive.read` — Analyst ขึ้นไป; Viewer ไม่เห็นเมนูนี้ แต่ alert จาก rule OAI ยังแสดงในหน้า Alerts ตามปกติ)
 
 - **Framework cards** — สรุปแต่ละ framework จุดที่ควรเฝ้าระวัง และ rule ที่ครอบคลุม
 - **Behaviour rules** OAI-001 ถึง OAI-014 — เน้นพฤติกรรม ทนต่อการเปลี่ยน user-agent/banner มากกว่าการจับ IOC
@@ -1104,7 +1125,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 ## ภาคผนวก ก. สิทธิ์และบทบาท (สร้างจากโค้ด)
 
 <!-- BEGIN GENERATED:permissions -->
-ทั้งหมด 48 สิทธิ์ · ✓ = บทบาทนั้นมีสิทธิ์นี้
+ทั้งหมด 49 สิทธิ์ · ✓ = บทบาทนั้นมีสิทธิ์นี้
 
 | สิทธิ์ | กลุ่ม | ใช้ทำอะไร | ผู้ดู (viewer) | นักวิเคราะห์ (analyst) | หัวหน้าทีม SOC (lead) | ผู้ดูแลระบบ (admin) | บัญชีส่ง log (ingest) |
 |---|---|---|---|---|---|---|---|
@@ -1143,6 +1164,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | `ai.copilot` | AI | ใช้ AI SOC Copilot / SOC Assistant / สรุป attack chain |  | ✓ | ✓ | ✓ |  |
 | `ai.hunt` | AI | ค้นด้วยภาษาธรรมชาติ (AI hunting) |  | ✓ | ✓ | ✓ |  |
 | `ai.enrich` | AI | enrich indicator ด้วย AI |  | ✓ | ✓ | ✓ |  |
+| `offensive.read` | AI | ดูหน้า Offensive AI: framework โจมตีด้วย AI, detection และ hunting query (ข้อมูลเทคนิคผู้โจมตี) |  | ✓ | ✓ | ✓ |  |
 | `respond.execute` | การตอบสนอง | ขอปฏิบัติการตอบสนอง เช่น กักกัน/ปล่อย AI agent |  |  | ✓ | ✓ |  |
 | `respond.approve` | การตอบสนอง | อนุมัติการตอบสนองที่ผู้อื่นขอ |  |  | ✓ | ✓ |  |
 | `assets.manage` | ระบบและการกำกับดูแล | เพิ่ม asset, แก้ tag และระดับความสำคัญ, revoke asset |  |  | ✓ | ✓ |  |
@@ -1226,7 +1248,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | GET | `/api/tenants` | `users.read` | Platform staff: every tenant known to the system. Others: their own tenant |
 | GET | `/api/soc/snapshot` | `soc.read` |  |
 | GET | `/api/soc/cti` | `threatintel.read` |  |
-| GET | `/api/soc/offensive-ai` | `alerts.read` | Offensive AI-agent framework coverage, rule hit counts and the hunting query library |
+| GET | `/api/soc/offensive-ai` | `offensive.read` | Offensive AI-agent framework coverage, rule hit counts and the hunting query library |
 | GET | `/api/soc/agents` | `agents.read` |  |
 | GET | `/api/soc/agents/sessions/{sid}` | `agents.read` |  |
 | GET | `/api/soc/hunt` | `agents.read` |  |
