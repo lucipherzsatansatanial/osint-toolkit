@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, assistant, catalog, demo_requests, demo_tasks, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, assistant, catalog, demo_requests, nb_gen, demo_tasks, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app import query as query_mod
 from app.notify import notifier
 from app.telemetry import hub
@@ -2586,10 +2586,83 @@ class NotebookIn(BaseModel):
     case_id: int | None = None
 
 
+def _merged_incidents(who: rbac.Principal) -> list[dict]:
+    merged = {i["id"]: i for i in soc_store.incidents(None, 500 * settings.soc_scale, who.tenant)}
+    merged.update(E(who).incidents)
+    return list(merged.values())
+
+
+def _pending_approvals(who: rbac.Principal) -> int:
+    return sum(1 for k in ("response_requests", "agent_requests") for r in _with_demo(who, k) if r["status"] == "pending")
+
+
+def _gen_notebook(who: rbac.Principal, kind: str, case_id: int | None, hours: int) -> tuple[str, str]:
+    now = time.time()
+    if kind == "case":
+        if case_id is None:
+            raise HTTPException(422, "case_id is required for a case report")
+        inc = _find_incident(case_id, who)
+        return nb_gen.case_report(inc, phase4.response_plan(inc, inc.get("response")), _all_tasks(who), now)
+    return nb_gen.handover(_tenant_events(who, now - hours * 3600, now), _merged_incidents(who), _all_tasks(who),
+                           _pending_approvals(who), now, hours, who.tenant)
+
+
+DEMO_NB_TTL = 600
+
+
+def _demo_notebooks(who: rbac.Principal) -> list[dict]:
+    """Demo tenant only: a shift hand-over and the investigation reports of the 3 most severe simulated cases,
+    written by the demo team (memory only, negative ids, rebuilt every 10 minutes)."""
+    eng = E(who)
+    if not eng.simulate:
+        return []
+    cache = getattr(eng, "_demo_nbs", None)
+    now = time.time()
+    if cache and now - cache["at"] < DEMO_NB_TTL:
+        return cache["items"]
+    rank = {"critical": 0, "high": 1}
+    incs = sorted((i for i in eng.incidents.values() if i.get("severity") in rank
+                   and not any(a.get("simulated") is False for a in i.get("alerts", []))),
+                  key=lambda i: (rank[i["severity"]], -(i.get("last_ts") or 0)))[:3]
+    items = []
+    t, c = _gen_notebook(who, "handover", None, 12)
+    items.append({"id": -1, "title": t, "content": c, "case_id": None, "created_by": "lead.demo", "updated_by": "lead.demo",
+                  "created_at": now, "updated_at": now, "deleted": False, "simulated": True})
+    for k, inc in enumerate(incs, start=2):
+        t, c = _gen_notebook(who, "case", inc["id"], 12)
+        c = c.replace("## สิ่งที่พบ (analyst เติม)\n- ", "## สิ่งที่พบ (analyst เติม)\n- ตัวอย่างจากทีมจำลอง: ยืนยันแล้วว่าเป็นกิจกรรมจากเครื่องจำลอง — ใช้ notebook นี้เป็นแบบฟอร์ม")
+        items.append({"id": -k, "title": t, "content": c, "case_id": inc["id"], "created_by": "somchai.demo",
+                      "updated_by": "somchai.demo", "created_at": inc.get("first_ts") or now, "updated_at": now,
+                      "deleted": False, "simulated": True})
+    eng._demo_nbs = {"at": now, "items": items}
+    return items
+
+
+class NotebookGen(BaseModel):
+    kind: Literal["case", "handover"]
+    case_id: int | None = None
+    hours: int = Field(default=12, ge=1, le=72)
+
+
+@app.post("/api/soc/notebooks/generate")
+async def soc_notebook_generate(req: NotebookGen, who: rbac.Principal = Depends(require("notebooks.write"))):
+    """Create a notebook pre-filled from system data: an investigation report of one case, or a shift hand-over
+    of the last N hours. No AI is involved; the analyst completes the "findings" sections."""
+    title, content = _gen_notebook(who, req.kind, req.case_id, req.hours)
+    now = time.time()
+    nb = soc_store.save_notebook({"id": None, "title": title[:200], "content": content, "case_id": req.case_id if req.kind == "case" else None,
+                                  "created_by": who.name, "created_at": now, "updated_by": who.name, "updated_at": now,
+                                  "deleted": False, "generated": req.kind}, who.tenant)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.notebook", target=f"notebook:{nb['id']}",
+                 purpose=f"generate {req.kind}", legal_basis="own_asset",
+                 case_ref=f"INC-{req.case_id}" if req.kind == "case" and req.case_id else None, result={"chars": len(content)})
+    return nb
+
+
 @app.get("/api/soc/notebooks")
 async def soc_notebooks(trash: bool = False, q: str = "", case_id: int | None = None,
                         who: rbac.Principal = Depends(require("notebooks.read"))):
-    items = soc_store.notebooks(who.tenant, deleted=trash)
+    items = soc_store.notebooks(who.tenant, deleted=trash) + ([] if trash else _demo_notebooks(who))
     if case_id is not None:
         items = [n for n in items if n.get("case_id") == case_id]
     if q:
@@ -2619,6 +2692,8 @@ class NotebookPatch(BaseModel):
 
 @app.put("/api/soc/notebooks/{nb_id}")
 async def soc_notebook_update(nb_id: int, req: NotebookPatch, who: rbac.Principal = Depends(require("notebooks.write"))):
+    if nb_id < 0:
+        raise HTTPException(409, "notebook ตัวอย่าง (demo) แก้ไขไม่ได้ — บันทึกเป็นสำเนาก่อน")
     nb = soc_store.notebook(nb_id, who.tenant)
     if nb is None:
         raise HTTPException(404, "notebook not found")

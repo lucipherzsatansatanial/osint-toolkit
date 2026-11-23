@@ -309,6 +309,9 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 - **บันทึก** — ถ้ามีคนอื่นบันทึกก่อนคุณ ระบบจะแจ้ง "notebook was changed by …" ให้โหลดใหม่ก่อน เพื่อไม่ให้เขียนทับกัน
 - **ย้ายไปถังขยะ / กู้คืน** — ดูถังขยะได้ที่แท็บ **ถังขยะ**
 - notebook ที่สร้างจากหน้า case จะผูกกับ case นั้น (แสดงเลข INC และลิงก์กลับ)
+- **📝 บันทึกส่งเวร** — สร้าง notebook สรุป N ชั่วโมงล่าสุด (ค่าเริ่ม 12): จำนวน alert ตามความรุนแรง, case ใหม่, case critical/high ที่ยังเปิด (และที่ยังไม่มีผู้รับผิดชอบ), งานเลยกำหนด/รอข้อมูล, คำขอรออนุมัติ, เครื่องและ rule ที่เกิดบ่อย แล้วเว้นช่อง "หมายเหตุผู้ส่งเวร" ให้เติม
+- **📄 รายงานจาก case** (และปุ่ม "สร้าง notebook ของ case นี้" ในหน้า case) — สร้างรายงานการสืบสวนจากข้อมูลของ case: สรุป, เครื่อง/บัญชี/IOC, CTI ที่ตรง, timeline alert, แผนตอบสนอง (✅/⬜) และงานที่ผูกกับ case แล้วเว้นช่อง "สิ่งที่พบ / ขั้นตอนต่อไป" ให้ analyst เติม — **ไม่ใช้ AI** ทุกบรรทัดมาจากข้อมูลในระบบ
+- **notebook ตัวอย่าง (ป้าย "จำลอง")** — ใน tenant `default` มีบันทึกส่งเวรและรายงานของ 3 case จำลองที่รุนแรงที่สุด สร้างใหม่ทุก 10 นาที เปิดอ่านได้ แก้ไม่ได้ กด **บันทึกเป็นสำเนา** เพื่อแก้ต่อเป็น notebook ของตัวเอง
 
 ### 4.8 Intelligence
 
@@ -1353,6 +1356,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | GET | `/api/soc/queries` | `query.run` |  |
 | POST | `/api/soc/queries` | `query.run` |  |
 | DELETE | `/api/soc/queries/{qid}` | `query.run` |  |
+| POST | `/api/soc/notebooks/generate` | `notebooks.write` | Create a notebook pre-filled from system data: an investigation report of one case, or a shift hand-over |
 | GET | `/api/soc/notebooks` | `notebooks.read` |  |
 | POST | `/api/soc/notebooks` | `notebooks.write` |  |
 | PUT | `/api/soc/notebooks/{nb_id}` | `notebooks.write` |  |

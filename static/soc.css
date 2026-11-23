@@ -673,3 +673,4 @@ tr.revoked td { opacity: .5; text-decoration: line-through; } tr.revoked td:last
 .gs-h i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .gs-chip { font: inherit; font-size: 12.5px; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 999px; padding: 3px 10px; cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gs-chip:hover { border-color: var(--accent); color: var(--accent); } .gs-chip small { color: var(--muted); margin-left: 3px; }
+.nb-gen { display: flex; gap: 6px; flex-wrap: wrap; } .nb-gen .ghost { flex: 1; }

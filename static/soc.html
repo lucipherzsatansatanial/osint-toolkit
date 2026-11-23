@@ -559,6 +559,10 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
     <div class="nb">
       <aside class="nb-side">
         <button id="nbNew" class="sm" data-perm="notebooks.write">+ New notebook</button>
+        <div class="nb-gen" data-perm="notebooks.write">
+          <button id="nbGenHand" class="ghost sm" title="สรุป alert, case ที่ต้องตามต่อ, งานค้าง และคำขอรออนุมัติ จากข้อมูลในระบบ">📝 บันทึกส่งเวร</button>
+          <button id="nbGenCase" class="ghost sm" title="รายงานการสืบสวนจากข้อมูลของ case: timeline, เครื่อง, IOC, แผนตอบสนอง, งาน">📄 รายงานจาก case</button>
+        </div>
         <div class="seg"><button data-trash="0" class="on">Notebooks</button><button data-trash="1">ถังขยะ</button></div>
         <input id="nbQ" type="search" placeholder="ค้นหา notebook" aria-label="ค้นหา notebook">
         <ul id="nbList" class="nb-list"></ul>

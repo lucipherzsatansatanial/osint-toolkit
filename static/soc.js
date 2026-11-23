@@ -1679,27 +1679,40 @@ async function loadNotebooks() {
     const p = new URLSearchParams({ trash: NB.trash });
     if ($("#nbQ").value.trim()) p.set("q", $("#nbQ").value.trim());
     NB.items = (await api("/api/soc/notebooks?" + p)).notebooks;
-    $("#nbList").innerHTML = NB.items.map((n) => `<li data-id="${n.id}" class="${NB.cur?.id === n.id ? "on" : ""}"><b>${esc(n.title)}</b>
+    $("#nbList").innerHTML = NB.items.map((n) => `<li data-id="${n.id}" class="${NB.cur?.id === n.id ? "on" : ""}"><b>${n.simulated ? '<span class="demo-tag">จำลอง</span> ' : ""}${esc(n.title)}</b>
       <small class="muted">${n.case_id ? `INC-${n.case_id} · ` : ""}${esc(n.updated_by)} · ${ago(n.updated_at)}ที่แล้ว</small></li>`).join("")
       || `<li class="muted">${NB.trash ? "ถังขยะว่าง" : "ยังไม่มี notebook"}</li>`;
   } catch (e) { $("#nbList").innerHTML = `<li class="err">${esc(e.message)}</li>`; }
 }
 function openNotebook(n) {
   NB.cur = n;
-  const ro = !can("notebooks.write") || n.deleted;
+  const ro = !can("notebooks.write") || n.deleted || n.simulated;
   $("#nbMain").innerHTML = `<div class="nb-head"><input id="nbTitle" value="${esc(n.title)}" maxlength="200" ${ro ? "disabled" : ""} aria-label="ชื่อ notebook">
     <span class="muted small">${n.case_id ? `<a href="#inc-${n.case_id}">INC-${n.case_id}</a> · ` : ""}แก้ไขล่าสุดโดย ${esc(n.updated_by)} · ${esc(t2(n.updated_at))}</span></div>
     <div class="seg nb-mode"><button data-m="edit" class="${NB.preview ? "" : "on"}" ${ro ? "disabled" : ""}>แก้ไข</button><button data-m="view" class="${NB.preview ? "on" : ""}">แสดงผล</button></div>
     <textarea id="nbBody" class="code" rows="16" ${ro ? "disabled" : ""} ${NB.preview ? "hidden" : ""} aria-label="เนื้อหา">${esc(n.content)}</textarea>
     <div id="nbView" class="nb-view" ${NB.preview ? "" : "hidden"}>${md(n.content) || '<p class="muted">ว่าง — กด “แก้ไข”</p>'}</div>
-    <div class="task-bar">${n.deleted ? `<button id="nbRestore" data-perm="notebooks.write">กู้คืน</button>` : `${ro ? "" : '<button id="nbSaveBtn">บันทึก</button><button id="nbTrash" class="ghost">ย้ายไปถังขยะ</button>'}`}
+    <div class="task-bar">${n.simulated ? `<span class="demo-tag">จำลอง</span> <span class="muted small">ตัวอย่างจากทีมจำลอง สร้างจากข้อมูลจำลองล่าสุด</span>${can("notebooks.write") ? ' <button id="nbCopy">บันทึกเป็นสำเนา</button>' : ""}`
+      : n.deleted ? `<button id="nbRestore" data-perm="notebooks.write">กู้คืน</button>` : `${ro ? "" : '<button id="nbSaveBtn">บันทึก</button><button id="nbTrash" class="ghost">ย้ายไปถังขยะ</button>'}`}
     <span id="nbMsg" class="muted small"></span></div>`;
   document.querySelectorAll("#nbList li").forEach((li) => li.classList.toggle("on", Number(li.dataset.id) === n.id));
 }
+async function genNotebook(kind, caseId, hours = 12) {
+  try {
+    const n = await api("/api/soc/notebooks/generate", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, hours, ...(caseId ? { case_id: Number(caseId) } : {}) }) });
+    NB.trash = false; NB.preview = true; await loadNotebooks(); openNotebook(n);
+    if (caseId && typeof loadCaseNotebooks === "function") loadCaseNotebooks(Number(caseId));
+    $("#nbCard").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { alert(e.message); }
+}
+$("#nbGenHand").onclick = () => { const h = prompt("สรุปย้อนหลังกี่ชั่วโมง (1–72)", "12"); if (h) genNotebook("handover", null, Math.max(1, Math.min(72, Number(h) || 12))); };
+$("#nbGenCase").onclick = () => { const id = (prompt("เลข case (เช่น 1056)", state.selected || "") || "").replace(/^INC-/i, "").trim(); if (/^\d+$/.test(id)) genNotebook("case", id); };
 async function createNotebook(caseId) {
+  if (caseId) return genNotebook("case", caseId);  // a case notebook starts as a report built from the case's own data
   try {
     const n = await api("/api/soc/notebooks", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: caseId ? `บันทึกการสืบสวน INC-${caseId}` : "Untitled", content: caseId ? `# INC-${caseId}\n\n## สิ่งที่พบ\n- \n\n## ขั้นตอนต่อไป\n1. ` : "", ...(caseId ? { case_id: caseId } : {}) }) });
+      body: JSON.stringify({ title: "Untitled", content: "" }) });
     NB.trash = false; NB.preview = false; await loadNotebooks(); openNotebook(n);
     if (caseId) loadCaseNotebooks(caseId);
     $("#nbCard").scrollIntoView({ behavior: "smooth" });
@@ -1729,6 +1742,11 @@ $("#nbMain").addEventListener("click", (ev) => {
   if (ev.target.id === "nbSaveBtn") saveNotebook({ title: $("#nbTitle").value.trim() || "Untitled", content: $("#nbBody").value });
   if (ev.target.id === "nbTrash" && confirm("ย้าย notebook นี้ไปถังขยะ?")) saveNotebook({ deleted: true });
   if (ev.target.id === "nbRestore") saveNotebook({ deleted: false });
+  if (ev.target.id === "nbCopy" && NB.cur) (async () => {
+    try { const n = await api("/api/soc/notebooks", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: NB.cur.title.slice(0, 200), content: NB.cur.content, ...(NB.cur.case_id ? { case_id: NB.cur.case_id } : {}) }) });
+      NB.preview = false; await loadNotebooks(); openNotebook(n); } catch (e) { $("#nbMsg").textContent = e.message; }
+  })();
 });
 window.addEventListener("hashchange", async () => {
   const m = /^#nb-(\d+)$/.exec(location.hash); if (!m) return;
