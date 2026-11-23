@@ -2285,11 +2285,29 @@ async function loadCollections(refreshCurrent) {
   try {
     const r = await api("/api/soc/ioc-collections");
     COL.items = r.collections;
-    $("#colList").innerHTML = r.collections.map((c) => `<li data-id="${c.id}" class="${COL.cur?.id === c.id ? "on" : ""}"><b>${esc(c.name)}</b>
+    $("#colList").innerHTML = r.collections.map((c) => `<li data-id="${c.id}" class="${COL.cur?.id === c.id ? "on" : ""}"><b>${c.simulated ? '<span class="demo-tag">จำลอง</span> ' : ""}${esc(c.name)}</b>
       <small class="muted">${c.iocs} IOC · ${esc(c.created_by)}</small></li>`).join("") || '<li class="muted">ยังไม่มี collection</li>';
     if (refreshCurrent && COL.cur) openCollection(COL.items.find((c) => c.id === COL.cur.id));
+    else if (!COL.cur) colIdeas();
   } catch (e) { $("#colList").innerHTML = `<li class="err">${esc(e.message)}</li>`; }
 }
+async function colIdeas() {  // empty state: build a collection from a case's IOCs or from a CTI threat
+  COL.cur = null;
+  document.querySelectorAll("#colList li").forEach((li) => li.classList.remove("on"));
+  const edit = can("threatintel.curate");
+  $("#colMain").innerHTML = '<p class="muted">กำลังหา IOC ในระบบ…</p>';
+  try {
+    const r = await api("/api/soc/ioc-collections/suggest");
+    $("#colMain").innerHTML = `<div class="gr-suggest"><b>สร้าง collection จากข้อมูลในระบบ</b>
+      <small class="muted">${edit ? "คลิกเพื่อสร้าง — IOC ชุดใหม่ถูกใช้ตรวจ log ด้วย IOC-001 ทันที และส่งออกผ่าน Feeds ได้" : "ต้องมีสิทธิ์ threatintel.curate เพื่อสร้าง"}</small>
+      <div class="gs-row"><span class="gs-h" style="width:120px"><i style="background:var(--xdr)"></i>IOC จาก case</span>${r.cases.map((c) =>
+        `<button type="button" class="gs-chip col-case" data-id="${c.case_id}" ${edit ? "" : "disabled"} title="${esc(c.severity)} · ${esc(c.title)}">${esc(c.label)} <small>${c.iocs} IOC</small></button>`).join("") || '<span class="muted small">ยังไม่มี case ที่มี IOC ภายนอก</span>'}</div>
+      <div class="gs-row"><span class="gs-h" style="width:120px"><i style="background:var(--off)"></i>Threat จาก CTI</span>${r.threats.map((t) =>
+        `<button type="button" class="gs-chip col-cti" data-t="${esc(t.threat)}" ${edit ? "" : "disabled"} title="${t.indicators} indicators ใน feed${t.alerts_7d ? ` · พบใน alert ${t.alerts_7d} ครั้ง/7 วัน` : ""}">${t.alerts_7d ? "⚠ " : ""}${esc(t.threat)} <small>${t.indicators}</small></button>`).join("") || '<span class="muted small">ยังไม่มีข้อมูลจาก CTI feed</span>'}</div>
+      <small class="muted">⚠ = threat ที่พบใน alert ของ tenant นี้ใน 7 วัน · IOC จาก case ใช้ TLP:AMBER หมดอายุ 30 วัน · จาก CTI ใช้ TLP:CLEAR · IP ภายในไม่ถูกนำเข้า</small></div>`;
+  } catch (e) { $("#colMain").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+$("#colIdeas").onclick = colIdeas;
 async function openCollection(c) {
   if (!c) return;
   COL.cur = c;
@@ -2298,8 +2316,8 @@ async function openCollection(c) {
   if (COL.q) p.set("q", COL.q);
   let r;
   try { r = await api("/api/soc/iocs?" + p); } catch (e) { $("#colMain").innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
-  const edit = can("threatintel.curate");
-  $("#colMain").innerHTML = `<div class="col-head"><div><h3>${esc(c.name)}</h3><p class="muted small">${esc(c.description || "")}</p></div>
+  const edit = can("threatintel.curate") && !c.simulated;
+  $("#colMain").innerHTML = `<div class="col-head"><div><h3>${c.simulated ? '<span class="demo-tag">จำลอง</span> ' : ""}${esc(c.name)}</h3><p class="muted small">${esc(c.description || "")}</p></div>
     <div class="task-bar">${edit ? '<button id="colImport" class="ghost sm">นำเข้า / เพิ่ม IOC</button>' : ""}
       <select id="colDays" aria-label="ช่วงเวลา"><option value="7">7 วัน</option><option value="30" selected>30 วัน</option><option value="90">90 วัน</option></select>
       <button id="colReport" class="sm">สร้าง telemetry report</button></div></div>
@@ -2325,6 +2343,20 @@ let colT;
 $("#colMain").addEventListener("input", (ev) => { if (ev.target.id === "colQ") { clearTimeout(colT); colT = setTimeout(() => { COL.q = ev.target.value.trim(); COL.page = 1; openCollection(COL.cur).then(() => $("#colQ")?.focus()); }, 350); } });
 $("#colMain").addEventListener("click", async (ev) => {
   const t = ev.target;
+  const cc = t.closest(".col-case, .col-cti");
+  if (cc) {
+    const isCase = cc.classList.contains("col-case");
+    if (!confirm(isCase ? `สร้าง collection จาก IOC ใน INC-${cc.dataset.id}? (TLP:AMBER, หมดอายุ 30 วัน)` : `สร้าง collection ของ ${cc.dataset.t} จาก CTI feed? (TLP:CLEAR)`)) return;
+    cc.disabled = true;
+    try {
+      const r = await api(isCase ? "/api/soc/ioc-collections/from-case" : "/api/soc/ioc-collections/from-cti", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(isCase ? { case_id: Number(cc.dataset.id) } : { threat: cc.dataset.t }) });
+      await loadCollections(); COL.page = 1; COL.q = ""; await openCollection(COL.items.find((x) => x.id === r.collection.id));
+      if (r.skipped_existing || r.skipped_internal) alert(`เพิ่ม ${r.added} IOC · ข้าม ${r.skipped_existing} ค่าที่อยู่ใน collection อื่นแล้ว${r.skipped_internal ? ` · ข้าม IP ภายใน ${r.skipped_internal} ค่า` : ""}`);
+      loadIntel();
+    } catch (e) { cc.disabled = false; alert(e.message); }
+    return;
+  }
   if (t.id === "colImport") openIocDlg(COL.cur.id);
   if (t.id === "colPrev") { COL.page--; openCollection(COL.cur); }
   if (t.id === "colNext") { COL.page++; openCollection(COL.cur); }

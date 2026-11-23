@@ -28,6 +28,11 @@ HEX = {32: "md5", 40: "sha1", 64: "sha256"}
 DOMAIN_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
 
 
+# feed type -> the classify() results accepted for it
+FEED_TYPES = {"domain": {"domain"}, "ipv4": {"ipv4"}, "ipv6": {"ipv6"}, "url": {"url"}, "sha256": {"sha256"},
+              "sha1": {"sha1"}, "md5": {"md5"}, "ip": {"ipv4", "ipv6"}, "hash": {"md5", "sha1", "sha256"}}
+
+
 def classify(value: str) -> tuple[str | None, str]:
     """-> (type, normalised value) or (None, value) when it is not a supported indicator."""
     v = (value or "").strip().strip("[]").replace("[.]", ".").replace("hxxp", "http")
@@ -77,8 +82,13 @@ def from_feeds(threatfox: dict, feodo: dict, kev: dict, agentic: list[dict]) -> 
                         desc=e.get("name")))
     for r in agentic:
         typ, v = classify(r.get("value") or "")
-        if r.get("type") == "user_agent":
+        ftype = (r.get("type") or "").lower()
+        if ftype == "user_agent":
             typ, v = "user_agent", r["value"]
+        elif ftype in FEED_TYPES and typ not in FEED_TYPES[ftype]:
+            typ = None  # the feed says what it is; a mismatch means the value is not usable as that type
+        elif ftype and ftype not in FEED_TYPES:
+            typ = None  # file names, paths, strings, ports, headers ... "f1219a.jsp" must not become a domain
         if typ:
             out.append(_ind(v, typ, "agentic", CONF.get(r.get("confidence"), 50), threat=r.get("framework") or r.get("actor"),
                             first_seen=r.get("reported"), ref=r.get("source_url") or None, desc=r.get("context")))

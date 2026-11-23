@@ -28,7 +28,7 @@ from app.notify import notifier
 from app.telemetry import hub
 from app.config import settings
 from app.modules import brand, domain, email, ip, threatintel, username
-from app.validators import (ValidationError, normalize_domain, normalize_email, normalize_ip,
+from app.validators import (ValidationError, is_public_ip, normalize_domain, normalize_email, normalize_ip,
                             normalize_keyword, normalize_username)
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
@@ -622,7 +622,10 @@ async def soc_iocs_add(req: IocIn, who: rbac.Principal = Depends(require("threat
 @app.get("/api/soc/iocs")
 async def soc_iocs_list(collection_id: int | None = None, q: str = "", page: int = 1, size: int = 50,
                         who: rbac.Principal = Depends(require("threatintel.read"))):
-    rows = sorted(soc_store.iocs(who.tenant), key=lambda i: -(i.get("added_at") or 0))
+    if collection_id is not None and collection_id < 0:
+        rows = next((d["iocs"] for d in _demo_collections(who) if d["collection"]["id"] == collection_id), [])
+    else:
+        rows = sorted(soc_store.iocs(who.tenant), key=lambda i: -(i.get("added_at") or 0))
     if collection_id is not None:
         rows = [i for i in rows if i.get("collection_id") == collection_id]
     if q:
@@ -642,7 +645,8 @@ class CollectionIn(BaseModel):
 @app.get("/api/soc/ioc-collections")
 async def soc_collections(who: rbac.Principal = Depends(require("threatintel.read"))):
     counts = Counter(i.get("collection_id") for i in soc_store.iocs(who.tenant))
-    return {"collections": [{**c, "iocs": counts.get(c["id"], 0)} for c in _collections(who.tenant)],
+    demo = [{**d["collection"], "iocs": len(d["iocs"])} for d in _demo_collections(who)]
+    return {"collections": [{**c, "iocs": counts.get(c["id"], 0)} for c in _collections(who.tenant)] + demo,
             "unassigned": counts.get(None, 0), "kill_chain": list(KILL_CHAIN)}
 
 
@@ -686,14 +690,178 @@ async def soc_iocs_revoke(req: IocRevoke, who: rbac.Principal = Depends(require(
     return {"updated": len(rows)}
 
 
+# ---------- building collections from what the platform already holds ----------
+def _case_iocs(who: rbac.Principal, inc: dict, allow_internal: bool = False) -> tuple[list[dict], int]:
+    """IOC candidates from one case's alerts: indicator / remote IP, typed by intel.classify or by the intelligence
+    entry that matched it (e.g. user agents). Internal / documentation-range IPs are never published as IOCs."""
+    idx, out, internal = _intel_index(who.tenant), {}, 0
+    for a in inc.get("alerts", []):
+        for raw in (a.get("indicator"), a.get("remote_ip")):
+            if not raw:
+                continue
+            hit = idx.get(str(raw).lower())
+            typ, v = intel.classify(str(raw))
+            if hit and hit.get("type"):  # the feed knows best (e.g. "f1219a.jsp" is a file name, not a domain)
+                typ, v = hit["type"], hit["value"]
+            if not typ and raw == a.get("indicator") and a.get("framework") and "/" in str(raw):
+                typ, v = "user_agent", str(raw)  # offensive-AI framework user agent (OAI-006)
+            if not typ or typ == "cve":
+                continue
+            if typ in ("ipv4", "ipv6") and not is_public_ip(v) and not allow_internal:
+                internal += 1
+                continue
+            out.setdefault(v.lower(), {"value": v, "type": typ, "threat": a.get("malware") or a.get("framework")
+                                       or (hit or {}).get("threat"), "kill": "command-and-control" if a.get("remote_ip") == raw else None,
+                                       "desc": f"{a.get('title')} บน {a.get('host') or '-'} (INC-{inc['id']})"})
+    return list(out.values()), internal
+
+
+def _new_collection(who: rbac.Principal, name: str, description: str, cands: list[dict], tlp: str, conf: int,
+                    expires_days: int | None, source_note: str) -> dict:
+    cur = _collections(who.tenant)
+    col = {"id": max([c["id"] for c in cur] + [0]) + 1, "name": name[:120], "description": description[:1000],
+           "created_by": who.name, "created_at": time.time(), "source": source_note}
+    taken = {i["value"].lower(): i for i in soc_store.iocs(who.tenant)}
+    now, good, skipped = time.time(), [], 0
+    for cnd in cands:
+        if cnd["value"].lower() in taken:  # an IOC belongs to one collection only
+            skipped += 1
+            continue
+        good.append({**intel._ind(cnd["value"], cnd["type"], "tenant", cnd.get("conf") or conf, tlp, cnd.get("threat"),
+                                  time.strftime("%Y-%m-%d"), cnd.get("ref"), [], cnd.get("desc")),
+                     "severity": "high", "added_by": who.name, "added_at": now, "revoked": False, "valid_from": now,
+                     "expires": now + expires_days * 86400 if expires_days else None, "collection_id": col["id"],
+                     "kill_chain_phase": cnd.get("kill")})
+    soc_store.set_setting("ioc_collections", cur + [col], who.tenant)
+    soc_store.save_iocs(good, who.tenant)
+    _INTEL_CACHE.pop(who.tenant, None)
+    audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.ioc_collection", target=f"collection:{col['id']}",
+                 purpose=f"create from {source_note}: {col['name']}", legal_basis="own_asset", case_ref=None,
+                 result={"added": len(good), "skipped_existing": skipped})
+    return {"collection": col, "added": len(good), "skipped_existing": skipped}
+
+
+DEMO_COL_TTL = 600
+
+
+def _demo_collections(who: rbac.Principal) -> list[dict]:
+    """Demo tenant only: collections the demo team built from the 3 most severe simulated cases that carry IOCs
+    (simulated C2 addresses may be documentation-range IPs, which is fine for a demo). Memory only, negative ids,
+    never used for detection; rebuilt every 10 minutes."""
+    eng = E(who)
+    if not eng.simulate:
+        return []
+    cache = getattr(eng, "_demo_cols", None)
+    now = time.time()
+    if cache and now - cache["at"] < DEMO_COL_TTL:
+        return cache["items"]
+    rank = {"critical": 0, "high": 1, "medium": 2}
+    items = []
+    for inc in sorted((i for i in eng.incidents.values() if i.get("severity") in rank
+                       and not any(a.get("simulated") is False for a in i.get("alerts", []))),
+                      key=lambda i: (rank[i["severity"]], -(i.get("last_ts") or 0))):
+        cands, _ = _case_iocs(who, inc, allow_internal=True)
+        if not cands:
+            continue
+        k = len(items) + 1
+        iocs = [{**intel._ind(c["value"], c["type"], "tenant", 80, "amber", c.get("threat"), time.strftime("%Y-%m-%d"), None, [],
+                              c.get("desc")), "collection_id": -k, "revoked": False, "valid_from": inc.get("first_ts") or now,
+                 "expires": (inc.get("first_ts") or now) + 30 * 86400, "kill_chain_phase": c.get("kill"),
+                 "added_by": "pim.demo", "added_at": inc.get("first_ts") or now, "simulated": True} for c in cands]
+        items.append({"collection": {"id": -k, "name": f"INC-{inc['id']} · {str(inc.get('title') or inc.get('name') or '')[:80]}",
+                                     "description": f"IOC จาก alert ของ INC-{inc['id']} (ตัวอย่างจากทีมจำลอง)",
+                                     "created_by": "pim.demo", "created_at": inc.get("first_ts") or now, "simulated": True},
+                      "iocs": iocs})
+        if len(items) >= 3:
+            break
+    eng._demo_cols = {"at": now, "items": items}
+    return items
+
+
+class FromCase(BaseModel):
+    case_id: int
+    tlp: Literal["clear", "green", "amber", "amber+strict", "red"] = "amber"
+    confidence: int = Field(default=80, ge=0, le=100)
+    expires_days: int | None = Field(default=30, ge=1, le=3650)
+
+
+@app.post("/api/soc/ioc-collections/from-case")
+async def soc_collection_from_case(req: FromCase, who: rbac.Principal = Depends(require("threatintel.curate"))):
+    """New collection with the IOCs seen in one case's alerts (so IOC-001 keeps watching for them and they can be
+    pushed to the firewall through a feed). Default TLP:AMBER, 30-day expiry."""
+    inc = _find_incident(req.case_id, who)
+    cands, internal = _case_iocs(who, inc)
+    if not cands:
+        raise HTTPException(422, "case นี้ไม่มี IOC ภายนอกที่ใช้ได้" + (f" (ข้าม IP ภายใน/สงวน {internal} ค่า)" if internal else ""))
+    out = _new_collection(who, f"INC-{inc['id']} · {str(inc.get('title') or inc.get('name') or '')[:90]}",
+                          f"IOC จาก alert ของ INC-{inc['id']} ({inc.get('severity')})", cands, req.tlp, req.confidence,
+                          req.expires_days, f"case INC-{inc['id']}")
+    return {**out, "skipped_internal": internal}
+
+
+class FromCti(BaseModel):
+    threat: str = Field(min_length=2, max_length=120)
+    limit: int = Field(default=500, ge=1, le=5000)
+    expires_days: int | None = Field(default=30, ge=1, le=3650)
+
+
+@app.post("/api/soc/ioc-collections/from-cti")
+async def soc_collection_from_cti(req: FromCti, who: rbac.Principal = Depends(require("threatintel.curate"))):
+    """New collection with every public-feed indicator of one threat / malware family (e.g. a family seen in our
+    alerts), copied as tenant IOCs so it can be tracked, reported on and exported. TLP:CLEAR (public source)."""
+    t = req.threat.strip().lower()
+    rows = [i for i in _indicators(who.tenant) if i["source"] != "tenant" and (i.get("threat") or "").lower() == t and i["type"] != "cve"]
+    rows.sort(key=lambda i: -i["confidence"])
+    if not rows:
+        raise HTTPException(422, f"ไม่พบ indicator ของ '{req.threat}' ใน CTI feed ตอนนี้")
+    cands = [{"value": i["value"], "type": i["type"], "threat": i.get("threat"), "conf": i["confidence"], "ref": i.get("reference"),
+              "desc": f"จาก {i['source_name']}", "kill": "command-and-control" if i["type"] in ("ipv4", "ipv6", "url", "domain") else None}
+             for i in rows[:req.limit]]
+    srcs = sorted({i["source_name"] for i in rows[:req.limit]})
+    return _new_collection(who, f"{rows[0]['threat']} (CTI)", f"indicator ของ {rows[0]['threat']} จาก {', '.join(srcs)}",
+                           cands, "clear", 70, req.expires_days, f"cti {', '.join(srcs)}")
+
+
+@app.get("/api/soc/ioc-collections/suggest")
+async def soc_collection_suggest(who: rbac.Principal = Depends(require("threatintel.read"))):
+    """Starting points: open serious cases that carry external IOCs, and threats (malware / framework) with feed
+    indicators — threats already seen in this tenant's alerts first."""
+    rank = {"critical": 0, "high": 1, "medium": 2}
+    cases = []
+    for inc in sorted((i for i in E(who).incidents.values() if i.get("status") in ("open", "investigating") and i.get("severity") in rank),
+                      key=lambda i: (rank[i["severity"]], -(i.get("last_ts") or 0))):
+        n = len(_case_iocs(who, inc)[0])
+        if n:
+            cases.append({"case_id": inc["id"], "label": f"INC-{inc['id']}", "severity": inc["severity"], "iocs": n,
+                          "title": str(inc.get("title") or inc.get("name") or "")[:80]})
+        if len(cases) >= 6:
+            break
+    feed = Counter(i["threat"] for i in _indicators(who.tenant) if i["source"] != "tenant" and i.get("threat") and i["type"] != "cve")
+    now = time.time()
+    seen = Counter(landscape.threat_of(e) for e in _tenant_events(who, now - 7 * 86400, now) if landscape.threat_of(e))
+    lower = {k.lower(): k for k in feed}
+    threats = [{"threat": lower[k.lower()], "indicators": feed[lower[k.lower()]], "alerts_7d": n}
+               for k, n in seen.most_common(20) if k and k.lower() in lower][:6]
+    for k, n in feed.most_common(12):
+        if len(threats) >= 10:
+            break
+        if all(x["threat"] != k for x in threats):
+            threats.append({"threat": k, "indicators": n, "alerts_7d": 0})
+    return {"cases": cases, "threats": threats}
+
+
 @app.get("/api/soc/ioc-collections/{cid}/report")
 async def soc_collection_report(cid: int, days: int = 30, format: str = "json", who: rbac.Principal = Depends(require("threatintel.read"))):
     """Telemetry report: for every IOC in the collection, how often it appeared in this tenant's logs and alerts."""
-    col = next((c for c in _collections(who.tenant) if c["id"] == cid), None)
+    if cid < 0:
+        demo = next((d for d in _demo_collections(who) if d["collection"]["id"] == cid), None)
+        col, rows = (demo["collection"], demo["iocs"]) if demo else (None, [])
+    else:
+        col = next((c for c in _collections(who.tenant) if c["id"] == cid), None)
+        rows = [i for i in soc_store.iocs(who.tenant) if i.get("collection_id") == cid][:5000]
     if col is None:
         raise HTTPException(404, "collection not found")
     days = max(1, min(days, 90))
-    rows = [i for i in soc_store.iocs(who.tenant) if i.get("collection_id") == cid][:5000]
     sight = _sightings(who, [i["value"] for i in rows], days)
     items = [{"value": i["value"], "type": i["type"], "revoked": i.get("revoked", False), "threat": i.get("threat"),
               **(sight.get(i["value"].lower()) or {"logs": 0, "alerts": 0, "last_seen": None, "hosts": []})} for i in rows]

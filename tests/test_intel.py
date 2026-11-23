@@ -109,3 +109,14 @@ def test_tenant_iocs_detect_search_and_feed_pull(client):
     assert client.post("/api/soc/iocs/delete", headers=H, json={"values": ["45.66.77.88"]}).json()["deleted"] == 1
     integ = {i["id"]: i for i in client.get("/api/soc/integrations", headers=H).json()["integrations"]}
     assert integ["teams"]["status"] == "available" and integ["ebl_out"]["status"] == "available"
+
+
+def test_agentic_feed_type_is_respected():
+    from app import intel
+    rows = [{"type": "file_name", "value": "f1219a.jsp", "framework": "artex"},
+            {"type": "domain", "value": "c2.example.net", "framework": "artex"},
+            {"type": "string", "value": "evil.example.org", "framework": "x"},
+            {"type": "user_agent", "value": "HexStrike-BrowserAgent/1.0", "framework": "hexstrike"},
+            {"type": "ipv4", "value": "203.0.113.9", "framework": "y"}]
+    got = {(i["value"], i["type"]) for i in intel.from_feeds({}, {}, {}, rows)}
+    assert got == {("c2.example.net", "domain"), ("HexStrike-BrowserAgent/1.0", "user_agent"), ("203.0.113.9", "ipv4")}

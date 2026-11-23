@@ -347,6 +347,11 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
   - ระบบแจ้งจำนวนที่เพิ่มได้ และค่าที่ไม่ใช่ IOC ที่รองรับ
 - **สร้าง telemetry report** — เลือก 7/30/90 วัน แล้วดูว่า IOC ใดในชุดเคยปรากฏใน log/alert ของ tenant บนเครื่องไหน และ **ดาวน์โหลด CSV** ได้ (ต้องมี `soc.export`)
 - IOC ที่ revoke หรือหมดอายุแล้วจะหยุดสร้าง alert ทันที
+- **⚡ สร้างจากข้อมูลในระบบ** (`threatintel.curate`) — เมื่อยังไม่ได้เลือก collection ระบบเสนอ 2 ทาง:
+  - **IOC จาก case** — case ที่เปิดอยู่ (critical/high/medium) ที่มี IOC ภายนอกใน alert (IP ปลายทาง, domain, hash, user-agent ของ framework โจมตีด้วย AI) คลิกเพื่อสร้าง collection ชื่อ "INC-xxxx · ชื่อ case" ใช้ TLP:AMBER หมดอายุ 30 วัน — IP ภายใน/สงวนจะไม่ถูกนำเข้า
+  - **Threat จาก CTI** — malware family / framework ที่มี indicator ใน feed สาธารณะ (⚠ = พบใน alert ของ tenant ใน 7 วัน) คลิกเพื่อคัด indicator ทั้งหมดของ threat นั้นเข้ามาเป็น IOC ของเรา (TLP:CLEAR, สูงสุด 500 ค่า เรียงตามความเชื่อมั่น)
+  - collection ใหม่ใช้ตรวจ log ด้วย IOC-001 ทันที, ทำ telemetry report ได้ และส่งออกให้ไฟร์วอลล์ผ่าน Feeds (out)
+- **collection ตัวอย่าง (ป้าย "จำลอง")** — ใน tenant `default` มี collection ที่ทีมจำลองสร้างจาก case จำลอง 3 ชุด เปิดดูและทำ telemetry report ได้ แต่แก้ไม่ได้ และไม่ถูกใช้ตรวจจับ (IP ในชุดตัวอย่างอาจเป็นช่วงเอกสาร 203.0.113.x)
 - ข้อจำกัด: IOC หนึ่งค่าอยู่ได้ collection เดียว
 
 ### 4.10 Graph explorations
@@ -1274,6 +1279,9 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | POST | `/api/soc/ioc-collections` | `threatintel.curate` |  |
 | PUT | `/api/soc/ioc-collections/{cid}` | `threatintel.curate` |  |
 | POST | `/api/soc/iocs/revoke` | `threatintel.curate` |  |
+| POST | `/api/soc/ioc-collections/from-case` | `threatintel.curate` | New collection with the IOCs seen in one case's alerts (so IOC-001 keeps watching for them and they can be |
+| POST | `/api/soc/ioc-collections/from-cti` | `threatintel.curate` | New collection with every public-feed indicator of one threat / malware family (e.g. a family seen in our |
+| GET | `/api/soc/ioc-collections/suggest` | `threatintel.read` | Starting points: open serious cases that carry external IOCs, and threats (malware / framework) with feed |
 | GET | `/api/soc/ioc-collections/{cid}/report` | `threatintel.read` | Telemetry report: for every IOC in the collection, how often it appeared in this tenant's logs and alerts |
 | POST | `/api/soc/iocs/delete` | `threatintel.curate` |  |
 | GET | `/api/soc/feeds` | `threatintel.read` |  |
