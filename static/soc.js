@@ -2388,18 +2388,57 @@ window.addEventListener("pointerup", () => { if (GR.drag) { const moved = GR.mov
 async function loadGraphs() {
   try {
     const r = await api("/api/soc/graphs");
-    $("#grList").innerHTML = r.graphs.map((g) => `<li data-id="${g.id}" class="${GR.id === g.id ? "on" : ""}"><b>${esc(g.name)}</b><small class="muted">${g.nodes} nodes · ${esc(g.created_by)} · ${ago(g.updated_at)}ที่แล้ว</small></li>`).join("")
+    $("#grList").innerHTML = r.graphs.map((g) => `<li data-id="${g.id}" class="${GR.id === g.id ? "on" : ""}"><b>${g.simulated ? '<span class="demo-tag">จำลอง</span> ' : ""}${esc(g.name)}</b><small class="muted">${g.nodes} nodes · ${esc(g.created_by)} · ${ago(g.updated_at)}ที่แล้ว</small></li>`).join("")
       || '<li class="muted">ยังไม่มี graph ที่บันทึก</li>';
   } catch {}
-  if (!GR.nodes.size) grDraw();
+  if (!GR.nodes.size) { grDraw(); grSuggest(); }
 }
+const GR_ICON = { incident: "Case", host: "Host", indicator: "IOC", account: "Account", rule: "Rule" };
+async function grSuggest() {
+  const box = $("#grSuggest");
+  try {
+    const r = await api("/api/soc/graph/suggest");
+    if (!r.suggestions.length || GR.nodes.size) { box.hidden = true; return; }
+    const groups = ["incident", "host", "indicator", "account", "rule"].map((t) => [t, r.suggestions.filter((x) => x.type === t)]).filter(([, xs]) => xs.length);
+    box.innerHTML = `<b>เริ่มสืบสวนจากตรงนี้</b> <small class="muted">จาก alert และ case ของ tenant ใน 24 ชม. · คลิก Case = สร้าง graph อัตโนมัติ, คลิกอย่างอื่น = เพิ่ม + ขยาย</small>`
+      + groups.map(([t, xs]) => `<div class="gs-row"><span class="gs-h"><i style="background:var(${GR_COL[t]})"></i>${GR_ICON[t]}</span>${xs.map((x) =>
+        `<button type="button" class="gs-chip" data-t="${esc(x.type)}" data-v="${esc(x.value)}" title="${esc(x.why)}">${esc(x.label)} <small>${x.count}</small></button>`).join("")}</div>`).join("");
+    box.hidden = false;
+  } catch { box.hidden = true; }
+}
+$("#grSuggest").addEventListener("click", (ev) => {
+  const b = ev.target.closest(".gs-chip"); if (!b) return;
+  if (b.dataset.t === "incident") grAuto(b.dataset.v); else { $("#grSuggest").hidden = true; grExpand(b.dataset.t, b.dataset.v); }
+});
+function grPlace(nodes, edges) {  // circle start + force layout for graphs that come without positions
+  GR.nodes = new Map(nodes.map((n, i) => { const a = 2 * Math.PI * i / Math.max(1, nodes.length), r = 60 + 14 * nodes.length;
+    return [n.id, { ...n, x: i ? r * Math.cos(a) : 0, y: i ? r * Math.sin(a) : 0, fixed: false }]; }));
+  GR.edges = edges; grLayout(400); grDraw();
+}
+async function grAuto(incId) {
+  const id = String(incId || "").replace(/^INC-/i, "").trim();
+  if (!/^\d+$/.test(id)) { $("#grMsg").textContent = "ใส่เลข case ในช่องค่า (ชนิด Case) หรือเลือกจากจุดเริ่มที่แนะนำ"; return; }
+  $("#grMsg").textContent = "กำลังสร้าง graph…"; $("#grSuggest").hidden = true;
+  try {
+    const g = await api(`/api/soc/graph/auto?incident=${id}`);
+    GR.id = null; $("#grName").value = `การสืบสวน INC-${id}`; grPlace(g.nodes, g.edges);
+    $("#grMsg").textContent = `${g.nodes.length} nodes · ${g.edges.length} ความเชื่อมโยง — ดับเบิลคลิก node เพื่อขยายต่อ, กดบันทึกเพื่อเก็บไว้`;
+  } catch (e) { $("#grMsg").textContent = e.message; }
+}
+$("#grAuto").onclick = () => grAuto($("#grType").value === "incident" ? $("#grValue").value : prompt("เลข case (เช่น 1056)") || "");
 $("#grList").addEventListener("click", async (ev) => {
   const li = ev.target.closest("li[data-id]"); if (!li) return;
   const g = await api(`/api/soc/graphs/${li.dataset.id}`);
-  GR.id = g.id; GR.nodes = new Map(g.nodes.map((n) => [n.id, { ...n, fixed: true }])); GR.edges = g.edges; $("#grName").value = g.name;
-  grDraw(); loadGraphs(); $("#grMsg").textContent = `เปิด ${g.name} — แก้ไขล่าสุดโดย ${g.updated_by}`;
+  $("#grSuggest").hidden = true;
+  if (g.nodes.every((n) => !n.x && !n.y)) grPlace(g.nodes, g.edges);
+  else { GR.nodes = new Map(g.nodes.map((n) => [n.id, { ...n, fixed: true }])); GR.edges = g.edges; grDraw(); }
+  GR.id = g.simulated ? null : g.id; $("#grName").value = g.name;
+  loadGraphs();
+  $("#grMsg").textContent = g.simulated ? "graph ตัวอย่างของทีมจำลอง สร้างจากข้อมูลจำลองล่าสุด — กดบันทึกเพื่อเก็บเป็นสำเนาของคุณ"
+    : `เปิด ${g.name} — แก้ไขล่าสุดโดย ${g.updated_by}`;
 });
 $("#grNew").onclick = () => { GR.id = null; GR.nodes = new Map(); GR.edges = []; $("#grName").value = ""; $("#grMsg").textContent = ""; grDraw(); loadGraphs(); };
+$("#grAdd").addEventListener("click", () => { $("#grSuggest").hidden = true; });
 $("#grSave").onclick = async () => {
   const name = $("#grName").value.trim() || prompt("ชื่อ graph") || ""; if (!name) return;
   const body = JSON.stringify({ name, nodes: [...GR.nodes.values()].map(({ id, type, value, label, x, y }) => ({ id, type, value, label, x, y })), edges: GR.edges });

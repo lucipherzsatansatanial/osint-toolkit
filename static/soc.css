@@ -667,3 +667,9 @@ tr.revoked td { opacity: .5; text-decoration: line-through; } tr.revoked td:last
 .seg a.on { background: var(--accent-soft); color: var(--accent); } .seg a + a { border-left: 1px solid var(--line); }
 .demo-tag { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; background: var(--chip); color: var(--muted); border: 1px dashed var(--line); white-space: nowrap; }
 #tasksTbl tr.demo .a-title { color: var(--muted); }
+.gr-suggest { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 8px 0; background: var(--panel2); display: flex; flex-direction: column; gap: 6px; }
+.gs-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.gs-h { display: inline-flex; align-items: center; gap: 5px; width: 74px; font-size: 12px; color: var(--muted); flex: none; }
+.gs-h i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.gs-chip { font: inherit; font-size: 12.5px; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 999px; padding: 3px 10px; cursor: pointer; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gs-chip:hover { border-color: var(--accent); color: var(--accent); } .gs-chip small { color: var(--muted); margin-left: 3px; }

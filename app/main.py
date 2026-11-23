@@ -1033,6 +1033,87 @@ async def soc_graph_expand(type: str, value: str, limit: int = 25, who: rbac.Pri
     return _graph_neighbors(who, type, value[:500], max(5, min(limit, 60)))
 
 
+def _auto_graph(who: rbac.Principal, inc_id: int, cap: int = 45) -> dict:
+    """Two-hop investigation graph around one case: the case → its hosts / accounts / rules / indicators / threats →
+    what those hosts and indicators touch. Built with the same neighbour search as manual expansion."""
+    root = _graph_neighbors(who, "incident", str(inc_id), 20)
+    nodes = {root["node"]["id"]: {**root["node"], "expanded": True}}
+    edges = list(root["edges"])
+    for n in root["nodes"]:
+        nodes.setdefault(n["id"], n)
+    second = [n for n in root["nodes"] if n["type"] in ("host", "indicator", "account")][:5]
+    for n in second:
+        if len(nodes) >= cap:
+            break
+        sub = _graph_neighbors(who, n["type"], n["value"], 10)
+        nodes[n["id"]]["expanded"] = True
+        for m in sub["nodes"]:
+            if len(nodes) >= cap and m["id"] not in nodes:
+                continue
+            nodes.setdefault(m["id"], m)
+        edges += [e for e in sub["edges"] if e["to"] in nodes]
+    seen, uniq = set(), []
+    for e in edges:
+        k = tuple(sorted((e["from"], e["to"])))
+        if k not in seen and e["from"] in nodes and e["to"] in nodes:
+            seen.add(k)
+            uniq.append(e)
+    return {"nodes": list(nodes.values()), "edges": uniq}
+
+
+@app.get("/api/soc/graph/suggest")
+async def soc_graph_suggest(who: rbac.Principal = Depends(require("query.run"))):
+    """Where to start an investigation, from this tenant's last 24 h: severe open cases, most-alerted hosts,
+    indicators seen in alerts, accounts and rules that fired most."""
+    now = time.time()
+    ev = [e for e in _tenant_events(who, now - 86400, now) if e.get("severity") != "info"]
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    incs = sorted((i for i in E(who).incidents.values() if i.get("status") in ("open", "investigating")),
+                  key=lambda i: (sev_rank.get(i.get("severity"), 9), -(i.get("last_ts") or 0)))[:4]
+    out = [{"type": "incident", "value": str(i["id"]), "label": f"INC-{i['id']}", "count": len(i.get("alerts", [])),
+            "why": f"{i.get('severity')} · {str(i.get('title') or i.get('name') or '')[:60]}"} for i in incs]
+    ph = telemetry_placeholders()
+    for typ, field, n, why in (("host", "host", 4, "alerts 24 ชม."), ("indicator", "indicator", 3, "IOC ที่พบใน alert"),
+                               ("account", "user", 3, "บัญชีที่เกี่ยวกับ alert"), ("rule", "rule", 3, "rule ที่ทำงานบ่อย")):
+        c = Counter(str(e.get(field) or (e.get("remote_ip") if field == "indicator" else "") or "") for e in ev)
+        for val, k in c.most_common(n + 3):
+            if val and val not in ph and len([x for x in out if x["type"] == typ]) < n:
+                out.append({"type": typ, "value": val, "label": val, "count": k, "why": why})
+    return {"suggestions": out}
+
+
+@app.get("/api/soc/graph/auto")
+async def soc_graph_auto(incident: int, who: rbac.Principal = Depends(require("query.run"))):
+    return _auto_graph(who, incident)
+
+
+DEMO_GRAPH_TTL = 300
+
+
+def _demo_graphs(who: rbac.Principal) -> list[dict]:
+    """In the simulated tenant: ready-made investigation graphs of the 3 most severe simulated cases (memory only,
+    negative ids, rebuilt every 5 minutes)."""
+    eng = E(who)
+    if not eng.simulate:
+        return []
+    cache = getattr(eng, "_demo_graphs", None)
+    now = time.time()
+    if cache and now - cache["at"] < DEMO_GRAPH_TTL:
+        return cache["graphs"]
+    sev_rank = {"critical": 0, "high": 1}
+    incs = sorted((i for i in eng.incidents.values() if i.get("severity") in sev_rank
+                   and not any(a.get("simulated") is False for a in i.get("alerts", []))),
+                  key=lambda i: (sev_rank[i["severity"]], -(i.get("last_ts") or 0)))[:3]
+    graphs = []
+    for k, inc in enumerate(incs, start=1):
+        g = _auto_graph(who, inc["id"])
+        graphs.append({"id": -k, "name": f"การสืบสวน INC-{inc['id']} · {str(inc.get('title') or inc.get('name') or '')[:50]}",
+                       "nodes": g["nodes"], "edges": g["edges"], "created_by": "somchai.demo", "updated_by": "somchai.demo",
+                       "created_at": inc.get("first_ts") or now, "updated_at": now, "simulated": True})
+    eng._demo_graphs = {"at": now, "graphs": graphs}
+    return graphs
+
+
 class GraphIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     nodes: list[dict] = Field(default_factory=list, max_length=500 * settings.soc_scale)
@@ -1051,13 +1132,16 @@ def _clean_graph(req: GraphIn) -> tuple[list, list]:
 
 @app.get("/api/soc/graphs")
 async def soc_graphs(who: rbac.Principal = Depends(require("notebooks.read"))):
-    return {"graphs": [{k: g[k] for k in ("id", "name", "created_by", "created_at", "updated_at")} | {"nodes": len(g["nodes"])}
-                       for g in soc_store.graphs(who.tenant)]}
+    demo = _demo_graphs(who) if who.can("query.run") else []
+    return {"graphs": [{k: g[k] for k in ("id", "name", "created_by", "created_at", "updated_at")}
+                       | {"nodes": len(g["nodes"]), "simulated": bool(g.get("simulated"))}
+                       for g in soc_store.graphs(who.tenant) + demo]}
 
 
 @app.get("/api/soc/graphs/{gid}")
 async def soc_graph(gid: int, who: rbac.Principal = Depends(require("notebooks.read"))):
-    g = next((g for g in soc_store.graphs(who.tenant) if g["id"] == gid), None)
+    pool = soc_store.graphs(who.tenant) if gid > 0 else (_demo_graphs(who) if who.can("query.run") else [])
+    g = next((g for g in pool if g["id"] == gid), None)
     if g is None:
         raise HTTPException(404, "graph not found")
     return g

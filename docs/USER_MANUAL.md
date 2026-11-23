@@ -355,6 +355,10 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 3. **ลาก** node เพื่อจัดตำแหน่ง
 4. ตั้งชื่อแล้วกด **บันทึก** · เปิด graph เดิมได้จากรายการทางซ้าย · **+ New graph** เริ่มใหม่
 
+- **เริ่มสืบสวนจากตรงนี้** — เมื่อ canvas ว่าง ระบบเสนอจุดเริ่มจากข้อมูล 24 ชม. ของ tenant: case ที่เปิดอยู่ (เรียงตามความรุนแรง), เครื่องที่มี alert มากที่สุด, IOC ที่พบใน alert, บัญชี และ rule ที่ทำงานบ่อย (ตัวเลขข้างชื่อ = จำนวน alert) คลิก case = สร้าง graph อัตโนมัติ, คลิกอย่างอื่น = เพิ่ม + ขยาย
+- **⚡ Graph อัตโนมัติจาก case** — สร้าง graph 2 ชั้น: case → เครื่อง / บัญชี / IOC / rule / threat → สิ่งที่เครื่อง IOC และบัญชีเหล่านั้นเชื่อมต่อ (สูงสุด 45 nodes) แล้วขยายหรือบันทึกต่อได้
+- **graph ตัวอย่าง (ป้าย "จำลอง")** — ใน tenant `default` มี graph การสืบสวนของ 3 case จำลองที่รุนแรงที่สุด สร้างใหม่ทุก 5 นาทีในหน่วยความจำ เปิดดู ขยาย และกดบันทึกเป็นสำเนาของตัวเองได้
+
 สีของ node: Host ฟ้า · Account ส้ม · Indicator แดง · Case ม่วง · Threat ชมพู · Rule เขียว
 ข้อมูลที่ใช้: alert และ log ดิบ 7 วัน, case, และ intelligence ของ tenant นี้เท่านั้น
 
@@ -1277,7 +1281,9 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | GET | `/api/soc/integrations` | `soc.read` |  |
 | GET | `/api/assistant/suggestions` | `ai.copilot` |  |
 | POST | `/api/assistant` | `ai.copilot` |  |
-| GET | `/api/soc/graph/expand` | `query.run` |  |
+| GET | `/api/soc/graph/expand` | `query.run` | Two-hop investigation graph around one case: the case → its hosts / accounts / rules / indicators / threats → |
+| GET | `/api/soc/graph/suggest` | `query.run` | Where to start an investigation, from this tenant's last 24 h: severe open cases, most-alerted hosts, |
+| GET | `/api/soc/graph/auto` | `query.run` | In the simulated tenant: ready-made investigation graphs of the 3 most severe simulated cases (memory only, |
 | GET | `/api/soc/graphs` | `notebooks.read` |  |
 | GET | `/api/soc/graphs/{gid}` | `notebooks.read` |  |
 | POST | `/api/soc/graphs` | `notebooks.write` |  |

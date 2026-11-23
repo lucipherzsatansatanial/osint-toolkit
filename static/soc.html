@@ -611,9 +611,11 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
             <option value="incident">Case (เลข)</option><option value="threat">Threat / malware</option><option value="rule">Rule ID</option></select>
           <input id="grValue" placeholder="ค่า เช่น SRV-WEB-01" aria-label="ค่า node">
           <button id="grAdd" class="ghost">เพิ่ม + ขยาย</button>
+          <button id="grAuto" class="ghost" title="สร้าง graph 2 ชั้นรอบ case: case → เครื่อง/บัญชี/IOC/rule → สิ่งที่เครื่องและ IOC เชื่อมต่อ">⚡ Graph อัตโนมัติจาก case</button>
           <button id="grSave" data-perm="notebooks.write">บันทึก</button>
           <span id="grMsg" class="muted small"></span>
         </div>
+        <div id="grSuggest" class="gr-suggest" hidden></div>
         <svg id="grSvg" class="gr-svg" role="img" aria-label="Investigation graph"></svg>
         <div class="gr-legend" id="grLegend"></div>
       </div>
