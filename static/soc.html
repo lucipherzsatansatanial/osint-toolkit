@@ -682,7 +682,8 @@ field ซ้อนใช้จุด เช่น record.cmdline · ข้อค
   <section class="card span3" id="entitiesCard">
     <h2>Entities <small class="muted">กลุ่มองค์กร / สาขา / หน่วยธุรกิจ ที่เป็นเจ้าของ intake · กำหนดได้ว่าจะสร้าง alert หรือเก็บ log อย่างเดียว</small>
       <button id="enNew" class="sm" data-perm="ingest.sources.manage">+ New entity</button></h2>
-    <div class="tbl-wrap"><table class="tbl" id="enTbl"><thead><tr><th>ชื่อ</th><th>รายละเอียด</th><th class="num">Intakes</th><th>Alert generation</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div id="enSuggest" class="gr-suggest" hidden></div>
+    <div class="tbl-wrap"><table class="tbl" id="enTbl"><thead><tr><th>ชื่อ</th><th>รายละเอียด</th><th class="num">Intakes</th><th class="num" title="alert ระดับ low ขึ้นไปของ entity นี้ใน 7 วัน">Alerts 7 วัน</th><th>Alert generation</th><th></th></tr></thead><tbody></tbody></table></div>
   </section>
 
   <section class="card span3" id="assetsCard">

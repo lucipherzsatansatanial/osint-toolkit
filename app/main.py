@@ -1661,11 +1661,58 @@ class EntityIn(BaseModel):
     mode: Literal["automatic", "monitor"] = "automatic"  # monitor = collect logs only, raise no alerts
 
 
+UNIT_TH = {"FIN": "ฝ่ายการเงิน", "HR": "ฝ่ายบุคคล", "DEV": "ฝ่ายพัฒนาซอฟต์แวร์", "SRV": "ศูนย์ข้อมูล / เซิร์ฟเวอร์",
+           "SALES": "ฝ่ายขาย", "EXEC": "ผู้บริหาร", "IT": "ฝ่ายไอที", "MKT": "ฝ่ายการตลาด", "OPS": "ฝ่ายปฏิบัติการ",
+           "LEGAL": "ฝ่ายกฎหมาย", "DC": "Domain controller", "WEB": "เว็บเซิร์ฟเวอร์", "DB": "ฐานข้อมูล", "BR": "สาขา"}
+
+
+def _host_groups(who: rbac.Principal) -> dict[str, dict]:
+    """Hosts the platform has discovered, grouped by naming prefix (FIN-WS-014 → FIN) with their alerts (7 d)."""
+    now = time.time()
+    hosts = {a["name"] for a in _all_assets(who).values() if a["type"] == "host" and not a.get("revoked")}
+    alerts = Counter(e.get("host") for e in _tenant_events(who, now - 7 * 86400, now) if e.get("severity") != "info")
+    groups: dict[str, dict] = {}
+    for h in hosts:
+        m = re.match(r"^([A-Za-z]{2,10})[-_]", h)
+        if not m:
+            continue
+        g = groups.setdefault(m.group(1).upper(), {"prefix": m.group(1).upper(), "hosts": [], "alerts_7d": 0})
+        g["hosts"].append(h)
+        g["alerts_7d"] += alerts.get(h, 0)
+    return {k: {**g, "hosts": sorted(g["hosts"]), "name": UNIT_TH.get(k, k)} for k, g in groups.items() if len(g["hosts"]) >= 2}
+
+
+def _entity_alerts(who: rbac.Principal, names: list[str]) -> Counter:
+    now = time.time()
+    want = {n.lower() for n in names}
+    return Counter(str(e.get("entity")).lower() for e in _tenant_events(who, now - 7 * 86400, now)
+                   if e.get("entity") and str(e.get("entity")).lower() in want and e.get("severity") != "info")
+
+
 @app.get("/api/soc/entities")
 async def soc_entities(who: rbac.Principal = Depends(require("entities.read"))):
     ins = soc_store.intakes(who.tenant)
-    return {"entities": [{**e, "intakes": sum(1 for i in ins if i.get("entity_id") == e["id"])}
-                         for e in soc_store.entities(who.tenant)]}
+    ents = soc_store.entities(who.tenant)
+    al = _entity_alerts(who, [e["name"] for e in ents])
+    out = [{**e, "intakes": sum(1 for i in ins if i.get("entity_id") == e["id"]), "alerts_7d": al.get(e["name"].lower(), 0)}
+           for e in ents]
+    if E(who).simulate:  # demo tenant: the demo company's business units, from the simulated hosts (memory only)
+        for k, g in enumerate(sorted(_host_groups(who).values(), key=lambda g: -len(g["hosts"])), start=1):
+            out.append({"id": -k, "name": f"{g['name']} ({g['prefix']})", "mode": "automatic",
+                        "description": f"{len(g['hosts'])} เครื่อง {g['prefix']}-* ของบริษัทจำลอง เช่น {', '.join(g['hosts'][:3])}",
+                        "intakes": 0, "hosts": len(g["hosts"]), "alerts_7d": g["alerts_7d"], "simulated": True,
+                        "created_by": "lead.demo"})
+    return {"entities": out}
+
+
+@app.get("/api/soc/entities/suggest")
+async def soc_entities_suggest(who: rbac.Principal = Depends(require("entities.read"))):
+    """Business units suggested from discovered host names (prefix before the first '-'), skipping names that are
+    already an entity. Creating one is a normal POST /api/soc/entities."""
+    have = {e["name"].lower() for e in soc_store.entities(who.tenant)}
+    out = [{"prefix": g["prefix"], "name": g["name"], "hosts": len(g["hosts"]), "examples": g["hosts"][:4], "alerts_7d": g["alerts_7d"]}
+           for g in _host_groups(who).values() if g["name"].lower() not in have and f"{g['name']} ({g['prefix']})".lower() not in have]
+    return {"suggestions": sorted(out, key=lambda g: (-g["alerts_7d"], -g["hosts"]))}
 
 
 @app.post("/api/soc/entities")
@@ -1681,6 +1728,8 @@ async def soc_entity_create(req: EntityIn, who: rbac.Principal = Depends(require
 
 @app.put("/api/soc/entities/{ent_id}")
 async def soc_entity_update(ent_id: int, req: EntityIn, who: rbac.Principal = Depends(require("ingest.sources.manage"))):
+    if ent_id < 0:
+        raise HTTPException(409, "entity ตัวอย่าง (demo) แก้ไขไม่ได้")
     ent = next((e for e in soc_store.entities(who.tenant) if e["id"] == ent_id), None)
     if ent is None:
         raise HTTPException(404, "entity not found")

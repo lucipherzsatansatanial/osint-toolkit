@@ -409,6 +409,9 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
   - **monitor** — เก็บ log อย่างเดียว ไม่สร้าง alert (เหมาะช่วงรับลูกค้าใหม่หรือปรับจูน)
 - alert ที่เกิดจาก intake ของ entity จะมีชื่อ entity ติดไปด้วย
 - **ดู intakes** — ไฮไลต์ intake ของ entity นั้นในหน้า Intakes
+- คอลัมน์ **Alerts 7 วัน** — จำนวน alert (ระดับ low ขึ้นไป) ที่มาจาก intake ของ entity นั้นใน 7 วัน
+- **แนะนำ entity จากชื่อเครื่องที่ค้นพบ** — ระบบจัดกลุ่มเครื่องตามคำนำหน้าชื่อ (เช่น `FIN-WS-014` → FIN = ฝ่ายการเงิน, HR, DEV, SRV, SALES, EXEC, IT …) เฉพาะกลุ่มที่มีอย่างน้อย 2 เครื่องและยังไม่มี entity ชื่อนั้น คลิกเพื่อเปิดแบบฟอร์มที่กรอกชื่อและรายละเอียดให้ (เริ่มที่โหมด monitor) — entity ผูกกับ intake ไม่ใช่กับเครื่อง จึงต้องผูก intake ของหน่วยงานนั้นต่อเอง
+- **entity ตัวอย่าง (ป้าย "จำลอง")** — ใน tenant `default` แสดงหน่วยธุรกิจของบริษัทจำลองที่จัดกลุ่มจากชื่อเครื่อง พร้อมจำนวนเครื่องและ alert 7 วัน แก้ไขไม่ได้ และไม่แสดงในตัวเลือก entity ของ Intakes
 
 ### 4.15 Assets
 
@@ -1312,6 +1315,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | POST | `/api/soc/agents/{agent_id}/lifecycle` | `agents.deploy` | Put an approved agent into service or retire it. Activity from a retired agent is blocked and alerted (AGT-011) |
 | POST | `/api/soc/alerts/action` | `alerts.read` | Act on an alert group (same alert title on the same host) without touching response capabilities |
 | GET | `/api/soc/entities` | `entities.read` |  |
+| GET | `/api/soc/entities/suggest` | `entities.read` | Business units suggested from discovered host names (prefix before the first '-'), skipping names that are |
 | POST | `/api/soc/entities` | `ingest.sources.manage` |  |
 | PUT | `/api/soc/entities/{ent_id}` | `ingest.sources.manage` |  |
 | GET | `/api/soc/intakes` | `entities.read` |  |

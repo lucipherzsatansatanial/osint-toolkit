@@ -1838,7 +1838,7 @@ async function loadIntakes() {
       <div class="in-stat"><b class="${i.invalid ? "bad-ink" : ""}">${big(i.invalid)}</b><small>Invalid events</small></div>
       <div class="in-stat"><b class="${i.warning ? "warn-ink" : ""}">${big(i.warning)}</b><small>Events in warning</small></div>
       <div class="in-stat"><b class="small">${i.last_event_at ? ago(i.last_event_at) + "ที่แล้ว" : "—"}</b><small>ส่งล่าสุด</small></div>
-      <div class="in-act">${edit ? `<select class="in-ent" aria-label="Entity ของ ${esc(i.name)}"><option value="">— entity —</option>${IN.ents.map((e) => `<option value="${e.id}" ${e.id === i.entity_id ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select>
+      <div class="in-act">${edit ? `<select class="in-ent" aria-label="Entity ของ ${esc(i.name)}"><option value="">— entity —</option>${IN.ents.filter((e) => !e.simulated).map((e) => `<option value="${e.id}" ${e.id === i.entity_id ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select>
         <button class="ghost sm in-rot">Rotate key</button><button class="ghost sm in-dis">${i.disabled ? "เปิดใช้" : "ปิดใช้"}</button>` : ""}</div></div>`).join("")
       || '<p class="muted">ยังไม่มี intake — สร้าง intake แล้วนำ key ไปใส่ใน log shipper (เช่น tools/ship_logs.py, Fluent Bit, Logstash http output)</p>';
   } catch (e) { $("#inList").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
@@ -1856,7 +1856,7 @@ $("#keyCopy").onclick = () => navigator.clipboard?.writeText($("#keyVal").textCo
 $("#inNew").onclick = async () => {
   await loadEntities();
   const f = $("#inForm"); f.reset(); $("#inErr").textContent = "";
-  f.entity_id.innerHTML = '<option value="">— ไม่ระบุ —</option>' + IN.ents.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
+  f.entity_id.innerHTML = '<option value="">— ไม่ระบุ —</option>' + IN.ents.filter((e) => !e.simulated).map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
   $("#inDlg").showModal();
 };
 $("#inForm").addEventListener("submit", async (ev) => {
@@ -1891,13 +1891,25 @@ async function loadEntities() {
   try {
     IN.ents = (await api("/api/soc/entities")).entities;
     const edit = can("ingest.sources.manage");
-    $("#enTbl tbody").innerHTML = IN.ents.map((e) => `<tr data-id="${e.id}"><td><span class="who">${esc(e.name[0].toUpperCase())}</span><b>${esc(e.name)}</b></td>
-      <td class="a-title">${esc(e.description || "")}</td><td class="num">${e.intakes}</td>
+    $("#enTbl tbody").innerHTML = IN.ents.map((e) => `<tr data-id="${e.id}" class="${e.simulated ? "demo" : ""}"><td><span class="who">${esc(e.name[0].toUpperCase())}</span><b>${esc(e.name)}</b>${e.simulated ? ' <span class="demo-tag" title="หน่วยธุรกิจของบริษัทจำลอง จัดกลุ่มจากชื่อเครื่อง — แก้ไขไม่ได้">จำลอง</span>' : ""}</td>
+      <td class="a-title">${esc(e.description || "")}</td><td class="num">${e.simulated ? "—" : e.intakes}</td><td class="num">${(e.alerts_7d || 0).toLocaleString()}</td>
       <td><span class="${e.mode === "monitor" ? "vd" : "dt"}">${e.mode === "monitor" ? "monitor (log only)" : "automatic"}</span></td>
-      <td>${edit ? '<button class="ghost sm en-edit">แก้ไข</button>' : ""} <button class="ghost sm en-in">ดู intakes</button></td></tr>`).join("")
-      || '<tr><td colspan="5" class="muted">ยังไม่มี entity — เช่น แยกตามบริษัทลูก สาขา หรือหน่วยธุรกิจ</td></tr>';
-  } catch (e) { $("#enTbl tbody").innerHTML = `<tr><td colspan="5" class="err">${esc(e.message)}</td></tr>`; }
+      <td>${edit && !e.simulated ? '<button class="ghost sm en-edit">แก้ไข</button>' : ""} ${e.simulated ? "" : '<button class="ghost sm en-in">ดู intakes</button>'}</td></tr>`).join("")
+      || '<tr><td colspan="6" class="muted">ยังไม่มี entity — เช่น แยกตามบริษัทลูก สาขา หรือหน่วยธุรกิจ</td></tr>';
+  } catch (e) { $("#enTbl tbody").innerHTML = `<tr><td colspan="6" class="err">${esc(e.message)}</td></tr>`; }
+  try {
+    const r = await api("/api/soc/entities/suggest"), box = $("#enSuggest");
+    box.hidden = !r.suggestions.length || !can("ingest.sources.manage");
+    box.innerHTML = `<b>แนะนำ entity จากชื่อเครื่องที่ค้นพบ</b> <small class="muted">จัดกลุ่มตามคำนำหน้าชื่อเครื่อง (เช่น FIN-WS-014 → FIN) · คลิกเพื่อเปิดแบบฟอร์มสร้าง</small>
+      <div class="gs-row">${r.suggestions.map((g) => `<button type="button" class="gs-chip en-sug" data-n="${esc(g.name)} (${esc(g.prefix)})"
+        data-d="${esc(`เครื่อง ${g.prefix}-* (${g.hosts} เครื่องที่ค้นพบ เช่น ${g.examples.join(", ")})`)}" title="${esc(g.examples.join(", "))}">${esc(g.name)} (${esc(g.prefix)}) <small>${g.hosts} เครื่อง · ${g.alerts_7d} alerts</small></button>`).join("")}</div>`;
+  } catch { $("#enSuggest").hidden = true; }
 }
+$("#enSuggest").addEventListener("click", (ev) => {
+  const b = ev.target.closest(".en-sug"); if (!b) return;
+  openEntity(null); const f = $("#entForm"); f.name.value = b.dataset.n; f.description.value = b.dataset.d; f.mode.value = "monitor";
+  $("#enErr").textContent = "แนะนำให้เริ่มที่โหมด monitor แล้วเปลี่ยนเป็น automatic เมื่อผูก intake และตรวจ log แล้ว";
+});
 const EN = { edit: null };
 function openEntity(e) {
   EN.edit = e; const f = $("#entForm"); f.reset(); $("#enErr").textContent = "";
