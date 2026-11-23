@@ -19,7 +19,8 @@ Platform schema
     common: agent, session, summary, decision, on_behalf_of, host
     prompt: source, flags[], snippet · tool_call: tool, args, bytes, dest · process: pid, ppid, image, cmdline
     network: dest, ip, port, bytes_out · auth: action, scope
-  every record: ts (epoch seconds or ISO-8601; default = receive time)
+  every record: ts (epoch seconds or ISO-8601; default = receive time), optional src_country (ISO alpha-2 of the
+                remote IP, e.g. from Logstash geoip; ECS source.geo.country_iso_code is read automatically)
 
 Everything here is untrusted input: strings are clipped, numbers coerced, unknown kinds rejected.
 """
@@ -77,6 +78,9 @@ def clean(rec: dict, now: float) -> dict | None:
     for k in INT_FIELDS:
         if rec.get(k) is not None:
             out[k] = _int(rec[k])
+    cc = str(rec.get("src_country") or "").strip().upper()
+    if re.fullmatch(r"[A-Z]{2}", cc):
+        out["src_country"] = cc  # ISO 3166-1 alpha-2 of the remote side, if the shipper geolocated it
     if isinstance(rec.get("flags"), list):
         out["flags"] = [str(f)[:64] for f in rec["flags"][:20]]
     kind = str(rec.get("kind") or "")
@@ -153,7 +157,8 @@ def from_ecs(d: dict) -> dict | None:
     cat = _g(d, "event.category") or []
     cat = [cat] if isinstance(cat, str) else list(cat)
     base = {"ts": _g(d, "@timestamp"), "host": _g(d, "host.name") or _g(d, "host.hostname"),
-            "user": _g(d, "user.name")}
+            "user": _g(d, "user.name"),
+            "src_country": _g(d, "source.geo.country_iso_code") or _g(d, "client.geo.country_iso_code")}
     if "process" in cat or _g(d, "process.command_line"):
         etype = _g(d, "event.type") or []
         etype = [etype] if isinstance(etype, str) else list(etype)

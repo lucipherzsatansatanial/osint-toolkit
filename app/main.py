@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, assistant, catalog, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, assistant, catalog, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app import query as query_mod
 from app.notify import notifier
 from app.telemetry import hub
@@ -2732,6 +2732,20 @@ def _tenant_events(who: rbac.Principal, start: float, end: float) -> list[dict]:
             seen.add((e["id"], e.get("simulated")))
             out.append(e)
     return out
+
+
+@app.get("/api/soc/threatmap")
+async def soc_threatmap(days: int = 7, who: rbac.Principal = Depends(require("alerts.read"))):
+    """Threat Map: origin country of the infrastructure behind this tenant's alerts (event src_country or Feodo C2
+    country — never guessed), attack trend, most-hit assets, MITRE tactic share, Feodo C2 hosting countries."""
+    days = max(1, min(days, 30))
+    now = time.time()
+    eng = E(who)
+    merged = {i["id"]: i for i in soc_store.incidents(None, 500 * settings.soc_scale, who.tenant)}
+    merged.update(eng.incidents)
+    out = threatmap.build(_tenant_events(who, now - 30 * 86400, now), list(merged.values()),
+                          threatintel.feed_index("feodo"), _indicators(who.tenant), settings.soc_home_country, now, days)
+    return {**out, "simulated": eng.simulate}
 
 
 @app.get("/api/soc/landscape")

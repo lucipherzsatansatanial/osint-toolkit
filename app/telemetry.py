@@ -230,6 +230,13 @@ class Engine:
                     events.append(self._event(a["spec"], a["host"], a["user"], rec["ts"], simulated=False, **a["extra"]))
         if detect and self.ioc_lookup:
             events.extend(self._ioc_events(records))
+        geo = {str(rec.get(k)): rec["src_country"] for rec in records if rec.get("src_country")
+               for k in ("src_ip", "client_ip", "ip", "dest_ip") if rec.get(k)}
+        if geo:  # country of the remote side, when the log shipper geolocated it (never guessed)
+            for e in events:
+                for k in ("remote_ip", "indicator", "src_ip"):
+                    if not e.get("src_country") and str(e.get(k)) in geo:
+                        e["src_country"] = geo[str(e.get(k))]
         for rec in records:
             rec["simulated"] = False
             rec["_source"] = source or "API"

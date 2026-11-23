@@ -246,6 +246,25 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 
 > หมายเหตุ: ไม่ใช่สถิติระดับโลก แสดงเฉพาะ feed สาธารณะและข้อมูลของ tenant นี้
 
+### 4.5.1 Threat Map
+
+**วัตถุประสงค์:** ภาพรวมแบบจอ wall display ว่าโครงสร้างพื้นฐานที่อยู่เบื้องหลัง alert ของเรามาจากประเทศใด อะไรถูกโจมตีมากที่สุด และฐานข้อมูล IOC ของเรามีอะไรบ้าง (สิทธิ์ `alerts.read`) เลือกช่วง 7 หรือ 30 วัน รีเฟรชเองทุก 60 วินาทีขณะเปิดดู
+
+| ส่วน | แสดงอะไร | แหล่งข้อมูล |
+|---|---|---|
+| Incident · IOC unique | จำนวน incident ในช่วงที่เลือก และจำนวน IOC ไม่ซ้ำในฐานข้อมูล Intelligence (ไม่รวม CVE) | incident ของ tenant, Intelligence |
+| Attack trend | จำนวน incident ใหม่รายวัน 30 วัน | incident ของ tenant |
+| ประเทศต้นทางของโครงสร้างพื้นฐาน | 10 ประเทศที่ alert มาจากมากที่สุด + จำนวน alert ที่ระบุประเทศไม่ได้ | ดูหมายเหตุด้านล่าง |
+| ลูกโลก | เส้นจากประเทศต้นทาง 10 อันดับมายังประเทศของเรา (`SOC_HOME_COUNTRY`, ค่าเริ่ม TH) เส้นส้ม = 3 อันดับแรก ความหนาตามจำนวน alert · **ลากเพื่อหมุน** | เหมือนข้างบน |
+| วงแหวน 5 วง | สัดส่วน alert ตาม MITRE ATT&CK tactic 5 อันดับแรก | alert ของ tenant |
+| Asset ที่ถูกโจมตีมากที่สุด | 8 เครื่องที่มี alert มากที่สุด (H = จำนวน alert ระดับ high/critical) | alert ของ tenant |
+| Top 5 ประเทศที่โฮสต์ botnet C2 | ประเทศที่ตั้งของ C2 server ทั่วโลก | abuse.ch Feodo Tracker |
+| IOC Database | จำนวน IOC 5 ประเภทแรก (ipv4, domain, url, hash …) | Intelligence (CTI feeds + IOC ของ tenant) |
+
+> **ประเทศคือที่ตั้งของโครงสร้างพื้นฐาน (server / proxy / VPN / C2) ไม่ใช่สัญชาติหรือตัวตนของผู้โจมตี** ผู้โจมตีมักเช่าเซิร์ฟเวอร์ต่างประเทศ ห้ามนำไปสรุปว่า "ประเทศ X โจมตีเรา"
+
+**ระบบรู้ประเทศได้อย่างไร (ไม่เดา):** ใช้ `src_country` ของ log ก่อน — log แบบ ECS อ่านจาก `source.geo.country_iso_code` อัตโนมัติ, log แบบ native ใส่ฟิลด์ `src_country` (รหัส ISO 2 ตัว เช่น `CN`) ได้ เช่นจาก Logstash `geoip` — ถ้าไม่มี จะดูว่า IP ปลายทาง/IOC อยู่ใน Feodo Tracker หรือไม่ ถ้าไม่มีทั้งสองอย่างจะนับเป็น "ระบุประเทศไม่ได้" ข้อมูลจำลองใน tenant `default` สุ่มประเทศขึ้นเอง (มีข้อความ "ส่วนใหญ่เป็นข้อมูลจำลอง" กำกับ)
+
 ### 4.6 Query builder
 
 **วัตถุประสงค์:** ค้นและสรุปข้อมูลด้วยภาษาแบบ pipe (สิทธิ์ `query.run`)
@@ -726,6 +745,8 @@ events                                  ← แหล่ง: events (log ดิ�
 | `access_log` | Web server access log (Apache/Nginx combined) ระบุ `?host=` |
 | `auto` | ให้ระบบตรวจรูปแบบเอง |
 
+ทุกรูปแบบใส่ `src_country` (รหัสประเทศ ISO 2 ตัวของ IP ฝั่งตรงข้าม) ได้ เพื่อให้ Threat Map แสดงประเทศต้นทางของ log จริง — ECS อ่านจาก `source.geo.country_iso_code` ให้เอง
+
 ยังไม่รองรับ FortiGate syslog โดยตรง — ต้องแปลงผ่าน Logstash/Fluent Bit เป็น ECS ก่อน
 
 ### 10.3 ตัวอย่าง
@@ -785,7 +806,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 ## 13. อภิธานศัพท์ (คำศัพท์ คำแปล ความหมาย)
 
 <!-- BEGIN GENERATED:glossary -->
-รวม 167 คำ เรียงตามตัวอักษร
+รวม 168 คำ เรียงตามตัวอักษร
 
 **A**
 
@@ -1036,6 +1057,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | Tenant | ผู้เช่าระบบ / ลูกค้า | องค์กรที่ข้อมูลแยกจากกันโดยสมบูรณ์ |
 | Threat | ภัยคุกคาม | ผู้โจมตี มัลแวร์ หรือเครื่องมือที่ก่อภัย |
 | Threat landscape | ภาพรวมภัยคุกคาม | แนวโน้มภัยจาก CTI และ alert |
+| Threat Map | แผนที่ภัยคุกคาม | ลูกโลกแสดงประเทศที่ตั้งโครงสร้างพื้นฐานเบื้องหลัง alert — ไม่ใช่ตัวตนผู้โจมตี |
 | Threshold | เกณฑ์ | จำนวนครั้งขั้นต่ำในช่วงเวลาก่อน rule จะทำงาน |
 | Timeline | ไทม์ไลน์ | ลำดับเหตุการณ์ตามเวลา |
 | TLP (Traffic Light Protocol) | ระดับการเผยแพร่ข้อมูล | CLEAR เผยแพร่ได้ · GREEN ในชุมชน · AMBER ในองค์กร · RED เฉพาะผู้รับ |
@@ -1309,6 +1331,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | POST | `/api/soc/notify-rules` | `integrations.manage` |  |
 | PUT | `/api/soc/notify-rules/{rule_id}` | `integrations.manage` |  |
 | DELETE | `/api/soc/notify-rules/{rule_id}` | `integrations.manage` |  |
+| GET | `/api/soc/threatmap` | `alerts.read` | Threat Map: origin country of the infrastructure behind this tenant's alerts (event src_country or Feodo C2 |
 | GET | `/api/soc/landscape` | `alerts.read` |  |
 | GET | `/api/soc/events` | `events.read` | Raw telemetry explorer: real records from the database (kept SOC_RAW_RETENTION_DAYS) plus the in-memory window |
 | GET | `/api/soc/alerts` | `alerts.read` |  |
@@ -1352,6 +1375,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | `SOC_BACKUP_DIR` | — | โฟลเดอร์เก็บ backup อัตโนมัติ |  |
 | `SOC_BACKUP_HOURS` | `24` | ความถี่การ backup (ชั่วโมง) |  |
 | `SOC_BACKUP_KEEP` | `7` | จำนวน backup ที่เก็บไว้ |  |
+| `SOC_HOME_COUNTRY` | `TH` | ประเทศของเรา (ISO 2 ตัว) ที่ Threat Map ลากเส้นเข้าหา (ค่าเริ่ม TH) |  |
 | `SOC_NOTIFY_DEBOUNCE` | `10` | หน่วงการแจ้งเตือน (วินาที) เพื่อรวมการเปลี่ยนแปลง |  |
 | `SOC_NOTIFY_EMAIL_TO` | — | อีเมลผู้รับแจ้งเตือน (คั่นด้วย ,) |  |
 | `SOC_NOTIFY_LINE_TO` | — | ID กลุ่ม/ผู้ใช้ LINE ที่รับแจ้งเตือน |  |

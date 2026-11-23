@@ -37,6 +37,8 @@ class Settings:
     # Offensive-AI rule OAI-002: hosts allowed to call AI model APIs, and the host-name prefixes treated as servers.
     ai_approved_hosts: list[str] = field(default_factory=lambda: _list("SOC_AI_APPROVED_HOSTS"))
     server_prefixes: list[str] = field(default_factory=lambda: _list("SOC_SERVER_PREFIXES") or ["SRV"])
+    # Threat Map: the country attacks are drawn towards (ISO 3166-1 alpha-2)
+    soc_home_country: str = (os.getenv("SOC_HOME_COUNTRY", "TH").strip().upper() or "TH")[:2]
     user_agent: str = os.getenv("OSINT_USER_AGENT", "OSINT-Toolkit/0.1 (+security research)")
 
 

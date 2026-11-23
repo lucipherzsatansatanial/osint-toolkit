@@ -2545,3 +2545,119 @@ $("#alTbl").addEventListener("click", async (ev) => {
     if (r.incident_id) location.hash = "#inc-" + r.incident_id; loadAlertsList(); loadOverview(); }
   catch (e) { alert(e.message); }
 });
+
+// ---------- Threat Map ----------
+const TM = { data: null, world: null, cent: null, rot: [-100, -12, 0], drag: null, raf: 0, visible: false, t0: performance.now() };
+const tmName = (() => { let dn = null; try { dn = new Intl.DisplayNames(["th"], { type: "region" }); } catch (e) {} return (cc) => { try { return (dn && dn.of(cc)) || cc; } catch (e) { return cc; } }; })();
+const TM_RED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+function tmBars(el, rows, label, value, fmt) {
+  const max = Math.max(1, ...rows.map(value));
+  el.innerHTML = rows.map((r) => `<div class="tm-bar"><span class="tm-bl" title="${esc(label(r))}">${esc(label(r))}</span>
+    <span class="tm-bt"><i style="width:${(100 * value(r) / max).toFixed(1)}%"></i></span><b>${esc(fmt ? fmt(r) : value(r).toLocaleString())}</b></div>`).join("")
+    || '<p class="tm-note">ยังไม่มีข้อมูล</p>';
+}
+async function tmAssets() {
+  if (TM.world) return;
+  const [w, c] = await Promise.all([fetch("/static/vendor/countries-110m.json").then((r) => r.json()), fetch("/static/vendor/country-centroids.json").then((r) => r.json())]);
+  TM.world = { land: topojson.feature(w, w.objects.land), borders: topojson.mesh(w, w.objects.countries, (a, b) => a !== b) };
+  TM.cent = c;
+}
+async function loadThreatMap() {
+  if (!window.d3 || !window.topojson) { $("#tmSub").textContent = "โหลดไลบรารีแผนที่ไม่สำเร็จ"; return; }
+  try {
+    const days = Number($("#mapDays").value);
+    const [r] = await Promise.all([api(`/api/soc/threatmap?days=${days}`), tmAssets()]);
+    TM.data = r;
+    if (!TM.rotSet && TM.cent[r.home]) { const [lon, lat] = TM.cent[r.home]; TM.rot = [-lon + 15, -lat + 8, 0]; TM.rotSet = true; }
+    const stamp = new Date(r.generated_at * 1000).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" });
+    $("#tmSub").textContent = `ข้อมูล ณ ${stamp} · ${r.days} วัน · ${r.alerts.toLocaleString()} alerts` + (r.simulated_share > 0.5 ? " · ส่วนใหญ่เป็นข้อมูลจำลอง" : "");
+    $("#tmIncLbl").textContent = `Incident (${r.days} วัน)`;
+    $("#tmInc").textContent = r.incidents.toLocaleString();
+    $("#tmIoc").textContent = r.ioc_unique.toLocaleString();
+    const tmax = Math.max(1, ...r.trend);
+    $("#tmTrend").innerHTML = r.trend.map((n, i) => `<i style="height:${Math.max(3, 100 * n / tmax)}%" title="${30 - i - 1 === 0 ? "วันนี้" : (30 - i - 1) + " วันก่อน"}: ${n} incident"></i>`).join("");
+    $("#tmOrgSub").textContent = `${r.days} วัน`;
+    tmBars($("#tmOrigins"), r.origins, (x) => tmName(x.country), (x) => x.count);
+    $("#tmUnknown").textContent = r.unknown_origin ? `ระบุประเทศไม่ได้ ${r.unknown_origin.toLocaleString()} alerts (log ไม่มี src_country และ IP ไม่อยู่ใน Feodo)` : "";
+    tmBars($("#tmTargets"), r.targets, (x) => x.host, (x) => x.alerts, (x) => x.alerts.toLocaleString() + (x.high ? ` · H${x.high}` : ""));
+    tmBars($("#tmInfra"), r.infra.top, (x) => tmName(x.country), (x) => x.count);
+    const tymax = Math.max(1, ...r.ioc_types.map((x) => x.count));
+    $("#tmTypes").innerHTML = r.ioc_types.map((x) => { const d = 64 + 44 * Math.sqrt(x.count / tymax);
+      return `<div class="tm-bub" style="width:${d}px;height:${d}px"><b>${x.count.toLocaleString()}</b><span>${esc(x.type)}</span></div>`; }).join("") || '<p class="tm-note">ยังไม่มี IOC</p>';
+    const COLS = ["#3b82f6", "#f5a524", "#8b5cf6", "#ef4444", "#14b8a6"];
+    $("#tmRings").innerHTML = r.categories.map((c, i) => { const C = 2 * Math.PI * 34, L = C * c.share;
+      return `<div class="tm-ring" title="${esc(c.name)}: ${c.count.toLocaleString()} alerts"><svg viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="34" class="bg"/>
+        <circle cx="42" cy="42" r="34" stroke="${COLS[i]}" stroke-dasharray="${L.toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 42 42)"/></svg>
+        <span><small>${esc(c.name)}</small><b>${(100 * c.share).toFixed(1)}%</b></span></div>`; }).join("") || '<p class="tm-note">ยังไม่มี alert</p>';
+    tmDraw(performance.now());
+  } catch (e) { $("#tmSub").textContent = "โหลด Threat Map ไม่สำเร็จ: " + e.message; }
+}
+function tmCanvas() {
+  const cv = $("#tmGlobe"), wrap = cv.parentElement, dpr = Math.min(2, window.devicePixelRatio || 1);
+  const size = Math.min(wrap.clientWidth, 560);
+  if (cv.width !== Math.round(size * dpr)) { cv.width = Math.round(size * dpr); cv.height = Math.round(size * dpr); cv.style.width = cv.style.height = size + "px"; }
+  return { cv, ctx: cv.getContext("2d"), size, dpr };
+}
+function tmDraw(now) {
+  if (!TM.world || !TM.data) return;
+  const { ctx, size, dpr } = tmCanvas(), r = size / 2 - 18, cx = size / 2, cy = size / 2;
+  if (r < 20) return;  // not laid out yet
+  const proj = d3.geoOrthographic().scale(r).translate([cx, cy]).rotate(TM.rot).clipAngle(90);
+  const path = d3.geoPath(proj, ctx);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, size, size);
+  const glow = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * 1.12);
+  glow.addColorStop(0, "rgba(45,212,191,.35)"); glow.addColorStop(1, "rgba(45,212,191,0)");
+  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(cx, cy, r * 1.12, 0, 2 * Math.PI); ctx.fill();
+  const sea = ctx.createRadialGradient(cx - r * .35, cy - r * .4, r * .1, cx, cy, r);
+  sea.addColorStop(0, "#1d6f6a"); sea.addColorStop(1, "#0b2f33");
+  ctx.fillStyle = sea; ctx.beginPath(); path({ type: "Sphere" }); ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.lineWidth = 1; ctx.beginPath(); path(d3.geoGraticule10()); ctx.stroke();
+  ctx.fillStyle = "#2a8a7f"; ctx.beginPath(); path(TM.world.land); ctx.fill();
+  ctx.strokeStyle = "rgba(10,40,44,.7)"; ctx.lineWidth = .6; ctx.beginPath(); path(TM.world.borders); ctx.stroke();
+  ctx.strokeStyle = "rgba(94,234,212,.55)"; ctx.lineWidth = 1.5; ctx.beginPath(); path({ type: "Sphere" }); ctx.stroke();
+  const d = TM.data, home = TM.cent[d.home], centre = [-TM.rot[0], -TM.rot[1]];
+  const vis = (p) => d3.geoDistance(p, centre) < Math.PI / 2 - 0.02;
+  const rotate = d3.geoRotation(TM.rot), RAD = Math.PI / 180;
+  // a lifted arc point is hidden only when it is behind the globe AND inside the disc the globe covers
+  const shown = (g, h) => { const [l, p] = rotate(g), z = Math.cos(p * RAD) * Math.cos(l * RAD); return z > 0 || h * Math.sqrt(Math.max(0, 1 - z * z)) > 1; };
+  const maxc = Math.max(1, ...d.arcs.map((a) => a.count));
+  const phase = TM_RED ? 0 : ((now - TM.t0) / 1400) % 1;
+  d.arcs.forEach((a, i) => {
+    const src = TM.cent[a.from]; if (!src || !home) return;
+    const interp = d3.geoInterpolate(src, home), dist = d3.geoDistance(src, home), lift = 0.08 + 0.22 * Math.min(1, dist / 1.6);
+    const pts = []; for (let k = 0; k <= 64; k++) { const t = k / 64, g = interp(t);
+      const h = 1 + lift * Math.sin(Math.PI * t);
+      if (!shown(g, h)) { pts.push(null); continue; }
+      const [x, y] = proj(g); pts.push([cx + (x - cx) * h, cy + (y - cy) * h]); }
+    const col = i < 3 ? "245,165,36" : "94,234,212", w = 1 + 2.5 * Math.sqrt(a.count / maxc);
+    ctx.lineWidth = w; ctx.lineCap = "round";
+    for (let k = 1; k < pts.length; k++) { const p = pts[k - 1], q = pts[k]; if (!p || !q) continue;
+      const t = k / 64, lit = Math.max(0, 1 - Math.abs(((t - phase + 1) % 1) - 0.5) * 6);
+      ctx.strokeStyle = `rgba(${col},${(0.35 + 0.65 * lit).toFixed(2)})`; ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
+    if (vis(src)) { const [x, y] = proj(src); ctx.fillStyle = `rgb(${col})`; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = "rgba(226,232,240,.85)"; ctx.font = "600 11px system-ui, sans-serif"; ctx.fillText(a.from, x + 6, y - 4); }
+  });
+  if (home && vis(home)) {
+    const [x, y] = proj(home), pulse = TM_RED ? 0.5 : (Math.sin((now - TM.t0) / 350) + 1) / 2;
+    ctx.fillStyle = `rgba(239,68,68,${0.25 + 0.25 * pulse})`; ctx.beginPath(); ctx.arc(x, y, 9 + 5 * pulse, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = "#ef4444"; ctx.beginPath(); ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.fill();
+    const label = tmName(d.home).toUpperCase();
+    ctx.fillStyle = "#f8fafc"; ctx.font = "700 13px system-ui, sans-serif";
+    const lw = ctx.measureText(label).width; ctx.fillText(label, x + 9 + lw > size - 4 ? x - 9 - lw : x + 9, y + 15);
+  }
+}
+function tmLoop(now) { TM.raf = 0; if (!TM.visible || document.hidden) return; tmDraw(now); if (!TM_RED) TM.raf = requestAnimationFrame(tmLoop); }
+function tmKick() { if (!TM.raf && TM.visible) TM.raf = requestAnimationFrame(tmLoop); }
+new IntersectionObserver((es) => { TM.visible = es.some((e) => e.isIntersecting); if (TM.visible) { if (!TM.data) loadThreatMap(); tmKick(); } }).observe($("#mapCard"));
+document.addEventListener("visibilitychange", tmKick);
+window.addEventListener("resize", () => tmDraw(performance.now()));
+$("#tmGlobe").addEventListener("pointerdown", (ev) => { TM.drag = { x: ev.clientX, y: ev.clientY, rot: TM.rot.slice() }; $("#tmGlobe").classList.add("drag"); });
+window.addEventListener("pointermove", (ev) => {
+  if (!TM.drag) return;
+  const k = 0.35, rot = TM.drag.rot;
+  TM.rot = [rot[0] + (ev.clientX - TM.drag.x) * k, Math.max(-80, Math.min(80, rot[1] - (ev.clientY - TM.drag.y) * k)), 0];
+  if (TM_RED || !TM.raf) tmDraw(performance.now());
+});
+window.addEventListener("pointerup", () => { TM.drag = null; $("#tmGlobe").classList.remove("drag"); });
+$("#mapDays").onchange = loadThreatMap;
+setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden && TM.visible) loadThreatMap(); }, 60000);
