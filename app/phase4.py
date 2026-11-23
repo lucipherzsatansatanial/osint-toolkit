@@ -60,6 +60,13 @@ def validate_rule(rule: dict) -> list[str]:
             errs.append(f"ฟิลด์ '{c.get('field')}' ไม่มีใน {kind} (ใช้ได้: {', '.join(KIND_FIELDS[kind])})")
         if c.get("op") not in OPS:
             errs.append(f"op '{c.get('op')}' ไม่รองรับ")
+        elif not str(c.get("value", "")).strip():
+            errs.append(f"เงื่อนไข {c.get('field')} {c.get('op')} ไม่มีค่า — ค่าว่างจะตรงกับทุก record")
+        elif c.get("op") in ("gte", "lte"):
+            try:
+                float(c.get("value"))
+            except (TypeError, ValueError):
+                errs.append(f"เงื่อนไข {c.get('field')} {c.get('op')} ต้องเป็นตัวเลข")
         if c.get("op") == "regex":
             pat = str(c.get("value", ""))
             if len(pat) > 300 or NESTED_QUANT.search(pat):

@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import audit, rbac
-from app import ai, assistant, catalog, demo_requests, nb_gen, demo_tasks, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
+from app import ai, assistant, catalog, rule_templates, demo_requests, nb_gen, demo_tasks, threatmap, vt, explorer, integrations, intel, ingest, landscape, notify_rules, phase3, phase4, query, soc_report, soc_store, workspace
 from app import query as query_mod
 from app.notify import notifier
 from app.telemetry import hub
@@ -59,7 +59,7 @@ async def lifespan(_: FastAPI):
 
     def setup_engine(e):  # runs once per tenant engine: restore its data, rules and alert hook
         e.restore(soc_store.load(e.tenant))
-        e.custom.load(soc_store.list_rules(e.tenant))
+        _load_custom(e)
         e.disabled_rules = set(soc_store.get_setting("disabled_rules", [], e.tenant))
         e.assets.update({(a["type"], a["name"]): a for a in soc_store.assets(e.tenant)})
         e.ioc_lookup = lambda t=e.tenant: _intel_index(t)
@@ -2277,9 +2277,40 @@ async def soc_rule_test(req: RuleTestRequest, who: rbac.Principal = Depends(requ
     return {"rule": rule, **phase4.evaluate_draft(rule, req.test_cases, _raw_records(who))}
 
 
+DEMO_RULES = [("ai-cli-yolo", "CUS-DEMO-1", None), ("scanner", "CUS-DEMO-2", None), ("oast", "CUS-DEMO-3", "nok.demo"),
+              ("agent-secrets", "CUS-DEMO-4", None), ("web-probe", "CUS-DEMO-5", None)]
+
+
+def _demo_rules() -> list[dict]:
+    """Demo tenant: custom rules the demo team wrote from the template library. They really run on the simulated
+    records (so their hit counters move), but live only in memory and cannot be edited."""
+    tpl = {t["id"]: t for t in rule_templates.public()}
+    out = []
+    for k, (tid, rid, draft_by) in enumerate(DEMO_RULES):
+        r = tpl[tid]["rule"]
+        out.append({**r, "id": rid, "status": "enabled", "version": 2, "simulated": True,
+                    "created_by": ["somchai.demo", "pim.demo", "nok.demo", "arthit.demo", "kanya.demo"][k], "published_by": "lead.demo",
+                    "description": tpl[tid]["why"],
+                    "versions": [{"version": 1, "by": "somchai.demo", "note": "ร่างแรกจากแม่แบบ"},
+                                 {"version": 2, "by": "lead.demo", "note": "ปรับเงื่อนไขหลังย้อนทดสอบ"}],
+                    **({"draft": {"by": draft_by, "note": "เพิ่มโดเมน OAST อื่น"}} if draft_by else {})})
+    return out
+
+
+def _load_custom(eng) -> None:
+    rules = soc_store.list_rules(eng.tenant)
+    eng.custom.load(rules + (_demo_rules() if eng.simulate else []))
+
+
+@app.get("/api/soc/rules/templates")
+async def soc_rule_templates(who: rbac.Principal = Depends(require("rules.read"))):
+    """Vetted starting points for custom rules (rule + test cases); load one into the assistant to test and save."""
+    return {"templates": rule_templates.public()}
+
+
 @app.get("/api/soc/rules")
 async def soc_rules(who: rbac.Principal = Depends(require("rules.read"))):
-    rules = soc_store.list_rules(who.tenant)
+    rules = soc_store.list_rules(who.tenant) + (_demo_rules() if E(who).simulate else [])
     for r in rules:
         r["hits"] = E(who).custom.hits.get(r["id"], 0)
     return {"rules": rules}
@@ -2312,7 +2343,7 @@ async def soc_rule_save(req: RuleSave, who: rbac.Principal = Depends(require("ru
                     versions=[{"version": 1, "def": definition, "by": who.name, "at": now, "note": "created"}])
         soc_store.save_rule(rule, who.tenant)
         out, status = rule, "disabled"
-    E(who).custom.load(soc_store.list_rules(who.tenant))
+    _load_custom(E(who))
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_save", target=out["id"],
                  purpose=out.get("title", "")[:300], legal_basis="own_asset", case_ref=None, result={"status": status})
     return out
@@ -2366,7 +2397,7 @@ async def soc_rule_status(rule_id: str, req: RuleStatus, who: rbac.Principal = D
         rule.update(published_by=who.name, published_at=time.time())
     rule.update(status=req.status, status_by=who.name, updated_at=time.time())
     soc_store.save_rule(rule, who.tenant)
-    E(who).custom.load(soc_store.list_rules(who.tenant))
+    _load_custom(E(who))
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_publish" if published else "soc.rule_status",
                  target=rule_id, purpose=req.status, legal_basis="own_asset", case_ref=None,
                  result={"status": req.status, "version": published})
@@ -2388,7 +2419,7 @@ async def soc_rule_rollback(rule_id: str, req: Rollback, who: rbac.Principal = D
     _apply_version(rule, old["def"], who.name, f"rollback to v{req.version}: {req.reason}")
     rule["updated_at"] = time.time()
     soc_store.save_rule(rule, who.tenant)
-    E(who).custom.load(soc_store.list_rules(who.tenant))
+    _load_custom(E(who))
     audit.record(tenant=who.tenant, client_ip=who.ip, analyst=who.name, module="soc.rule_rollback", target=rule_id,
                  purpose=f"to v{req.version}: {req.reason}", legal_basis="own_asset", case_ref=None,
                  result={"version": rule["version"], "from": req.version})

@@ -519,6 +519,11 @@ Triage → Investigation → Response (ต้องอนุมัติ) → �
 5. หัวหน้าทีมกด **เผยแพร่ draft** / **เปิดใช้** / **ปิด** ในรายการ "กฎที่สร้างเอง"
 6. **ย้อนเวอร์ชัน…** — เลือกเวอร์ชันเก่า ใส่เหตุผล ระบบบันทึกเป็นเวอร์ชันใหม่ (เก็บ 20 เวอร์ชันล่าสุด)
 
+**เริ่มจากแม่แบบ** — มีแม่แบบกฎที่ตรวจทานแล้ว 11 แบบ: certutil ดาวน์โหลดไฟล์, PowerShell download cradle, AI agent CLI ที่ปิดการขออนุมัติ, เครื่องมือสแกนเครือข่าย, โดเมน OAST, AI agent อ่านไฟล์ลับ ≥3 ครั้ง/5 นาที, เครื่องมือ remote access, ส่งข้อมูลออก >100 MB, logon ล้มเหลว ≥10 ครั้ง/5 นาที, ดึงฐานข้อมูล ≥100,000 แถว, เว็บถูกยิงหาไฟล์ลับ/path traversal — คลิกแม่แบบเพื่อโหลดกฎ + กรณีทดสอบ แล้วระบบย้อนทดสอบกับข้อมูลล่าสุดให้ทันที จากนั้นแก้และบันทึกเป็น draft ตามปกติ
+
+- กฎที่มีเงื่อนไข **ค่าว่าง** จะไม่ผ่านการตรวจรูปแบบ (ค่าว่างตรงกับทุก record) และ `gte`/`lte` ต้องเป็นตัวเลข
+- **กฎตัวอย่าง (ป้าย "จำลอง", CUS-DEMO-1…5)** — ใน tenant `default` ทีมจำลองเปิดใช้กฎจากแม่แบบ 5 ตัว ซึ่ง **ทำงานจริงบนข้อมูลจำลอง** (ตัวนับ hit ขยับ และเกิด alert) หนึ่งตัวมี draft รอเผยแพร่ ใช้ดูวงจรชีวิตของกฎได้ แต่แก้/เปิด/ปิดไม่ได้
+
 ### 4.25 AI Hunting & Enrichment
 
 - **Natural Language Hunting** (`ai.hunt`) — พิมพ์คำถามภาษาธรรมชาติ เช่น "หาเซิร์ฟเวอร์ที่ติดต่อ AI API ของจีนในชั่วโมงที่ผ่านมา" AI แปลงเป็นเงื่อนไขค้นหา แล้ว **ระบบค้นเองในข้อมูลของเรา** (ข้อมูลไม่ถูกส่งให้ AI ทั้งหมด) มีคำถามตัวอย่างให้กด
@@ -1346,6 +1351,7 @@ curl -X POST https://<service>.onrender.com/api/soc/intake \
 | GET | `/api/admin/backup` | `governance.manage` | Download a consistent SQLite snapshot (all tenants) — platform staff only |
 | POST | `/api/soc/rules/draft` | `rules.edit` |  |
 | POST | `/api/soc/rules/test` | `rules.edit` |  |
+| GET | `/api/soc/rules/templates` | `rules.read` | Vetted starting points for custom rules (rule + test cases); load one into the assistant to test and save |
 | GET | `/api/soc/rules` | `rules.read` |  |
 | POST | `/api/soc/rules` | `rules.edit` | Save a custom rule. A new rule is stored disabled as version 1; editing an existing rule stores a DRAFT — |
 | PATCH | `/api/soc/rules/{rule_id}` | `rules.publish` | Publish (enable — applying a pending draft as a new version) or disable a custom rule |

@@ -559,9 +559,13 @@ $("#ruleForm").addEventListener("submit", async (ev) => {
     RDRAFT = r; RCODE = "sigma"; renderRuleResult(r);
   } catch (e) { $("#ruleOut").innerHTML = `<p class="err">ไม่สำเร็จ: ${esc(e.message)}</p>`; }
 });
-$("#ruleManual").onclick = () => {
-  RDRAFT = { draft: {}, rule: { kind: "process", match: "all", title: "กฎใหม่", severity: "medium", technique: "", tactic: "",
-    conditions: [{ field: "cmdline", op: "contains", value: "" }], threshold: { count: 0, window_sec: 0, group_by: "" } }, errors: [] };
+$("#ruleManual").onclick = async () => {
+  const rule = { kind: "process", match: "all", title: "กฎใหม่", severity: "medium", technique: "", tactic: "",
+    conditions: [{ field: "cmdline", op: "contains", value: "" }], threshold: { count: 0, window_sec: 0, group_by: "" } };
+  try {  // validate on the server like every other path, so an empty skeleton is never shown as "valid"
+    const r = await api("/api/soc/rules/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rule, test_cases: [] }) });
+    RDRAFT = { ...r, draft: {} };
+  } catch { RDRAFT = { draft: {}, rule, errors: ["ใส่ค่าในเงื่อนไขก่อน แล้วกด “ทดสอบอีกครั้ง”"] }; }
   renderRuleResult(RDRAFT);
 };
 function editedRule() {
@@ -584,17 +588,37 @@ $("#ruleSave").onclick = async () => {
     alert(`บันทึก ${r.id} เป็น draft (ปิดอยู่) แล้ว — หัวหน้าทีมเปิดใช้ได้ในรายการด้านขวา`); loadRules();
   } catch (e) { alert("บันทึกไม่สำเร็จ: " + e.message); }
 };
+const RTPL = { items: [] };
+async function loadRuleTemplates() {
+  if (RTPL.items.length) return;
+  try {
+    RTPL.items = (await api("/api/soc/rules/templates")).templates;
+    $("#ruleTpl").innerHTML = '<span class="muted small">เริ่มจากแม่แบบ:</span> ' + RTPL.items.map((t) =>
+      `<button type="button" class="gs-chip rtpl" data-id="${esc(t.id)}" title="${esc(t.why)}">${esc(t.name)}</button>`).join("");
+  } catch {}
+}
+$("#ruleTpl").addEventListener("click", async (ev) => {
+  const b = ev.target.closest(".rtpl"); if (!b) return;
+  const t = RTPL.items.find((x) => x.id === b.dataset.id); if (!t) return;
+  $("#ruleOut").innerHTML = '<p class="muted"><span class="spin"></span> กำลังทดสอบแม่แบบกับข้อมูลล่าสุด…</p>';
+  try {
+    const r = await api("/api/soc/rules/test", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule: t.rule, test_cases: t.test_cases }) });
+    RDRAFT = { ...r, draft: { description: t.why, test_cases: t.test_cases } }; RCODE = "sigma"; renderRuleResult(RDRAFT);
+  } catch (e) { $("#ruleOut").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+});
 async function loadRules() {
+  loadRuleTemplates();
   try {
     const r = await api("/api/soc/rules");
     $("#nb-rules").textContent = r.rules.filter((x) => x.status === "enabled").length;
-    $("#customRules").innerHTML = r.rules.map((x) => `<li class="${x.hits ? "hit" : ""}"><span class="mono">${esc(x.id)}</span>
+    $("#customRules").innerHTML = r.rules.map((x) => `<li class="${x.hits ? "hit" : ""}"><span class="mono">${esc(x.id)}${x.simulated ? ' <span class="demo-tag" title="กฎตัวอย่างของทีมจำลอง ทำงานจริงบนข้อมูลจำลอง — แก้ไขไม่ได้ ลองใช้แม่แบบเดียวกันได้จากปุ่มด้านซ้าย">จำลอง</span>' : ""}</span>
       <span>${esc(x.title)} <span class="sev" style="--sevc:var(--${esc(x.severity)})">${esc(x.severity)}</span>
       <span class="st ${esc(x.status)}">${x.status === "enabled" ? "เปิด" : "ปิด"}</span><small class="muted"> · v${x.version || 1} · ${esc(x.kind)} · โดย ${esc(x.created_by || "")}${x.published_by ? " · เผยแพร่โดย " + esc(x.published_by) : ""}</small>
       ${x.draft ? `<span class="vd" title="แก้โดย ${esc(x.draft.by)}">มี draft รอเผยแพร่ (${esc(x.draft.by)})</span>` : ""}
-      ${can("rules.publish") ? (x.draft ? `<button class="mini release" data-rid="${esc(x.id)}" data-to="enabled">เผยแพร่ draft</button>` : "")
+      ${can("rules.publish") && !x.simulated ? (x.draft ? `<button class="mini release" data-rid="${esc(x.id)}" data-to="enabled">เผยแพร่ draft</button>` : "")
         + `<button class="mini release" data-rid="${esc(x.id)}" data-to="${x.status === "enabled" ? "disabled" : "enabled"}">${x.status === "enabled" ? "ปิด" : "เปิดใช้"}</button>` : ""}
-      ${can("rules.rollback") && (x.versions || []).length > 1 ? `<select class="rb" data-rid="${esc(x.id)}" aria-label="ย้อนเวอร์ชัน ${esc(x.id)}"><option value="">ย้อนเวอร์ชัน…</option>${x.versions.filter((v) => v.version !== x.version).map((v) => `<option value="${v.version}">v${v.version} · ${esc(v.by || "")} · ${esc((v.note || "").slice(0, 30))}</option>`).join("")}</select>` : ""}</span><b>${x.hits}</b></li>`).join("")
+      ${can("rules.rollback") && !x.simulated && (x.versions || []).length > 1 ? `<select class="rb" data-rid="${esc(x.id)}" aria-label="ย้อนเวอร์ชัน ${esc(x.id)}"><option value="">ย้อนเวอร์ชัน…</option>${x.versions.filter((v) => v.version !== x.version).map((v) => `<option value="${v.version}">v${v.version} · ${esc(v.by || "")} · ${esc((v.note || "").slice(0, 30))}</option>`).join("")}</select>` : ""}</span><b>${x.hits}</b></li>`).join("")
       || '<li class="muted">ยังไม่มีกฎที่สร้างเอง</li>';
   } catch {}
 }
