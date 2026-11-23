@@ -68,6 +68,7 @@ function handle(chunk) {
     renderOffai(msg.offai);
   } else if (ev === "tick") {
     msg.events.forEach((e) => addEvent(e, true));
+    tmLive(msg.events);
     pushBucket(msg.events);
     if (msg.incidents) renderIncidents(msg.incidents);
     if (msg.endpoints) renderEndpoints(msg.endpoints);
@@ -2547,14 +2548,32 @@ $("#alTbl").addEventListener("click", async (ev) => {
 });
 
 // ---------- Threat Map ----------
-const TM = { data: null, world: null, cent: null, rot: [-100, -12, 0], drag: null, raf: 0, visible: false, t0: performance.now() };
+const TM = { data: null, world: null, cent: null, rot: [-100, -12, 0], base: [-100, -12, 0], phase: 0, drag: null, lastDrag: 0,
+  raf: 0, visible: false, t0: performance.now(), last: 0, shots: [], ripples: [], feed: [], stars: null };
 const tmName = (() => { let dn = null; try { dn = new Intl.DisplayNames(["th"], { type: "region" }); } catch (e) {} return (cc) => { try { return (dn && dn.of(cc)) || cc; } catch (e) { return cc; } }; })();
 const TM_RED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 function tmBars(el, rows, label, value, fmt) {
   const max = Math.max(1, ...rows.map(value));
   el.innerHTML = rows.map((r) => `<div class="tm-bar"><span class="tm-bl" title="${esc(label(r))}">${esc(label(r))}</span>
-    <span class="tm-bt"><i style="width:${(100 * value(r) / max).toFixed(1)}%"></i></span><b>${esc(fmt ? fmt(r) : value(r).toLocaleString())}</b></div>`).join("")
+    <span class="tm-bt"><i data-w="${(100 * value(r) / max).toFixed(1)}"></i></span><b>${esc(fmt ? fmt(r) : value(r).toLocaleString())}</b></div>`).join("")
     || '<p class="tm-note">ยังไม่มีข้อมูล</p>';
+  tmGrow(el);
+}
+// grow bars / rings / trend from their previous size on every refresh (CSS transitions do the motion)
+function tmGrow(el) {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    el.querySelectorAll("[data-w]").forEach((i) => { i.style.width = i.dataset.w + "%"; });
+    el.querySelectorAll("[data-h]").forEach((i) => { i.style.height = i.dataset.h + "%"; });
+    el.querySelectorAll("[data-dash]").forEach((c) => { c.setAttribute("stroke-dasharray", c.dataset.dash); });
+  }));
+}
+function tmCount(el, to) {
+  const from = Number(el.dataset.v || 0); el.dataset.v = to;
+  if (TM_RED || from === to) { el.textContent = to.toLocaleString(); return; }
+  const t0 = performance.now(), dur = 900;
+  const step = (now) => { const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+    el.textContent = Math.round(from + (to - from) * e).toLocaleString(); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
 }
 async function tmAssets() {
   if (TM.world) return;
@@ -2568,14 +2587,13 @@ async function loadThreatMap() {
     const days = Number($("#mapDays").value);
     const [r] = await Promise.all([api(`/api/soc/threatmap?days=${days}`), tmAssets()]);
     TM.data = r;
-    if (!TM.rotSet && TM.cent[r.home]) { const [lon, lat] = TM.cent[r.home]; TM.rot = [-lon + 15, -lat + 8, 0]; TM.rotSet = true; }
+    if (!TM.rotSet && TM.cent[r.home]) { const [lon, lat] = TM.cent[r.home]; TM.rot = [-lon + 15, -lat + 8, 0]; TM.base = TM.rot.slice(); TM.rotSet = true; }
     const stamp = new Date(r.generated_at * 1000).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" });
     $("#tmSub").textContent = `ข้อมูล ณ ${stamp} · ${r.days} วัน · ${r.alerts.toLocaleString()} alerts` + (r.simulated_share > 0.5 ? " · ส่วนใหญ่เป็นข้อมูลจำลอง" : "");
     $("#tmIncLbl").textContent = `Incident (${r.days} วัน)`;
-    $("#tmInc").textContent = r.incidents.toLocaleString();
-    $("#tmIoc").textContent = r.ioc_unique.toLocaleString();
+    tmCount($("#tmInc"), r.incidents); tmCount($("#tmIoc"), r.ioc_unique);
     const tmax = Math.max(1, ...r.trend);
-    $("#tmTrend").innerHTML = r.trend.map((n, i) => `<i style="height:${Math.max(3, 100 * n / tmax)}%" title="${30 - i - 1 === 0 ? "วันนี้" : (30 - i - 1) + " วันก่อน"}: ${n} incident"></i>`).join("");
+    $("#tmTrend").innerHTML = r.trend.map((n, i) => `<i data-h="${Math.max(3, 100 * n / tmax).toFixed(1)}" style="height:3%;transition-delay:${i * 18}ms" title="${30 - i - 1 === 0 ? "วันนี้" : (30 - i - 1) + " วันก่อน"}: ${n} incident"></i>`).join(""); tmGrow($("#tmTrend"));
     $("#tmOrgSub").textContent = `${r.days} วัน`;
     tmBars($("#tmOrigins"), r.origins, (x) => tmName(x.country), (x) => x.count);
     $("#tmUnknown").textContent = r.unknown_origin ? `ระบุประเทศไม่ได้ ${r.unknown_origin.toLocaleString()} alerts (log ไม่มี src_country และ IP ไม่อยู่ใน Feodo)` : "";
@@ -2583,12 +2601,13 @@ async function loadThreatMap() {
     tmBars($("#tmInfra"), r.infra.top, (x) => tmName(x.country), (x) => x.count);
     const tymax = Math.max(1, ...r.ioc_types.map((x) => x.count));
     $("#tmTypes").innerHTML = r.ioc_types.map((x) => { const d = 64 + 44 * Math.sqrt(x.count / tymax);
-      return `<div class="tm-bub" style="width:${d}px;height:${d}px"><b>${x.count.toLocaleString()}</b><span>${esc(x.type)}</span></div>`; }).join("") || '<p class="tm-note">ยังไม่มี IOC</p>';
+      return `<div class="tm-bub" style="width:${d}px;height:${d}px;animation-delay:${(Math.random() * 3).toFixed(2)}s"><b>${x.count.toLocaleString()}</b><span>${esc(x.type)}</span></div>`; }).join("") || '<p class="tm-note">ยังไม่มี IOC</p>';
     const COLS = ["#3b82f6", "#f5a524", "#8b5cf6", "#ef4444", "#14b8a6"];
     $("#tmRings").innerHTML = r.categories.map((c, i) => { const C = 2 * Math.PI * 34, L = C * c.share;
       return `<div class="tm-ring" title="${esc(c.name)}: ${c.count.toLocaleString()} alerts"><svg viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="34" class="bg"/>
-        <circle cx="42" cy="42" r="34" stroke="${COLS[i]}" stroke-dasharray="${L.toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 42 42)"/></svg>
+        <circle cx="42" cy="42" r="34" stroke="${COLS[i]}" stroke-dasharray="0 ${C.toFixed(1)}" data-dash="${L.toFixed(1)} ${C.toFixed(1)}" style="transition-delay:${i * 120}ms" transform="rotate(-90 42 42)"/></svg>
         <span><small>${esc(c.name)}</small><b>${(100 * c.share).toFixed(1)}%</b></span></div>`; }).join("") || '<p class="tm-note">ยังไม่มี alert</p>';
+    tmGrow($("#tmRings"));
     tmDraw(performance.now());
   } catch (e) { $("#tmSub").textContent = "โหลด Threat Map ไม่สำเร็จ: " + e.message; }
 }
@@ -2598,44 +2617,111 @@ function tmCanvas() {
   if (cv.width !== Math.round(size * dpr)) { cv.width = Math.round(size * dpr); cv.height = Math.round(size * dpr); cv.style.width = cv.style.height = size + "px"; }
   return { cv, ctx: cv.getContext("2d"), size, dpr };
 }
+const TM_SEV = { critical: "248,113,113", high: "251,146,60", medium: "250,204,21", low: "94,234,212" };
+// one comet flying from an origin country to home. live = triggered by a real alert arriving on the stream
+function tmShoot(cc, now, opts = {}) {
+  const src = TM.cent && TM.cent[cc], home = TM.data && TM.cent && TM.cent[TM.data.home];
+  if (!src || !home || cc === TM.data.home || TM.shots.length > 90) return;
+  const dist = d3.geoDistance(src, home);
+  TM.shots.push({ cc, src, interp: d3.geoInterpolate(src, home), lift: 0.08 + 0.22 * Math.min(1, dist / 1.6), t0: now,
+    dur: (opts.live ? 1300 : 1900) + 900 * dist, col: opts.col || "94,234,212", live: !!opts.live });
+  TM.ripples.push({ pos: src, t0: now, col: opts.col || "94,234,212", big: !!opts.live });
+}
+function tmLive(events) {  // called from the SSE tick handler for every batch of new alerts
+  if (!TM.data || !TM.cent) return;
+  const now = performance.now();
+  for (const e of events) {
+    const cc = String(e.src_country || "").toUpperCase();
+    if (!TM.cent[cc] || e.severity === "info") continue;
+    if (TM.visible && !TM_RED) tmShoot(cc, now, { live: true, col: TM_SEV[e.severity] || TM_SEV.low });
+    TM.feed.unshift({ cc, title: e.title, sev: e.severity, host: e.host, ts: e.ts, real: e.simulated === false });
+  }
+  TM.feed = TM.feed.slice(0, 5);
+  const box = $("#tmFeed");
+  if (box && TM.feed.length) box.innerHTML = TM.feed.map((f, i) => `<div class="tm-fi${i === 0 ? " new" : ""}"><span class="sev ${esc(f.sev)}">${esc(f.sev)}</span>
+    <b>${esc(f.cc)}</b> → ${esc(TM.data.home)} <span class="tm-ft">${esc(f.title)}</span><span class="tm-fh">${esc(f.host || "")}${f.real ? " · REAL" : ""}</span></div>`).join("");
+}
 function tmDraw(now) {
   if (!TM.world || !TM.data) return;
   const { ctx, size, dpr } = tmCanvas(), r = size / 2 - 18, cx = size / 2, cy = size / 2;
   if (r < 20) return;  // not laid out yet
+  const dt = Math.min(100, now - (TM.last || now)); TM.last = now;
+  // slow sway around where the user left the globe; paused while dragging and for 3 s after
+  if (!TM_RED && !TM.drag && now - TM.lastDrag > 3000) {
+    TM.phase += dt / 9000 * 2 * Math.PI;
+    TM.rot = [TM.base[0] + 22 * Math.sin(TM.phase), TM.base[1] + 3 * Math.sin(TM.phase * 0.7), 0];
+  }
   const proj = d3.geoOrthographic().scale(r).translate([cx, cy]).rotate(TM.rot).clipAngle(90);
   const path = d3.geoPath(proj, ctx);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, size, size);
-  const glow = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * 1.12);
-  glow.addColorStop(0, "rgba(45,212,191,.35)"); glow.addColorStop(1, "rgba(45,212,191,0)");
-  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(cx, cy, r * 1.12, 0, 2 * Math.PI); ctx.fill();
+  if (!TM.stars) TM.stars = Array.from({ length: 70 }, () => [Math.random(), Math.random(), Math.random() * 1.2 + 0.3, Math.random() * 6.28]);
+  for (const [sx, sy, sr, sp] of TM.stars) {
+    const a = TM_RED ? 0.35 : 0.2 + 0.3 * (Math.sin(now / 900 + sp) + 1) / 2;
+    ctx.fillStyle = `rgba(203,213,225,${a.toFixed(2)})`; ctx.beginPath(); ctx.arc(sx * size, sy * size, sr, 0, 6.28); ctx.fill();
+  }
+  const breathe = TM_RED ? 0 : (Math.sin(now / 1600) + 1) / 2;
+  const glow = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * (1.1 + 0.04 * breathe));
+  glow.addColorStop(0, `rgba(45,212,191,${(0.3 + 0.15 * breathe).toFixed(2)})`); glow.addColorStop(1, "rgba(45,212,191,0)");
+  ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(cx, cy, r * 1.15, 0, 2 * Math.PI); ctx.fill();
   const sea = ctx.createRadialGradient(cx - r * .35, cy - r * .4, r * .1, cx, cy, r);
   sea.addColorStop(0, "#1d6f6a"); sea.addColorStop(1, "#0b2f33");
   ctx.fillStyle = sea; ctx.beginPath(); path({ type: "Sphere" }); ctx.fill();
   ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.lineWidth = 1; ctx.beginPath(); path(d3.geoGraticule10()); ctx.stroke();
   ctx.fillStyle = "#2a8a7f"; ctx.beginPath(); path(TM.world.land); ctx.fill();
   ctx.strokeStyle = "rgba(10,40,44,.7)"; ctx.lineWidth = .6; ctx.beginPath(); path(TM.world.borders); ctx.stroke();
+  if (!TM_RED) {  // radar sweep around the globe
+    const ang = (now / 4000) % 1 * 2 * Math.PI;
+    ctx.save(); ctx.beginPath(); path({ type: "Sphere" }); ctx.clip();
+    const sw = ctx.createConicGradient ? ctx.createConicGradient(ang, cx, cy) : null;
+    if (sw) { sw.addColorStop(0, "rgba(94,234,212,.16)"); sw.addColorStop(0.08, "rgba(94,234,212,0)"); sw.addColorStop(1, "rgba(94,234,212,0)");
+      ctx.fillStyle = sw; ctx.fillRect(0, 0, size, size); }
+    ctx.restore();
+  }
   ctx.strokeStyle = "rgba(94,234,212,.55)"; ctx.lineWidth = 1.5; ctx.beginPath(); path({ type: "Sphere" }); ctx.stroke();
   const d = TM.data, home = TM.cent[d.home], centre = [-TM.rot[0], -TM.rot[1]];
   const vis = (p) => d3.geoDistance(p, centre) < Math.PI / 2 - 0.02;
   const rotate = d3.geoRotation(TM.rot), RAD = Math.PI / 180;
   // a lifted arc point is hidden only when it is behind the globe AND inside the disc the globe covers
   const shown = (g, h) => { const [l, p] = rotate(g), z = Math.cos(p * RAD) * Math.cos(l * RAD); return z > 0 || h * Math.sqrt(Math.max(0, 1 - z * z)) > 1; };
+  const at = (interp, lift, t) => { const g = interp(t), h = 1 + lift * Math.sin(Math.PI * t); if (!shown(g, h)) return null;
+    const [x, y] = proj(g); return [cx + (x - cx) * h, cy + (y - cy) * h]; };
   const maxc = Math.max(1, ...d.arcs.map((a) => a.count));
-  const phase = TM_RED ? 0 : ((now - TM.t0) / 1400) % 1;
-  d.arcs.forEach((a, i) => {
+  // background traffic: each top origin fires comets at a rate that follows its alert count
+  if (!TM_RED && home) for (const a of d.arcs) if (Math.random() < dt / 1000 * (0.25 + 1.4 * a.count / maxc)) tmShoot(a.from, now, { col: a === d.arcs[0] || a === d.arcs[1] || a === d.arcs[2] ? "245,165,36" : "94,234,212" });
+  d.arcs.forEach((a, i) => {  // faint guide arcs
     const src = TM.cent[a.from]; if (!src || !home) return;
-    const interp = d3.geoInterpolate(src, home), dist = d3.geoDistance(src, home), lift = 0.08 + 0.22 * Math.min(1, dist / 1.6);
-    const pts = []; for (let k = 0; k <= 64; k++) { const t = k / 64, g = interp(t);
-      const h = 1 + lift * Math.sin(Math.PI * t);
-      if (!shown(g, h)) { pts.push(null); continue; }
-      const [x, y] = proj(g); pts.push([cx + (x - cx) * h, cy + (y - cy) * h]); }
-    const col = i < 3 ? "245,165,36" : "94,234,212", w = 1 + 2.5 * Math.sqrt(a.count / maxc);
-    ctx.lineWidth = w; ctx.lineCap = "round";
-    for (let k = 1; k < pts.length; k++) { const p = pts[k - 1], q = pts[k]; if (!p || !q) continue;
-      const t = k / 64, lit = Math.max(0, 1 - Math.abs(((t - phase + 1) % 1) - 0.5) * 6);
-      ctx.strokeStyle = `rgba(${col},${(0.35 + 0.65 * lit).toFixed(2)})`; ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
-    if (vis(src)) { const [x, y] = proj(src); ctx.fillStyle = `rgb(${col})`; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill();
+    const interp = d3.geoInterpolate(src, home), lift = 0.08 + 0.22 * Math.min(1, d3.geoDistance(src, home) / 1.6);
+    ctx.strokeStyle = `rgba(${i < 3 ? "245,165,36" : "94,234,212"},.28)`; ctx.lineWidth = 0.8 + 1.8 * Math.sqrt(a.count / maxc);
+    ctx.beginPath(); let pen = false;
+    for (let k = 0; k <= 48; k++) { const q = at(interp, lift, k / 48); if (!q) { pen = false; continue; } pen ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); pen = true; }
+    ctx.stroke();
+    if (vis(src)) { const [x, y] = proj(src); ctx.fillStyle = `rgb(${i < 3 ? "245,165,36" : "94,234,212"})`; ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.fill();
       ctx.fillStyle = "rgba(226,232,240,.85)"; ctx.font = "600 11px system-ui, sans-serif"; ctx.fillText(a.from, x + 6, y - 4); }
+  });
+  // comets
+  TM.shots = TM.shots.filter((s) => {
+    const t = (now - s.t0) / s.dur;
+    if (t >= 1) { TM.ripples.push({ pos: home, t0: now, col: s.col, big: s.live }); return false; }
+    const head = at(s.interp, s.lift, t); if (!head) return true;
+    const tail = s.live ? 0.22 : 0.14, n = 10;
+    for (let k = n; k >= 1; k--) {
+      const p = at(s.interp, s.lift, Math.max(0, t - tail * k / n)), q = at(s.interp, s.lift, Math.max(0, t - tail * (k - 1) / n));
+      if (!p || !q) continue;
+      ctx.strokeStyle = `rgba(${s.col},${(0.9 * (1 - k / n)).toFixed(2)})`; ctx.lineWidth = (s.live ? 3.2 : 2) * (1 - k / n) + 0.4;
+      ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
+    }
+    ctx.fillStyle = "#fff"; ctx.shadowColor = `rgb(${s.col})`; ctx.shadowBlur = s.live ? 14 : 8;
+    ctx.beginPath(); ctx.arc(head[0], head[1], s.live ? 3.2 : 2.2, 0, 2 * Math.PI); ctx.fill(); ctx.shadowBlur = 0;
+    return true;
+  });
+  // ripples where comets launch and land
+  TM.ripples = TM.ripples.filter((rp) => {
+    const k = (now - rp.t0) / (rp.big ? 1400 : 900); if (k >= 1) return false;
+    if (!vis(rp.pos)) return true;
+    const [x, y] = proj(rp.pos);
+    ctx.strokeStyle = `rgba(${rp.col},${(0.8 * (1 - k)).toFixed(2)})`; ctx.lineWidth = rp.big ? 2 : 1.2;
+    ctx.beginPath(); ctx.arc(x, y, 3 + (rp.big ? 26 : 14) * k, 0, 2 * Math.PI); ctx.stroke();
+    return true;
   });
   if (home && vis(home)) {
     const [x, y] = proj(home), pulse = TM_RED ? 0.5 : (Math.sin((now - TM.t0) / 350) + 1) / 2;
@@ -2648,8 +2734,8 @@ function tmDraw(now) {
 }
 function tmLoop(now) { TM.raf = 0; if (!TM.visible || document.hidden) return; tmDraw(now); if (!TM_RED) TM.raf = requestAnimationFrame(tmLoop); }
 function tmKick() { if (!TM.raf && TM.visible) TM.raf = requestAnimationFrame(tmLoop); }
-new IntersectionObserver((es) => { TM.visible = es.some((e) => e.isIntersecting); if (TM.visible) { if (!TM.data) loadThreatMap(); tmKick(); } }).observe($("#mapCard"));
-document.addEventListener("visibilitychange", tmKick);
+new IntersectionObserver((es) => { TM.visible = es.some((e) => e.isIntersecting); if (TM.visible) { if (!TM.data) loadThreatMap(); TM.last = 0; tmKick(); } }).observe($("#mapCard"));
+document.addEventListener("visibilitychange", () => { TM.last = 0; TM.shots = []; tmKick(); });
 window.addEventListener("resize", () => tmDraw(performance.now()));
 $("#tmGlobe").addEventListener("pointerdown", (ev) => { TM.drag = { x: ev.clientX, y: ev.clientY, rot: TM.rot.slice() }; $("#tmGlobe").classList.add("drag"); });
 window.addEventListener("pointermove", (ev) => {
@@ -2658,6 +2744,10 @@ window.addEventListener("pointermove", (ev) => {
   TM.rot = [rot[0] + (ev.clientX - TM.drag.x) * k, Math.max(-80, Math.min(80, rot[1] - (ev.clientY - TM.drag.y) * k)), 0];
   if (TM_RED || !TM.raf) tmDraw(performance.now());
 });
-window.addEventListener("pointerup", () => { TM.drag = null; $("#tmGlobe").classList.remove("drag"); });
+window.addEventListener("pointerup", () => {
+  if (!TM.drag) return;
+  TM.drag = null; TM.lastDrag = performance.now(); $("#tmGlobe").classList.remove("drag");
+  TM.base = [TM.rot[0] - 22 * Math.sin(TM.phase), TM.rot[1] - 3 * Math.sin(TM.phase * 0.7), 0];  // keep swaying from here, no jump
+});
 $("#mapDays").onchange = loadThreatMap;
 setInterval(() => { if ($("#live").classList.contains("on") && !document.hidden && TM.visible) loadThreatMap(); }, 60000);
